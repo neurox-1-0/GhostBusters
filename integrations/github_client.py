@@ -72,5 +72,8 @@ class GitHubClient:
     def create_pull_request(self, owner: str, repo: str, title: str, body: str, head: str, base: str) -> dict[str, Any]:
         return self._request("POST", f"{self._repo(owner, repo)}/pulls", json={"title": title, "body": body, "head": head, "base": base})
 
+    def compare_branches(self, owner: str, repo: str, base: str, head: str) -> dict[str, Any]:
+        return self._request("GET", f"{self._repo(owner, repo)}/compare/{quote(base, safe='')}{'...' if base else ''}{quote(head, safe='')}", retry_read=True)
+
     def list_open_pull_requests(self, owner: str, repo: str, head: str) -> list[dict[str, Any]]:
         return self._request("GET", f"{self._repo(owner, repo)}/pulls?state=open&head={quote(head, safe=':')}", retry_read=True)

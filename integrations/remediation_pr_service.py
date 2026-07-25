@@ -56,7 +56,7 @@ class RemediationPRService:
         existing = self.client.list_open_pull_requests(owner, repo, f"{owner}:{branch}")
         if existing:
             item = existing[0]
-            return RealPullRequest(repository=source.repository, number=int(item["number"]), url=item["html_url"], branch=branch, base_branch=source.base_branch, title=item.get("title", "GhostBusters remediation"), created_at=utc_now(), idempotency_key=key, reused=True)
+            return RealPullRequest(repository=source.repository, number=int(item["number"]), url=item["html_url"], branch=branch, base_branch=source.head_branch, title=item.get("title", "GhostBusters remediation"), created_at=utc_now(), idempotency_key=key, reused=True)
         try:
             self.client.get_branch(owner, repo, branch)
         except GitHubAPIError as exc:
@@ -64,6 +64,9 @@ class RemediationPRService:
                 raise
             self.client.create_branch(owner, repo, branch, source.head_sha)
         self.client.update_or_create_file(owner, repo, branch, change.source_file, updated, f"GhostBusters: {decision.preferred_action} {change.address}", current.get("sha"))
+        comparison = self.client.compare_branches(owner, repo, source.head_branch, branch)
+        if comparison.get("status") in {"identical", "same"} or (comparison.get("ahead_by", 0) == 0 and comparison.get("behind_by", 0) == 0):
+            raise RemediationValidationError("Remediation branch has no diff against the selected base branch.")
         monthly = alternative.estimated_monthly_savings if alternative else 0
         title = f"GhostBusters: Right-size {change.resource_name}"
         body = (
@@ -75,5 +78,5 @@ class RemediationPRService:
             f"Estimated savings: ${monthly:.0f}/month, ${monthly * 12:.0f}/year\n\n"
             "Safety: This PR does not apply infrastructure changes automatically."
         )
-        created = self.client.create_pull_request(owner, repo, title, body, branch, source.base_branch)
-        return RealPullRequest(repository=source.repository, number=int(created["number"]), url=created["html_url"], branch=branch, base_branch=source.base_branch, title=title, created_at=utc_now(), idempotency_key=key)
+        created = self.client.create_pull_request(owner, repo, title, body, branch, source.head_branch)
+        return RealPullRequest(repository=source.repository, number=int(created["number"]), url=created["html_url"], branch=branch, base_branch=source.head_branch, title=title, created_at=utc_now(), idempotency_key=key)

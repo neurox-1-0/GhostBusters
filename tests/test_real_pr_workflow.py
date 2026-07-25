@@ -113,6 +113,8 @@ def test_explicit_real_pr_mode_uses_guarded_github_writer() -> None:
         def create_pull_request(self, owner, repo, title, body, head, base):
             self.created += 1
             return {"number": 77, "html_url": "https://github.test/demo/infra/pull/77"}
+        def compare_branches(self, owner, repo, base, head):
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0, "files": [{"filename": "infra/main.tf", "patch": "@@ -1 +1 @@\n-instance_type = \"m5.xlarge\"\n+instance_type = \"m5.large\""}]}
 
     writer = GitHubWriter()
     config = Settings(ai_enabled=False, github_integration_enabled=True, github_create_real_pr=True, github_allowed_repositories=("demo/infra",))
