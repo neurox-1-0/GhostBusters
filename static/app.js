@@ -11,6 +11,7 @@ const state = {
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
+  cloudHuntFilter: "all",
   loading: {
     initial: true,
     reviews: false,
@@ -234,6 +235,35 @@ function runStatusLabel(status) {
   }[status] || labelFor(status || "no_case");
 }
 
+function cloudCandidatePrimaryStatus(candidate) {
+  if (!candidate) return { key: "neutral", label: "No action required", className: "status-neutral" };
+  if (candidate.exclusion_reason) return { key: "protected", label: "Protected resource", className: "status-protected", icon: "i" };
+  if (candidate.candidate_score >= 0.8) return { key: "high-confidence", label: "High-confidence ghost resource", className: "status-high-confidence", icon: "✓" };
+  if (candidate.requires_investigation) return { key: "needs-context", label: "Needs more context", className: "status-needs-context", icon: "!" };
+  return { key: "neutral", label: "No action required", className: "status-neutral" };
+}
+
+function reviewStateStatus(status) {
+  return {
+    pending: { key: "awaiting-review", label: "Pending human review", className: "status-awaiting-review" },
+    pending_human_review: { key: "awaiting-review", label: "Pending human review", className: "status-awaiting-review" },
+    needs_more_evidence: { key: "needs-context", label: "Needs more context", className: "status-needs-context" },
+    blocked: { key: "blocked", label: "Blocked by policy", className: "status-blocked" },
+    approved: { key: "approved", label: "Remediation approved", className: "status-approved" },
+    pr_created: { key: "pr-created", label: "Remediation PR created", className: "status-pr-created" },
+    keep: { key: "neutral", label: "No action required", className: "status-neutral" },
+    rejected: { key: "blocked", label: "Blocked by policy", className: "status-blocked" },
+  }[status] || { key: "awaiting-review", label: "Pending human review", className: "status-awaiting-review" };
+}
+
+function statusBadge(status) {
+  const badge = el("span", `status-badge ${status.className}`);
+  badge.setAttribute("title", status.label);
+  badge.setAttribute("aria-label", status.label);
+  badge.textContent = status.icon ? `${status.icon} ${status.label}` : status.label;
+  return badge;
+}
+
 function githubIntegrationLabel(run) {
   if (run?.github_source) return "Real GitHub";
   return "Ready for GitHub webhooks";
@@ -413,6 +443,7 @@ async function loadReviewQueue() {
     showToast("Review load failed", message, "error");
   } finally {
     state.loading.reviews = false;
+    renderReviewQueue();
     renderOverview();
   }
 }
@@ -1182,12 +1213,13 @@ function renderOverviewSavings() {
   candidates.forEach((candidate) => {
     const resource = candidate.resource || {};
     const row = el("article", "compact-row");
+    const primaryStatus = cloudCandidatePrimaryStatus(candidate);
     append(
       row,
       append(el("div"), el("strong", "row-title", resource.resource_name || "Cloud resource"), el("span", "row-meta", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("span", "row-detail", candidate.exclusion_reason ? "Protected by context" : "Candidate for review")),
       append(el("div", "row-metric"), el("span", null, "Monthly cost"), el("strong", null, money(resource.estimated_monthly_cost))),
       append(el("div", "row-state"), el("span", null, "Confidence"), el("strong", null, percentage(candidate.candidate_score))),
-      el("span", `signal-tag ${candidate.exclusion_reason ? "info" : candidate.candidate_score >= 0.8 ? "success" : "warning"}`, candidate.exclusion_reason ? "Protected" : candidate.requires_investigation ? "Needs context" : "Awaiting approval")
+      statusBadge(primaryStatus)
     );
     node.appendChild(row);
   });
@@ -1260,6 +1292,50 @@ function switchMode(mode) {
 
 function switchView(technical) { switchMode(technical ? "technical" : "simple"); }
 
+function cloudReviewStatusForCandidate(candidate) {
+  if (candidate?.review_status) return reviewStateStatus(candidate.review_status);
+  if (candidate?.exclusion_reason) return null;
+  return reviewStateStatus("pending_human_review");
+}
+
+function cloudHuntFilterCounts(candidates) {
+  return candidates.reduce((counts, candidate) => {
+    const primary = cloudCandidatePrimaryStatus(candidate);
+    const review = cloudReviewStatusForCandidate(candidate);
+    counts.all += 1;
+    if (primary.key === "high-confidence") counts["high-confidence"] += 1;
+    if (primary.key === "protected") counts.protected += 1;
+    if (primary.key === "needs-context") counts["needs-context"] += 1;
+    if (review?.key === "awaiting-review") counts["awaiting-review"] += 1;
+    return counts;
+  }, { all: 0, "high-confidence": 0, protected: 0, "needs-context": 0, "awaiting-review": 0 });
+}
+
+function renderCloudHuntFilterChips(candidates = []) {
+  const counts = cloudHuntFilterCounts(candidates);
+  Object.entries(counts).forEach(([key, count]) => {
+    const countNode = $(`filter-count-${key}`);
+    if (countNode) countNode.textContent = String(count);
+  });
+  document.querySelectorAll("[data-hunt-filter]").forEach((chip) => {
+    const active = chip.dataset.huntFilter === state.cloudHuntFilter;
+    chip.classList.toggle("filter-chip-active", active);
+    chip.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function candidateMatchesCloudFilter(candidate) {
+  const filter = state.cloudHuntFilter || "all";
+  if (filter === "all") return true;
+  const primary = cloudCandidatePrimaryStatus(candidate);
+  const review = cloudReviewStatusForCandidate(candidate);
+  if (filter === "high-confidence") return primary.key === "high-confidence";
+  if (filter === "protected") return primary.key === "protected";
+  if (filter === "needs-context") return primary.key === "needs-context";
+  if (filter === "awaiting-review") return review?.key === "awaiting-review";
+  return true;
+}
+
 function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
@@ -1272,6 +1348,7 @@ function renderCloudHunt() {
   }
   const data = state.hunt?.summary;
   if (!data) {
+    renderCloudHuntFilterChips([]);
     summary.appendChild(el("p", "muted", "No cloud-hunt scan has been run yet."));
     $("candidate-count").textContent = "0 candidates";
     const list = $("candidate-list");
@@ -1286,31 +1363,25 @@ function renderCloudHunt() {
   });
   $("candidate-count").textContent = `${data.candidates} candidate${data.candidates === 1 ? "" : "s"}`;
   const list = $("candidate-list"); clear(list);
-  const activeFilters = new Set([...document.querySelectorAll("[data-hunt-filter]")].filter((item) => item.checked).map((item) => item.dataset.huntFilter));
-  const candidates = (state.hunt.candidates || []).filter((candidate) => {
-    if (!activeFilters.size) return true;
-    if (activeFilters.has("high-confidence") && candidate.candidate_score >= 0.8 && !candidate.exclusion_reason) return true;
-    if (activeFilters.has("needs-context") && candidate.requires_investigation && !candidate.exclusion_reason) return true;
-    if (activeFilters.has("protected") && candidate.exclusion_reason) return true;
-    if (activeFilters.has("awaiting-approval") && !candidate.exclusion_reason) return true;
-    return false;
-  });
+  const allCandidates = state.hunt.candidates || [];
+  renderCloudHuntFilterChips(allCandidates);
+  const candidates = allCandidates.filter(candidateMatchesCloudFilter);
   candidates.forEach((candidate) => {
     const resource = candidate.resource;
     const card = el("article", "candidate-card");
     const supporting = candidate.signals.filter((signal) => signal.supports_ghost_hypothesis).slice(0, 5).map((signal) => signal.description);
     const protective = candidate.signals.filter((signal) => !signal.supports_ghost_hypothesis).map((signal) => signal.description);
     const tags = el("div", "tag-row");
-    const candidateTag = el("span", `signal-tag ${candidate.exclusion_reason ? "info" : candidate.candidate_score >= 0.8 ? "success" : "warning"}`);
-    candidateTag.textContent = candidate.exclusion_reason
-      ? "Protected resource"
-      : candidate.candidate_score >= 0.8
-        ? "High-confidence ghost resource"
-        : candidate.requires_investigation
-          ? "Needs more context"
-          : "Suspicious candidate";
-    tags.appendChild(candidateTag);
-    append(card, el("p", "kicker", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("h3", null, resource.resource_name), tags, dataList([["Environment", resource.environment], ["Monthly cost", money(resource.estimated_monthly_cost)], ["Confidence", percentage(candidate.candidate_score)], ["Current state", candidate.exclusion_reason || "Pending human review"]]), el("strong", "candidate-heading", "Why GhostBusters flagged it"));
+    const primaryStatus = cloudCandidatePrimaryStatus(candidate);
+    const reviewStatus = cloudReviewStatusForCandidate(candidate);
+    tags.appendChild(statusBadge(primaryStatus));
+    if (reviewStatus) tags.appendChild(statusBadge(reviewStatus));
+    const cardActions = el("div", "queue-actions");
+    const openReview = el("button", "secondary compact", "Open Review");
+    openReview.type = "button";
+    openReview.addEventListener("click", () => switchMode("review-queue"));
+    cardActions.appendChild(openReview);
+    append(card, el("p", "kicker", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("h3", null, resource.resource_name), tags, dataList([["Environment", resource.environment], ["Monthly cost", money(resource.estimated_monthly_cost)], ["Confidence", percentage(candidate.candidate_score)], ["Current state", reviewStatus?.label || primaryStatus.label]]), cardActions, el("strong", "candidate-heading", "Why GhostBusters flagged it"));
     supporting.forEach((item) => card.appendChild(el("p", "candidate-signal", item)));
     if (protective.length) { card.appendChild(el("strong", "candidate-heading", "Why GhostBusters is cautious")); protective.forEach((item) => card.appendChild(el("p", "candidate-protection", item))); }
     list.appendChild(card);
@@ -1451,6 +1522,7 @@ if (typeof window !== "undefined") {
     renderAll,
     renderCloudHunt,
     renderReviewQueue,
+    loadReviewQueue,
     renderTechnical,
     openDemoModal,
     closeDemoModal,
@@ -1511,7 +1583,10 @@ function bindEvents() {
     if (event.key === "Escape") closeAssistant();
   });
   $("assistant-backdrop").addEventListener("click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
-  document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("change", renderCloudHunt));
+  document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("click", () => {
+    state.cloudHuntFilter = filter.dataset.huntFilter || "all";
+    renderCloudHunt();
+  }));
   document.querySelectorAll(".audit-section").forEach((section) => {
     section.addEventListener("toggle", () => {
       if (!section.open) return;

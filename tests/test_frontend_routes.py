@@ -62,6 +62,14 @@ def test_css_asset_served() -> None:
     assert ".summary-card" in response.text
     assert ".skeleton" in response.text
     assert ".toast" in response.text
+    assert ".filter-chip" in response.text
+    assert ".filter-chip-active" in response.text
+    assert ".status-badge" in response.text
+    assert ".status-high-confidence" in response.text
+    assert ".status-protected" in response.text
+    assert ".status-needs-context" in response.text
+    assert ".status-awaiting-review" in response.text
+    assert ".status-blocked" in response.text
     assert "prefers-reduced-motion" in response.text
     assert ".stage-list" in response.text
     assert "max-width: 1500px" not in response.text

@@ -329,11 +329,12 @@
             </div>
             <section class="panel hunt-start-panel">
               <div class="hunt-controls"><label for="cloud-provider-scope">Provider scope</label><select id="cloud-provider-scope"><option value="multi_cloud">Multi-cloud</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">Google Cloud</option></select><button id="start-cloud-hunt-button" type="button">Start Cloud Hunt</button></div>
-              <div class="filter-row" aria-label="Visual filters">
-                <label class="toggle"><input type="checkbox" data-hunt-filter="high-confidence" /> High confidence</label>
-                <label class="toggle"><input type="checkbox" data-hunt-filter="needs-context" /> Needs context</label>
-                <label class="toggle"><input type="checkbox" data-hunt-filter="protected" /> Protected</label>
-                <label class="toggle"><input type="checkbox" data-hunt-filter="awaiting-approval" /> Awaiting approval</label>
+              <div class="filter-row" aria-label="Cloud Hunt filters">
+                <button class="filter-chip filter-chip-active" type="button" data-hunt-filter="all" aria-pressed="true">All <span id="filter-count-all">0</span></button>
+                <button class="filter-chip" type="button" data-hunt-filter="high-confidence" aria-pressed="false">High Confidence <span id="filter-count-high-confidence">0</span></button>
+                <button class="filter-chip" type="button" data-hunt-filter="protected" aria-pressed="false">Protected <span id="filter-count-protected">0</span></button>
+                <button class="filter-chip" type="button" data-hunt-filter="needs-context" aria-pressed="false">Needs Context <span id="filter-count-needs-context">0</span></button>
+                <button class="filter-chip" type="button" data-hunt-filter="awaiting-review" aria-pressed="false">Awaiting Review <span id="filter-count-awaiting-review">0</span></button>
               </div>
               <p class="helper">Goal: Find forgotten cloud resources without disrupting active workloads.</p>
               <p class="message" id="cloud-hunt-message" role="status"></p>

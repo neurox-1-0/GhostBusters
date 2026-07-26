@@ -19,7 +19,7 @@ const fs = require("fs");
 const vm = require("vm");
 
 function createNode(tag = "div", id = "") {{
-  return {{
+  const node = {{
     id,
     tagName: tag.toUpperCase(),
     children: [],
@@ -35,21 +35,46 @@ function createNode(tag = "div", id = "") {{
     rel: "",
     open: false,
     className: "",
-    appendChild(child) {{ this.children.push(child); return child; }},
-    removeChild(child) {{ this.children = this.children.filter((item) => item !== child); }},
+    appendChild(child) {{ child.parentNode = this; this.children.push(child); return child; }},
+    removeChild(child) {{ this.children = this.children.filter((item) => item !== child); child.parentNode = null; }},
     get firstChild() {{ return this.children[0] || null; }},
     addEventListener() {{}},
     setAttribute(name, value) {{ this[name] = value; }},
     scrollIntoView() {{}},
     querySelectorAll() {{ return []; }},
-    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    classList: {{
+      toggle(name, force) {{
+        const classes = new Set((node.className || "").split(/\\s+/).filter(Boolean));
+        const shouldAdd = force === undefined ? !classes.has(name) : Boolean(force);
+        if (shouldAdd) classes.add(name); else classes.delete(name);
+        node.className = [...classes].join(" ");
+      }},
+      add(name) {{
+        const classes = new Set((node.className || "").split(/\\s+/).filter(Boolean));
+        classes.add(name);
+        node.className = [...classes].join(" ");
+      }},
+      remove(name) {{
+        const classes = new Set((node.className || "").split(/\\s+/).filter(Boolean));
+        classes.delete(name);
+        node.className = [...classes].join(" ");
+      }},
+    }},
   }};
+  return node;
 }}
 
 const elements = new Map();
 const reviewButtons = ["approve", "modify", "request_evidence", "add_context", "reject"].map((action) => {{
   const button = createNode("button");
   button.dataset.reviewAction = action;
+  return button;
+}});
+const filterButtons = ["all", "high-confidence", "protected", "needs-context", "awaiting-review"].map((filter) => {{
+  const button = createNode("button");
+  button.dataset.huntFilter = filter;
+  button.className = filter === "all" ? "filter-chip filter-chip-active" : "filter-chip";
+  button.setAttribute("aria-pressed", String(filter === "all"));
   return button;
 }});
 
@@ -63,6 +88,7 @@ const document = {{
   }},
   querySelectorAll(selector) {{
     if (selector === "[data-review-action]") return reviewButtons;
+    if (selector === "[data-hunt-filter]") return filterButtons;
     return [];
   }},
 }};
@@ -78,7 +104,7 @@ const fetch = async (path) => {{
   const routes = {{
     "/health": {{ status: "ok" }},
     "/api/scenarios": {{ scenarios: ["safe"] }},
-    "/api/reviews": [],
+    "/api/reviews": {json.dumps(payload.get("api_reviews", []))},
   }};
   return {{
     ok: true,
@@ -133,9 +159,13 @@ function nodeText(node) {{
       "review": False,
       "assistant": False,
   }))};
+  hooks.state.cloudHuntFilter = {json.dumps(payload.get("cloud_filter", "all"))};
   if ({json.dumps(payload.get("open_demo", False))}) hooks.openDemoModal();
   if ({json.dumps(payload.get("mode"))}) hooks.switchMode({json.dumps(payload.get("mode"))});
   hooks.renderAll();
+  if ({json.dumps(payload.get("call_load_review_queue", False))}) {{
+    await hooks.loadReviewQueue();
+  }}
 
   const ids = [
     "source-kind", "source-repository", "source-pr", "source-title", "source-head", "source-base",
@@ -147,6 +177,8 @@ function nodeText(node) {{
     "case-status", "human-decision-summary", "recommendation-summary", "evidence-source-card",
     "page-title", "overview-summary", "overview-pr-list", "overview-savings-list",
     "overview-approval-alerts", "overview-activity-list", "toast-region",
+    "filter-count-all", "filter-count-high-confidence", "filter-count-protected",
+    "filter-count-needs-context", "filter-count-awaiting-review",
   ];
   const output = {{}};
   for (const id of ids) {{
@@ -165,6 +197,13 @@ function nodeText(node) {{
     }}));
     output.queueCards = (elements.get("review-queue-list")?.children || []).map((child) => nodeText(child));
     output.cloudCards = (elements.get("candidate-list")?.children || []).map((child) => nodeText(child));
+    output.cloudCardTags = (elements.get("candidate-list")?.children || []).flatMap((card) => (card.children || []).flatMap((child) => (child.children || []))).filter((child) => (child.className || "").includes("status-badge")).map((child) => ({{ text: nodeText(child), className: child.className, tagName: child.tagName }}));
+    output.filterChips = filterButtons.map((button) => ({{
+      filter: button.dataset.huntFilter,
+      tagName: button.tagName,
+      className: button.className,
+      ariaPressed: button["aria-pressed"],
+    }}));
     output.summaryCards = (elements.get("overview-summary")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewRows = (elements.get("overview-pr-list")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewSavings = (elements.get("overview-savings-list")?.children || []).map((child) => nodeText(child) || child.className);
@@ -545,6 +584,37 @@ def test_review_queue_and_cloud_hunt_views_remain_functional() -> None:
     assert any("Open Review" in card for card in rendered["queueCards"])
 
 
+def test_review_queue_replaces_skeletons_after_async_load_finishes() -> None:
+    api_reviews = [
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "source_type": "terraform_pr",
+            "repository": "demo/infra",
+            "pull_request_number": 42,
+            "resource_name": "aws_instance.app",
+            "recommendation": "Downsize to m5.large",
+            "recommendation_reason": "Rightsizing looks safe.",
+            "confidence": 0.91,
+            "estimated_monthly_savings": 70.0,
+            "policy_status": "passed",
+            "status": "pending_human_review",
+        }
+    ]
+
+    rendered = render_frontend({
+        "run": None,
+        "reviews": [],
+        "api_reviews": api_reviews,
+        "mode": "review-queue",
+        "call_load_review_queue": True,
+    })
+
+    assert rendered["queueCards"]
+    assert any("demo/infra" in card for card in rendered["queueCards"])
+    assert any("Open Review" in card for card in rendered["queueCards"])
+    assert all("skeleton" not in card for card in rendered["queueCards"])
+
+
 def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
     reviews = [
         {
@@ -590,3 +660,109 @@ def test_overview_and_cloud_hunt_show_skeleton_loading_states() -> None:
     assert all("skeleton" in card for card in rendered["summaryCards"])
     assert rendered["overviewRows"]
     assert all("skeleton" in row for row in rendered["overviewRows"])
+
+
+def test_cloud_hunt_status_badges_and_filter_chips_are_semantic() -> None:
+    hunt = {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "trigger_source": "manual_cloud_hunt",
+        "provider_scope": "multi_cloud",
+        "inventory_source": "fixtures",
+        "goal": "Find forgotten cloud resources",
+        "started_at": "2026-07-26T00:00:00Z",
+        "completed_at": "2026-07-26T00:03:00Z",
+        "status": "completed",
+        "resources_scanned": 3,
+        "candidates_found": 3,
+        "investigations_created": 2,
+        "protected_resources": 1,
+        "errors": [],
+        "planning_mode": "deterministic_only",
+        "audit_events": [],
+        "summary": {
+            "total_resources": 3,
+            "healthy_resources": 0,
+            "candidates": 3,
+            "high_confidence_candidates": 1,
+            "protected_candidates": 1,
+            "needs_human_context": 2,
+            "estimated_monthly_waste": 260.0,
+            "estimated_annual_waste": 3120.0,
+            "provider_breakdown": {},
+        },
+        "candidates": [
+            {
+                "candidate_id": "ghost-1",
+                "resource": {
+                    "provider": "aws",
+                    "resource_name": "forgotten-test",
+                    "normalized_resource_type": "virtual_machine",
+                    "environment": "staging",
+                    "estimated_monthly_cost": 120.0,
+                },
+                "candidate_score": 0.95,
+                "signals": [{"description": "CPU stayed below 5%.", "supports_ghost_hypothesis": True}],
+                "requires_investigation": True,
+                "exclusion_reason": None,
+            },
+            {
+                "candidate_id": "protected-1",
+                "resource": {
+                    "provider": "azure",
+                    "resource_name": "prod-cache",
+                    "normalized_resource_type": "database",
+                    "environment": "production",
+                    "estimated_monthly_cost": 90.0,
+                },
+                "candidate_score": 0.87,
+                "signals": [{"description": "Production dependency found.", "supports_ghost_hypothesis": False}],
+                "requires_investigation": True,
+                "exclusion_reason": "active_dependency",
+            },
+            {
+                "candidate_id": "context-1",
+                "resource": {
+                    "provider": "gcp",
+                    "resource_name": "ownerless-ip",
+                    "normalized_resource_type": "public_ip",
+                    "environment": "dev",
+                    "estimated_monthly_cost": 50.0,
+                },
+                "candidate_score": 0.62,
+                "signals": [{"description": "Owner tag is missing.", "supports_ghost_hypothesis": True}],
+                "requires_investigation": True,
+                "exclusion_reason": None,
+            },
+        ],
+    }
+
+    rendered = render_frontend({"run": None, "reviews": [], "hunt": hunt, "mode": "cloud-hunt"})
+    tags = rendered["cloudCardTags"]
+    tag_text = " ".join(tag["text"] for tag in tags)
+    tag_classes = " ".join(tag["className"] for tag in tags)
+    card_text = " ".join(rendered["cloudCards"])
+
+    assert "High-confidence ghost resource" in tag_text
+    assert "Protected resource" in tag_text
+    assert "Needs more context" in tag_text
+    assert "Pending human review" in tag_text
+    assert "status-high-confidence" in tag_classes
+    assert "status-protected" in tag_classes
+    assert "status-needs-context" in tag_classes
+    assert "status-awaiting-review" in tag_classes
+    assert all(tag["tagName"] == "SPAN" for tag in tags)
+    assert "active_dependency" not in card_text
+    assert "[object Object]" not in card_text
+    assert any("Open Review" in card for card in rendered["cloudCards"])
+    assert all(chip["tagName"] == "BUTTON" for chip in rendered["filterChips"])
+    assert any(chip["filter"] == "all" and chip["ariaPressed"] == "true" and "filter-chip-active" in chip["className"] for chip in rendered["filterChips"])
+    assert rendered["filter-count-all"]["text"] == "3"
+    assert rendered["filter-count-high-confidence"]["text"] == "1"
+    assert rendered["filter-count-protected"]["text"] == "1"
+    assert rendered["filter-count-needs-context"]["text"] == "1"
+    assert rendered["filter-count-awaiting-review"]["text"] == "2"
+
+    protected_only = render_frontend({"run": None, "reviews": [], "hunt": hunt, "mode": "cloud-hunt", "cloud_filter": "protected"})
+    assert any(chip["filter"] == "protected" and chip["ariaPressed"] == "true" and "filter-chip-active" in chip["className"] for chip in protected_only["filterChips"])
+    assert len(protected_only["cloudCards"]) == 1
+    assert "Protected resource" in protected_only["cloudCards"][0]
