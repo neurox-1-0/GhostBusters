@@ -26,6 +26,8 @@ def test_root_serves_agent_console() -> None:
     assert "Approval creates a remediation pull request only." in response.text
     assert "Open Technical Audit" in response.text
     assert "Cloud Hunt" in response.text
+    assert "Ask GhostBusters" in response.text
+    assert "It cannot approve actions or modify infrastructure" in response.text
     assert "[object Object]" not in response.text
 
 
@@ -62,6 +64,8 @@ def test_javascript_asset_served() -> None:
     assert "stageDefinitions" in response.text
     assert "safeObject" in response.text
     assert "ensureCompatibleDom" in response.text
+    assert "assistantSuggestions" in response.text
+    assert "Deterministic fallback" in response.text
     assert "Deterministic Safety Policy" in response.text
     assert "More Evidence Required" in response.text
     assert "AI-assisted planning" in response.text

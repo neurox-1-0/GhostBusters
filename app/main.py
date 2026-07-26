@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import (
+    AskGhostBustersRequest, AskGhostBustersResponse,
     CloudHuntRequest, HealthResponse, HumanReviewRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
 )
@@ -24,6 +25,7 @@ from core.workflow_service import (
     workflow_service,
 )
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntNotFoundError, cloud_hunt_service
+from core.assistant_service import AssistantValidationError, assistant_service
 from integrations.github_client import GitHubAPIError
 from integrations.github_webhook import repository_allowed, verify_signature
 from integrations.terraform_runner import TerraformAnalysisError, parse_github_terraform_change, select_terraform_files
@@ -34,6 +36,8 @@ static_path = Path(__file__).resolve().parent.parent / settings.static_dir
 webhook_deduplicator = build_webhook_deduplicator()
 app.mount("/static", StaticFiles(directory=static_path), name="static")
 cloud_hunt_service.workflow_service = workflow_service
+assistant_service.workflow = workflow_service
+assistant_service.cloud_hunt = cloud_hunt_service
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -96,6 +100,16 @@ def reset_runs() -> dict[str, str]:
     result = workflow_service.reset()
     cloud_hunt_service.reset()
     return result
+
+
+@app.post("/api/assistant/ask", response_model=AskGhostBustersResponse)
+def ask_ghostbusters(request: AskGhostBustersRequest) -> AskGhostBustersResponse:
+    try:
+        return assistant_service.ask(request)
+    except AssistantValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (RunNotFoundError, CloudHuntNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=f"Case not found: {exc}") from exc
 
 
 @app.get("/api/cloud/providers")

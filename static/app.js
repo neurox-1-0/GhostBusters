@@ -10,6 +10,7 @@ const state = {
   hunt: null,
   reviews: [],
   selectedReviewContext: null,
+  assistantContext: "product_help",
 };
 
 const stageDefinitions = [
@@ -49,6 +50,9 @@ const requiredElementIds = [
   "recommendation-summary",
   "technical-content",
   "technical-empty-state",
+  "assistant-backdrop",
+  "assistant-question-input",
+  "assistant-answer",
 ];
 
 const demoScenarioLabels = {
@@ -283,6 +287,13 @@ function isDemoRun(run) {
 
 function hasSelectedCase() {
   return Boolean(state.run);
+}
+
+function selectedAssistantCaseId(context = state.assistantContext) {
+  if (["pr_review", "technical_audit"].includes(context) && state.run?.id) return state.run.id;
+  if (["cloud_hunt", "approvals"].includes(context) && state.selectedReviewContext?.runId) return state.selectedReviewContext.runId;
+  if (state.run?.id && context !== "product_help") return state.run.id;
+  return null;
 }
 
 async function api(path, options = {}) {
@@ -955,8 +966,16 @@ function renderAIDecisions() {
 function renderAll() {
   $("pr-empty-state").hidden = hasSelectedCase();
   $("case-view").hidden = !hasSelectedCase();
+  renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
   renderCloudHunt(); renderReviewQueue();
+}
+
+function renderAssistantTriggers() {
+  $("ask-case-button").hidden = !hasSelectedCase();
+  $("ask-technical-button").hidden = !hasSelectedCase();
+  $("ask-cloud-button").hidden = !(state.hunt || state.selectedReviewContext?.type === "cloud_hunt");
+  $("ask-approvals-button").hidden = !state.reviews.length;
 }
 
 function switchMode(mode) {
@@ -1054,6 +1073,94 @@ function renderReviewQueue() {
   });
 }
 
+const assistantSuggestions = {
+  pr_review: ["Why do you recommend this?", "Which evidence affected confidence?", "What happens if I approve?", "Were any conflicts detected?", "Did GhostBusters change anything?"],
+  cloud_hunt: ["Why was this resource flagged?", "Why is this resource protected?", "What evidence is missing?", "What action is being recommended?"],
+  approvals: ["Why is this waiting for approval?", "What are the safety conditions?", "What happens after approval?"],
+  technical_audit: ["Which tools were selected and why?", "Were retries used?", "Which policy rules were evaluated?", "What evidence was missing?"],
+  product_help: ["What is PR Reviews?", "What is Cloud Hunt?", "What is Approvals?", "Does GhostBusters run Terraform?"],
+};
+
+function assistantContextLabel(context) {
+  const caseId = selectedAssistantCaseId(context);
+  if (context === "pr_review") return caseId ? `Current PR case: ${caseId}` : "PR Reviews";
+  if (context === "cloud_hunt") return caseId ? `Current Cloud Hunt case: ${caseId}` : "Cloud Hunt";
+  if (context === "approvals") return caseId ? `Current approval case: ${caseId}` : "Approvals";
+  if (context === "technical_audit") return caseId ? `Technical Audit case: ${caseId}` : "Technical Audit";
+  return "Product help";
+}
+
+function openAssistant(context) {
+  state.assistantContext = context || "product_help";
+  $("assistant-backdrop").hidden = false;
+  $("assistant-context-label").textContent = assistantContextLabel(state.assistantContext);
+  setMessage("assistant-message", "");
+  renderAssistantSuggestions();
+  $("assistant-question-input").focus();
+}
+
+function closeAssistant() {
+  $("assistant-backdrop").hidden = true;
+}
+
+function renderAssistantSuggestions() {
+  const node = $("assistant-suggestions");
+  clear(node);
+  (assistantSuggestions[state.assistantContext] || assistantSuggestions.product_help).forEach((question) => {
+    const button = el("button", "secondary compact", question);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      $("assistant-question-input").value = question;
+      askAssistant();
+    });
+    node.appendChild(button);
+  });
+}
+
+async function askAssistant() {
+  const question = $("assistant-question-input").value.trim();
+  if (!question) return setMessage("assistant-message", "Enter a question first.");
+  const askButton = $("assistant-ask-button");
+  askButton.disabled = true;
+  askButton.textContent = "Asking...";
+  setMessage("assistant-message", "Reading recorded data...", true);
+  try {
+    const caseId = selectedAssistantCaseId();
+    const payload = { question, context: state.assistantContext };
+    if (caseId) payload.case_id = caseId;
+    const response = await api("/api/assistant/ask", { method: "POST", body: JSON.stringify(payload) });
+    renderAssistantAnswer(response);
+    setMessage("assistant-message", "", true);
+  } catch (error) {
+    clear($("assistant-answer"));
+    setMessage("assistant-message", error.message);
+  } finally {
+    askButton.disabled = false;
+    askButton.textContent = "Ask";
+  }
+}
+
+function renderAssistantAnswer(response) {
+  const node = $("assistant-answer");
+  clear(node);
+  const tagRow = el("div", "tag-row");
+  const typeTag = el("span", "signal-tag info", labelFor(response.answer_type));
+  const providerTag = el("span", `signal-tag ${response.fallback_used ? "warning" : "success"}`, response.fallback_used ? "Deterministic fallback" : labelFor(response.provider));
+  append(tagRow, typeTag, providerTag);
+  append(node, tagRow, el("p", "assistant-answer-text", response.answer || "That information is not available in the current case."));
+  if (response.evidence_sources?.length) {
+    const sources = el("div", "assistant-source-row");
+    response.evidence_sources.forEach((source) => sources.appendChild(el("span", "context-label", labelFor(source))));
+    node.appendChild(sources);
+  }
+  if (response.supporting_sections?.length) {
+    node.appendChild(el("p", "muted", `Supporting sections: ${response.supporting_sections.map(labelFor).join(", ")}`));
+  }
+  if (response.limitations?.length) {
+    node.appendChild(el("p", "muted", `Limitations: ${response.limitations.map(formatValue).join("; ")}`));
+  }
+}
+
 if (typeof window !== "undefined") {
   window.__ghostbustersTestHooks = {
     state,
@@ -1073,6 +1180,8 @@ if (typeof window !== "undefined") {
     plainRecommendationTitle,
     policyStatusLabel,
     runStatusLabel,
+    openAssistant,
+    renderAssistantAnswer,
   };
 }
 
@@ -1098,6 +1207,18 @@ function bindEvents() {
   $("cancel-review-button").addEventListener("click", closeReviewForm);
   $("start-cloud-hunt-button").addEventListener("click", startCloudHunt);
   $("refresh-review-queue-button").addEventListener("click", loadReviewQueue);
+  $("ask-case-button").addEventListener("click", () => openAssistant("pr_review"));
+  $("ask-cloud-button").addEventListener("click", () => openAssistant("cloud_hunt"));
+  $("ask-approvals-button").addEventListener("click", () => openAssistant("approvals"));
+  $("ask-technical-button").addEventListener("click", () => openAssistant("technical_audit"));
+  $("assistant-close-button").addEventListener("click", closeAssistant);
+  $("assistant-clear-button").addEventListener("click", () => { $("assistant-question-input").value = ""; clear($("assistant-answer")); setMessage("assistant-message", ""); });
+  $("assistant-ask-button").addEventListener("click", askAssistant);
+  $("assistant-question-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) askAssistant();
+    if (event.key === "Escape") closeAssistant();
+  });
+  $("assistant-backdrop").addEventListener("click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
   document.querySelectorAll(".audit-section").forEach((section) => {
     section.addEventListener("toggle", () => {
       if (!section.open) return;

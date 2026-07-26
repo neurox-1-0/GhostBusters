@@ -33,11 +33,15 @@ class Settings:
     external_call_timeout_seconds: float = float(os.getenv("EXTERNAL_CALL_TIMEOUT_SECONDS", "5"))
     ai_enabled: bool = os.getenv("AI_ENABLED", "false").lower() in {"1", "true", "yes"}
     ai_provider: str = os.getenv("AI_PROVIDER", "gemini")
+    gemini_enabled: bool = os.getenv("GEMINI_ENABLED", os.getenv("AI_ENABLED", "false")).lower() in {"1", "true", "yes"}
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     gemini_fallback_model: str = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
     gemini_api_version: str = os.getenv("GEMINI_API_VERSION", "v1")
-    gemini_timeout_seconds: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "10"))
+    gemini_timeout_seconds: float = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "20"))
+    gemini_max_retries: int = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+    gemini_assisted_planning_enabled: bool = os.getenv("GEMINI_ASSISTED_PLANNING_ENABLED", os.getenv("AI_ENABLED", "false")).lower() in {"1", "true", "yes"}
+    gemini_assistant_enabled: bool = os.getenv("GEMINI_ASSISTANT_ENABLED", "false").lower() in {"1", "true", "yes"}
     gemini_max_planning_steps: int = int(os.getenv("GEMINI_MAX_PLANNING_STEPS", "6"))
     gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
     ai_deterministic_fallback_enabled: bool = os.getenv(

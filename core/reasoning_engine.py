@@ -18,6 +18,8 @@ from core.alternative_generator import generate_alternatives
 from core.confidence import calculate_confidence
 from core.conflict_detector import detect_conflicts
 from core.conftest_policy import ConftestPolicyEvaluator, default_policy_evaluator
+from core.gemini_explanation import add_gemini_explanation
+from core.gemini_planning import merge_gemini_plan
 from core.investigator import collect_evidence
 from core.planner import create_investigation_plan
 from core.policy_engine import evaluate_policy
@@ -64,6 +66,9 @@ def _build_decision(
     policy_evaluator: ConftestPolicyEvaluator | None = None,
     run_id: UUID | None = None,
     planning_result: AIPlannerResult | None = None,
+    gemini_audit_events: list[dict] | None = None,
+    configuration: Settings | None = None,
+    ai_client=None,
 ) -> DecisionRecord:
     selected_policy_evaluator = policy_evaluator or default_policy_evaluator
     conflicts = detect_conflicts(evidence)
@@ -101,7 +106,7 @@ def _build_decision(
     if preferred.action == "request_evidence" and policy.blocking_reasons:
         summary = f"{summary} Clarification needed: {'; '.join(policy.blocking_reasons)}"
 
-    return DecisionRecord(
+    decision = DecisionRecord(
         goal=goal,
         resource_id=resource.address,
         investigation_plan=plan,
@@ -122,7 +127,12 @@ def _build_decision(
         unresolved_questions=planning_result.unresolved_questions if planning_result else [],
         human_question=planning_result.human_question if planning_result else None,
         termination_reason=planning_result.termination_reason if planning_result else None,
+        gemini_audit_events=gemini_audit_events or [],
     )
+    if configuration is not None:
+        decision, explanation_event = add_gemini_explanation(decision, configuration=configuration, client=ai_client)
+        decision.gemini_audit_events.append(explanation_event)
+    return decision
 
 
 def analyze_resource(
@@ -146,10 +156,23 @@ def analyze_resource(
             policy_evaluator=policy_evaluator, run_id=run_id,
         )
 
+    gemini_merge = merge_gemini_plan(
+        goal, scenario, resource, deterministic_plan, tool_registry,
+        configuration=configuration, client=ai_client,
+    )
+    deterministic_plan = gemini_merge.plan
     planning_result = run_agent_investigation(
         goal, scenario, resource, tool_registry, deterministic_plan,
         configuration=configuration, retry_executor=executor, ai_client=ai_client,
     )
+    if gemini_merge.decisions:
+        planning_result.ai_decisions = [
+            *gemini_merge.decisions,
+            *[
+                item.model_copy(update={"sequence_number": index + 1 + len(gemini_merge.decisions)})
+                for index, item in enumerate(planning_result.ai_decisions)
+            ],
+        ]
     final_plan = deterministic_plan.model_copy(
         deep=True,
         update={
@@ -162,7 +185,8 @@ def analyze_resource(
     return _build_decision(
         goal, scenario, resource, final_plan, planning_result.evidence, planning_result.tool_executions,
         _missing_from_evidence(planning_result.evidence, planning_result.unresolved_questions), policy_evaluator=policy_evaluator,
-        run_id=run_id, planning_result=planning_result,
+        run_id=run_id, planning_result=planning_result, gemini_audit_events=gemini_merge.audit_events,
+        configuration=configuration, ai_client=ai_client,
     )
 
 

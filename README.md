@@ -136,10 +136,25 @@ The default is deterministic-only mode and does not require internet access or a
 ```dotenv
 AI_ENABLED=false
 AI_PROVIDER=gemini
+GEMINI_ENABLED=false
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_TIMEOUT_SECONDS=20
+GEMINI_MAX_RETRIES=2
+GEMINI_ASSISTED_PLANNING_ENABLED=false
+GEMINI_ASSISTANT_ENABLED=false
 AI_DETERMINISTIC_FALLBACK_ENABLED=true
 ```
 
 The UI and audit trail record the actual planning mode: `deterministic_only`, `deterministic_fallback`, `gemini_primary`, `gemini_fallback_model`, or `mock_gemini`. Gemini failures, malformed responses, unsafe proposals, unknown tools, and step-limit exhaustion return to the deterministic planner without weakening verifier, policy, or human-review controls.
+
+The project uses the official `google-genai` package and imports it with `from google import genai`. Install it with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install google-genai
+```
+
+As of this implementation, the local SDK is `google-genai 2.13.0`. The default model is `gemini-3.5-flash-lite`, a supported low-latency Gemini API model. Override it with `GEMINI_MODEL` when needed. Google lists current Gemini API models at `https://ai.google.dev/gemini-api/docs/models`.
 
 ### Mock Gemini demo
 
@@ -160,8 +175,10 @@ Install the official `google-genai` package from `requirements.txt`, then set th
 ```powershell
 $env:AI_ENABLED="true"
 $env:AI_PROVIDER="gemini"
+$env:GEMINI_ENABLED="true"
+$env:GEMINI_ASSISTED_PLANNING_ENABLED="true"
 $env:GEMINI_API_KEY="<local environment value>"
-$env:GEMINI_MODEL="gemini-3.5-flash"
+$env:GEMINI_MODEL="gemini-3.5-flash-lite"
 $env:GEMINI_FALLBACK_MODEL="gemini-2.5-flash-lite"
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
@@ -172,7 +189,27 @@ The primary model is attempted first. When it is unavailable or permission-ineli
 
 Only the objective, a sanitized Terraform resource summary, registered tool descriptions, evidence summaries, unresolved questions, and deterministic safety constraints are eligible for the AI prompt. Hidden chain-of-thought, credentials, database URLs, Redis URLs, webhook secrets, tokens, unrelated audit history, and confidential provider data are not sent.
 
+Gemini-assisted planning receives minimized, redacted context: objective, provider, Terraform resource type/address, before/after configuration, environment, action type, tags, available read-only tools, known evidence categories, missing fields, and deterministic safety constraints. Gemini explanations receive recorded recommendation facts, evidence summaries, verifier/policy summaries, missing evidence, and safety boundaries. Ask GhostBusters receives only the question plus read-only case/product-help data selected by the application.
+
+GhostBusters never sends `.env` contents, GitHub tokens, cloud credentials, webhook secrets, database passwords, raw database records, arbitrary SQL, unrestricted repository contents, unrelated files, or raw secrets. `core/redaction.py` redacts sensitive keys and likely secret values before model-bound payloads and audit metadata.
+
 Do not send confidential company infrastructure or secrets through a free-tier model. Use only controlled demo data unless the organization has approved the provider and data-handling terms.
+
+### Ask GhostBusters
+
+`POST /api/assistant/ask` powers the read-only **Ask GhostBusters** panel in PR Reviews, Cloud Hunt, Approvals, and Technical Audit. It can answer questions about the selected case and stored product behavior, including recommendation reasons, evidence, conflicts, confidence, protected resources, policy blocks, workflow stage, Cloud Hunt, Approvals, Technical Audit, Demo Mode, remediation PRs, GitHub integration, deterministic fallback, and Gemini assistance.
+
+Ask GhostBusters is read-only. It cannot approve, reject, waive, create pull requests, merge pull requests, run Terraform, modify GitHub, or change cloud resources. Case answers are grounded only in narrow backend read functions and product-help content stored in `core/product_help.json`. Product-help questions do not require a case ID; case-specific questions do.
+
+Enable Gemini wording for the assistant with:
+
+```powershell
+$env:GEMINI_ENABLED="true"
+$env:GEMINI_ASSISTANT_ENABLED="true"
+$env:GEMINI_API_KEY="<local environment value>"
+```
+
+When Gemini is disabled, missing a key, unavailable, times out, or returns invalid output, the assistant still returns deterministic fallback answers. Tests use the mock provider and do not make live Gemini calls. To disable Gemini completely, set `AI_ENABLED=false`, `GEMINI_ENABLED=false`, `GEMINI_ASSISTED_PLANNING_ENABLED=false`, and `GEMINI_ASSISTANT_ENABLED=false`.
 
 ### AI troubleshooting and verification
 

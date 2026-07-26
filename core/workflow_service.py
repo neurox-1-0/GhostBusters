@@ -538,6 +538,14 @@ class WorkflowService:
         return missing
 
     def _copy_decision_audit(self, run: WorkflowRun, decision: DecisionRecord) -> None:
+        for event in decision.gemini_audit_events:
+            append_audit_event(
+                run,
+                event_type=event.get("event_type", "gemini_event"),
+                actor="agent",
+                summary=event.get("summary", "Gemini event recorded."),
+                details=event.get("details", {}),
+            )
         self._append_ai_audit(run, decision)
         append_audit_event(run, event_type="investigation_plan_created", actor="agent", summary="Investigation plan created.", details={"selected_tools": decision.investigation_plan.selected_tools})
         for tool in decision.investigation_plan.selected_tools:

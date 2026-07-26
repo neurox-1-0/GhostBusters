@@ -54,6 +54,7 @@
             </div>
             <div class="toolbar-actions">
               <button id="case-refresh-button" class="icon-button" type="button" title="Refresh current run" aria-label="Refresh current run">&#8635;</button>
+              <button id="ask-case-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button>
               <button id="case-launch-demo-button" class="secondary compact" type="button">Launch Demo</button>
             </div>
           </div>
@@ -220,7 +221,7 @@
       <section id="technical-view" hidden aria-labelledby="technical-title">
         <div class="technical-header">
           <div><p class="kicker">Technical Audit View</p><h2 id="technical-title">Complete recorded run data</h2><p>All backend audit data is preserved in sequence for engineering review.</p></div>
-          <span class="status-chip light" id="technical-run-id">Run ID: not recorded</span>
+          <div class="toolbar-actions"><button id="ask-technical-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><span class="status-chip light" id="technical-run-id">Run ID: not recorded</span></div>
         </div>
         <section class="panel technical-empty-state" id="technical-empty-state">
           <h3>No case selected</h3>
@@ -248,7 +249,7 @@
       <section id="cloud-hunt-view" class="mode-view" hidden aria-labelledby="cloud-hunt-title">
         <div class="mode-header panel">
           <div><p class="kicker">Provider-independent discovery</p><h2 id="cloud-hunt-title">Cloud Hunt</h2><p>Scan fixture-backed AWS, Azure, and Google Cloud inventories for suspicious waste while clearly separating protected resources from likely ghost resources.</p></div>
-          <span class="mode-badge">Fixture-backed</span>
+          <div class="toolbar-actions"><button id="ask-cloud-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><span class="mode-badge">Fixture-backed</span></div>
         </div>
         <section class="panel hunt-start-panel">
           <div class="hunt-controls"><label for="cloud-provider-scope">Provider scope</label><select id="cloud-provider-scope"><option value="multi_cloud">Multi-cloud</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">Google Cloud</option></select><button id="start-cloud-hunt-button" type="button">Start Cloud Hunt</button></div>
@@ -260,7 +261,7 @@
       </section>
 
       <section id="review-queue-view" class="mode-view" hidden aria-labelledby="review-queue-title">
-        <div class="mode-header panel"><div><p class="kicker">Human control</p><h2 id="review-queue-title">Approvals</h2><p>Each card highlights the case, recommendation, savings, policy state, and current status without exposing backend labels.</p></div><button id="refresh-review-queue-button" class="secondary" type="button">Refresh Queue</button></div>
+        <div class="mode-header panel"><div><p class="kicker">Human control</p><h2 id="review-queue-title">Approvals</h2><p>Each card highlights the case, recommendation, savings, policy state, and current status without exposing backend labels.</p></div><div class="toolbar-actions"><button id="ask-approvals-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><button id="refresh-review-queue-button" class="secondary" type="button">Refresh Queue</button></div></div>
         <section class="panel"><div class="queue-grid" id="review-queue-list"><p class="muted">No review cases loaded.</p></div></section>
       </section>
     </main>
@@ -291,6 +292,26 @@
           <button id="cancel-demo-button" class="secondary" type="button">Cancel</button>
         </div>
       </section>
+    </div>
+
+    <div class="assistant-backdrop" id="assistant-backdrop" hidden>
+      <aside class="assistant-panel" role="dialog" aria-modal="true" aria-labelledby="assistant-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Read-only assistant</p>
+            <h2 id="assistant-title">Ask GhostBusters</h2>
+          </div>
+          <button id="assistant-close-button" class="icon-button" type="button" aria-label="Close Ask GhostBusters">&times;</button>
+        </div>
+        <p class="assistant-context" id="assistant-context-label">Product help</p>
+        <p class="safety-callout">Ask GhostBusters can explain recorded evidence and product behavior. It cannot approve actions or modify infrastructure.</p>
+        <div class="assistant-suggestions" id="assistant-suggestions"></div>
+        <label for="assistant-question-input">Question</label>
+        <textarea id="assistant-question-input" rows="3" maxlength="600" placeholder="Ask about the current case or GhostBusters behavior"></textarea>
+        <div class="start-actions"><button id="assistant-ask-button" type="button">Ask</button><button id="assistant-clear-button" class="secondary" type="button">Clear</button></div>
+        <p class="message" id="assistant-message" role="status"></p>
+        <div id="assistant-answer" class="assistant-answer" aria-live="polite"></div>
+      </aside>
     </div>
 
     <script src="/static/app.js?v=judge-v5" defer></script>

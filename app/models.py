@@ -61,6 +61,9 @@ AIPlanningMode = Literal[
 AIDecisionPurpose = Literal[
     "interpret_goal", "choose_next_tool", "interpret_evidence", "decide_next_step"
 ]
+AskGhostBustersAnswerType = Literal[
+    "recorded_fact", "explanation", "product_help", "unavailable", "action_not_allowed"
+]
 
 
 class RunStatus(StrEnum):
@@ -243,6 +246,47 @@ class InvestigationPlan(AppModel):
     planning_notes: list[str] = Field(default_factory=list)
 
 
+class GeminiInvestigationQuestion(AppModel):
+    id: str = Field(max_length=64)
+    question: str = Field(max_length=240)
+    required_evidence_sources: list[str] = Field(default_factory=list, max_length=5)
+    reason: str = Field(max_length=240)
+
+
+class GeminiInvestigationPlan(AppModel):
+    summary: str = Field(max_length=360)
+    questions: list[GeminiInvestigationQuestion] = Field(default_factory=list, max_length=6)
+    selected_tools: list[str] = Field(default_factory=list, max_length=8)
+    skipped_tools: list[str] = Field(default_factory=list, max_length=8)
+    planning_notes: list[str] = Field(default_factory=list, max_length=6)
+    uncertainties: list[str] = Field(default_factory=list, max_length=6)
+
+
+class GeminiRecommendationExplanation(AppModel):
+    headline: str = Field(max_length=120)
+    summary: str = Field(max_length=600)
+    evidence_points: list[str] = Field(default_factory=list, max_length=5)
+    uncertainty_points: list[str] = Field(default_factory=list, max_length=3)
+    safety_points: list[str] = Field(default_factory=list, max_length=3)
+    next_step: str = Field(max_length=240)
+
+
+class AskGhostBustersRequest(AppModel):
+    question: str = Field(min_length=1, max_length=600)
+    case_id: UUID | None = None
+    context: Literal["pr_review", "cloud_hunt", "approvals", "technical_audit", "product_help"] = "product_help"
+
+
+class AskGhostBustersResponse(AppModel):
+    answer: str = Field(max_length=1200)
+    answer_type: AskGhostBustersAnswerType
+    supporting_sections: list[str] = Field(default_factory=list, max_length=8)
+    evidence_sources: list[str] = Field(default_factory=list, max_length=8)
+    limitations: list[str] = Field(default_factory=list, max_length=6)
+    provider: str
+    fallback_used: bool = False
+
+
 class AIPlannerResult(AppModel):
     planning_mode: AIPlanningMode
     objective_interpretation: ObjectiveInterpretation
@@ -337,12 +381,14 @@ class DecisionRecord(AppModel):
     policy_result: PolicyResult
     final_status: FinalStatus
     final_summary: str
+    gemini_explanation: GeminiRecommendationExplanation | None = None
     planning_mode: AIPlanningMode = "deterministic_only"
     objective_interpretation: ObjectiveInterpretation | None = None
     ai_decisions: list[AIDecisionRecord] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)
     human_question: str | None = None
     termination_reason: str | None = None
+    gemini_audit_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class StartRunRequest(AppModel):

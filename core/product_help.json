@@ -1,0 +1,15 @@
+{
+  "overview": "GhostBusters is a FinOps decision-support system that analyzes Terraform pull-request and fixture-backed cloud inventory cases, gathers recorded evidence, evaluates deterministic safety policy, and requires human approval before remediation pull requests.",
+  "pr_reviews": "PR Reviews show a selected Terraform review case, including the detected infrastructure change, evidence, confidence, recommendation, policy result, and human review controls.",
+  "cloud_hunt": "Cloud Hunt scans controlled inventory fixtures for suspicious waste signals, separates likely ghost resources from protected resources, and creates review cases without changing cloud resources.",
+  "approvals": "Approvals is the human review queue. Reviewers can inspect pending cases and use backend-controlled approval, rejection, evidence request, context, modification, or waiver workflows where allowed.",
+  "technical_audit": "Technical Audit shows recorded run data: audit events, planning decisions, investigation questions, tool execution, evidence, conflicts, verifier checks, policy rules, retries, human history, and runtime metadata.",
+  "demo_mode": "Demo Mode runs prepared scenarios with fixture evidence. It does not require live GitHub or cloud credentials and does not change repositories or infrastructure.",
+  "human_approval": "Human approval is mandatory before GhostBusters creates a remediation pull request. Approval does not apply Terraform, merge pull requests, or directly modify cloud resources.",
+  "remediation_pr": "A remediation pull request is either simulated for demos and Cloud Hunt or created through the configured GitHub integration after deterministic validation and human approval.",
+  "real_vs_fixture": "Real GitHub cases are created from authenticated Terraform pull-request webhooks. Fixture-backed cases use prepared local evidence for demos and tests.",
+  "safety_boundaries": "GhostBusters does not run terraform apply, merge pull requests, approve recommendations automatically, override policy, delete resources, resize resources, stop resources, or write to GitHub without the existing remediation service controls.",
+  "github_integration": "The GitHub integration reads allowed pull-request metadata and changed Terraform files. It uses explicit repository allowlisting and webhook signature verification when enabled.",
+  "deterministic_fallback": "If Gemini is disabled, unavailable, times out, or returns invalid data, GhostBusters continues with deterministic planning, evidence collection, verifier checks, policy evaluation, and human approval.",
+  "gemini_assistance": "Gemini can optionally suggest investigation questions, explain recorded recommendations, or help answer read-only questions from supplied case data. It cannot make final safety decisions or execute actions."
+}

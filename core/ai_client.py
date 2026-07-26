@@ -13,8 +13,15 @@ from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.models import AgentNextAction, ObjectiveInterpretation
+from app.models import (
+    AgentNextAction,
+    AskGhostBustersResponse,
+    GeminiInvestigationPlan,
+    GeminiRecommendationExplanation,
+    ObjectiveInterpretation,
+)
 from app.settings import Settings, settings
+from core.redaction import redact_model_payload
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -43,6 +50,12 @@ class StructuredAIClient(Protocol):
     def interpret_objective(self, payload: dict[str, Any]) -> AICallResult: ...
 
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult: ...
+
+    def propose_investigation_plan(self, payload: dict[str, Any]) -> AICallResult: ...
+
+    def explain_recommendation(self, payload: dict[str, Any]) -> AICallResult: ...
+
+    def answer_assistant_question(self, payload: dict[str, Any]) -> AICallResult: ...
 
 
 def _safe_category(exc: BaseException) -> str:
@@ -136,26 +149,56 @@ class GeminiAIClient:
         for index, model in enumerate(dict.fromkeys(models)):
             if not model:
                 continue
-            try:
-                result = self._generate(model, schema, prompt)
-                self.active_model = result.model
-                self.active_mode = result.planning_mode
-                return result
-            except AIClientError as exc:
-                last_error = exc
-                can_try_fallback = exc.category in {"model_unavailable", "permission_denied"}
-                if index == 0 and can_try_fallback:
-                    continue
-                raise
+            for attempt in range(max(1, self.configuration.gemini_max_retries + 1)):
+                try:
+                    result = self._generate(model, schema, prompt)
+                    result.usage_metadata["retry_count"] = attempt
+                    self.active_model = result.model
+                    self.active_mode = result.planning_mode
+                    return result
+                except AIClientError as exc:
+                    last_error = exc
+                    can_try_fallback = exc.category in {"model_unavailable", "permission_denied"}
+                    retryable = exc.category in {"timeout", "rate_limited", "provider_error"}
+                    if retryable and attempt < self.configuration.gemini_max_retries:
+                        time.sleep(min(0.25 * (2 ** attempt), 2.0))
+                        continue
+                    if index == 0 and can_try_fallback:
+                        break
+                    raise
         raise last_error or AIClientError("model_unavailable", "No Gemini model is configured.")
 
     def interpret_objective(self, payload: dict[str, Any]) -> AICallResult:
-        prompt = json.dumps({"task": "interpret_objective", "input": payload}, sort_keys=True)
+        prompt = json.dumps({"task": "interpret_objective", "input": redact_model_payload(payload)}, sort_keys=True)
         return self._call(ObjectiveInterpretation, prompt)
 
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult:
-        prompt = json.dumps({"task": "propose_next_action", "input": payload}, sort_keys=True)
+        prompt = json.dumps({"task": "propose_next_action", "input": redact_model_payload(payload)}, sort_keys=True)
         return self._call(AgentNextAction, prompt)
+
+    def propose_investigation_plan(self, payload: dict[str, Any]) -> AICallResult:
+        prompt = json.dumps({
+            "task": "propose_investigation_plan",
+            "instructions": "Return only a safe investigation plan. Do not authorize actions or request mutation.",
+            "input": redact_model_payload(payload),
+        }, sort_keys=True)
+        return self._call(GeminiInvestigationPlan, prompt)
+
+    def explain_recommendation(self, payload: dict[str, Any]) -> AICallResult:
+        prompt = json.dumps({
+            "task": "explain_recommendation",
+            "instructions": "Explain only recorded facts, interpretation, missing context, and human next step.",
+            "input": redact_model_payload(payload),
+        }, sort_keys=True)
+        return self._call(GeminiRecommendationExplanation, prompt)
+
+    def answer_assistant_question(self, payload: dict[str, Any]) -> AICallResult:
+        prompt = json.dumps({
+            "task": "ask_ghostbusters",
+            "instructions": "Answer only from supplied read-only tool results and product help. Decline actions.",
+            "input": redact_model_payload(payload),
+        }, sort_keys=True)
+        return self._call(AskGhostBustersResponse, prompt)
 
 
 class MockGeminiClient:
@@ -216,9 +259,62 @@ class MockGeminiClient:
             return self._result(AgentNextAction(action="request_human_context", reason="Evidence is complete enough to expose a genuine ambiguity for review.", question_being_answered="Is the proposed change safe in the current business context?", expected_information="Owner context that resolves the remaining ambiguity.", human_question="Can the owner confirm the workload context and whether this change is safe to apply?", confidence=0.76), "propose_next_action")
         return self._result(AgentNextAction(action="finish_investigation", reason="The mandatory evidence sources have been checked.", question_being_answered="Is evidence collection complete?", expected_information="No further mandatory evidence is missing.", confidence=0.88), "propose_next_action")
 
+    def propose_investigation_plan(self, payload: dict[str, Any]) -> AICallResult:
+        available = payload.get("available_read_only_tools", payload.get("available_tools", []))
+        tools = [tool for tool in available if tool in {"pricing", "utilization", "jira", "git_activity", "dependencies"}]
+        selected = tools[:3] or tools
+        questions = [
+            {
+                "id": f"gemini_{tool}",
+                "question": f"What does {tool} evidence say about the recommendation?",
+                "required_evidence_sources": [tool],
+                "reason": f"{tool} is a registered read-only evidence source.",
+            }
+            for tool in selected
+        ]
+        return self._result(
+            GeminiInvestigationPlan(
+                summary="Mock Gemini suggested supplemental evidence questions.",
+                questions=questions,
+                selected_tools=selected,
+                skipped_tools=[],
+                planning_notes=["Deterministic required tools remain authoritative."],
+                uncertainties=["Business context may still need human review."],
+            ),
+            "propose_investigation_plan",
+        )
+
+    def explain_recommendation(self, payload: dict[str, Any]) -> AICallResult:
+        return self._result(
+            GeminiRecommendationExplanation(
+                headline="Recorded recommendation explained",
+                summary=str(payload.get("final_summary") or "GhostBusters completed a deterministic review."),
+                evidence_points=[str(item)[:180] for item in payload.get("evidence_points", [])[:5]],
+                uncertainty_points=[str(item)[:180] for item in payload.get("uncertainty_points", [])[:3]],
+                safety_points=["Human approval remains required before any remediation pull request."],
+                next_step="Use the Human Review controls for approval or request more evidence.",
+            ),
+            "explain_recommendation",
+        )
+
+    def answer_assistant_question(self, payload: dict[str, Any]) -> AICallResult:
+        fallback = payload.get("fallback_answer") or {}
+        return self._result(
+            AskGhostBustersResponse(
+                answer=str(fallback.get("answer") or "That information is not available in the current case."),
+                answer_type=fallback.get("answer_type") or "unavailable",
+                supporting_sections=list(fallback.get("supporting_sections") or []),
+                evidence_sources=list(fallback.get("evidence_sources") or []),
+                limitations=list(fallback.get("limitations") or []),
+                provider="mock",
+                fallback_used=False,
+            ),
+            "answer_assistant_question",
+        )
+
 
 def build_ai_client(configuration: Settings = settings) -> StructuredAIClient | None:
-    if not configuration.ai_enabled:
+    if not (configuration.ai_enabled or configuration.gemini_enabled):
         return None
     if configuration.ai_provider.lower() == "mock":
         return MockGeminiClient()
