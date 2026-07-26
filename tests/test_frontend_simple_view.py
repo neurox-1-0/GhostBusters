@@ -142,6 +142,13 @@ function nodeText(node) {{
   return `${{own}} ${{childText}}`.trim();
 }}
 
+function collectNodes(node, predicate, output = []) {{
+  if (!node) return output;
+  if (predicate(node)) output.push(node);
+  (node.children || []).forEach((child) => collectNodes(child, predicate, output));
+  return output;
+}}
+
 (async () => {{
   vm.runInNewContext(source, context);
   await Promise.resolve();
@@ -199,7 +206,9 @@ function nodeText(node) {{
     }}));
     output.queueCards = (elements.get("review-queue-list")?.children || []).map((child) => nodeText(child));
     output.cloudCards = (elements.get("candidate-list")?.children || []).map((child) => nodeText(child));
-    output.cloudCardTags = (elements.get("candidate-list")?.children || []).flatMap((card) => (card.children || []).flatMap((child) => (child.children || []))).filter((child) => (child.className || "").includes("status-badge")).map((child) => ({{ text: nodeText(child), className: child.className, tagName: child.tagName }}));
+    output.cloudCardTags = collectNodes(elements.get("candidate-list"), (child) => (child.className || "").includes("status-badge")).map((child) => ({{ text: nodeText(child), className: child.className, tagName: child.tagName }}));
+    output.cloudTables = collectNodes(elements.get("candidate-list"), (child) => child.tagName === "TABLE").map((child) => nodeText(child));
+    output.queueTables = collectNodes(elements.get("review-queue-list"), (child) => child.tagName === "TABLE").map((child) => nodeText(child));
     output.filterChips = filterButtons.map((button) => ({{
       filter: button.dataset.huntFilter,
       tagName: button.tagName,
@@ -586,6 +595,8 @@ def test_review_queue_and_cloud_hunt_views_remain_functional() -> None:
     assert rendered["candidate-count"]["text"] == "1 candidate"
     assert rendered["queueCards"]
     assert rendered["cloudCards"]
+    assert rendered["queueTables"]
+    assert rendered["cloudTables"]
     assert any("Open Review" in card for card in rendered["queueCards"])
 
 
@@ -762,6 +773,8 @@ def test_cloud_hunt_status_badges_and_filter_chips_are_semantic() -> None:
     assert all(tag["tagName"] == "SPAN" for tag in tags)
     assert "active_dependency" not in card_text
     assert "[object Object]" not in card_text
+    assert rendered["cloudTables"]
+    assert "Provider Resource Resource type Environment Monthly cost Potential savings Confidence Classification Review status Action" in rendered["cloudTables"][0]
     assert any("Open Review" in card for card in rendered["cloudCards"])
     assert all(chip["tagName"] == "BUTTON" for chip in rendered["filterChips"])
     assert any(chip["filter"] == "all" and chip["ariaPressed"] == "true" and "filter-chip-active" in chip["className"] for chip in rendered["filterChips"])

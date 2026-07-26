@@ -515,35 +515,40 @@ pre {
 }
 .repo-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
 .compact-list, .alert-list { display: grid; gap: 0.55rem; margin-top: 0.75rem; }
+.responsive-table,
 .recent-table {
-  display: grid;
-  gap: 0;
   margin-top: 0.75rem;
   overflow: hidden;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
 }
-.recent-table > .muted {
-  padding: 0.8rem;
-}
-.recent-table-row {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.75fr) minmax(120px, 0.45fr) auto;
-  gap: 0.75rem;
-  align-items: center;
-  min-height: 62px;
-  padding: 0.75rem 0.85rem;
-  border-bottom: 1px solid var(--line-soft);
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
   background: #fff;
 }
-.recent-table-row:last-child { border-bottom: 0; }
-.recent-table-head {
-  min-height: 42px;
+.data-table th,
+.data-table td {
+  padding: 0.72rem 0.78rem;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: middle;
+  font-size: 14px;
+}
+.data-table th {
   background: var(--panel-soft);
   color: var(--subtle);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
+}
+.data-table tr:last-child td { border-bottom: 0; }
+.data-table td:last-child,
+.data-table th:last-child { text-align: right; }
+.data-table td:last-child button { white-space: nowrap; }
+.data-table .empty-row td {
+  color: var(--muted);
+  text-align: left;
 }
 .compact-row, .alert-row {
   display: grid;
@@ -862,6 +867,7 @@ pre {
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-grid, .overview-grid.lower { grid-template-columns: 1fr; }
   .progress-checklist.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .data-table .priority-tablet { display: none; }
   .case-status-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .story-grid { grid-template-columns: 1fr; }
   .stage-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -889,9 +895,7 @@ pre {
   .topbar-actions, .overview-heading, .mode-header, .technical-header { align-items: flex-start; flex-direction: column; }
   .user-chip { padding-left: 0; border-left: 0; }
   .summary-grid, .hunt-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .recent-table-row { grid-template-columns: minmax(0, 1fr) minmax(140px, 0.7fr); }
-  .recent-table-row > :nth-child(3),
-  .recent-table-row > :nth-child(4) { grid-column: auto; }
+  .data-table .priority-mobile { display: none; }
   .compact-row { grid-template-columns: 1fr; align-items: start; }
   .hunt-controls label, .hunt-controls select, .hunt-controls button { grid-column: auto; grid-row: auto; }
   .stage-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -908,7 +912,45 @@ pre {
 
 @media (max-width: 450px) {
   .shell, .topbar, .status-strip { padding-inline: 0.75rem; }
-  .summary-grid, .stage-list, .metric-row, .current-action, .pr-summary, .before-after, .hunt-summary-grid, .progress-checklist.compact, .recent-table-row { grid-template-columns: 1fr; }
+  .summary-grid, .stage-list, .metric-row, .current-action, .pr-summary, .before-after, .hunt-summary-grid, .progress-checklist.compact { grid-template-columns: 1fr; }
+  .responsive-table,
+  .recent-table {
+    border: 0;
+    overflow: visible;
+  }
+  .data-table,
+  .data-table thead,
+  .data-table tbody,
+  .data-table tr,
+  .data-table th,
+  .data-table td {
+    display: block;
+  }
+  .data-table thead { display: none; }
+  .data-table tr {
+    margin-bottom: 0.65rem;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    background: #fff;
+    overflow: hidden;
+  }
+  .data-table td {
+    display: grid;
+    grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+    gap: 0.65rem;
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left !important;
+  }
+  .data-table td::before {
+    content: attr(data-label);
+    color: var(--subtle);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .data-table td:last-child { border-bottom: 0; }
+  .data-table .priority-tablet,
+  .data-table .priority-mobile { display: grid; }
   .story-list div { grid-template-columns: 1fr; gap: 0.2rem; }
   .important-alternatives { flex-direction: column; }
   .current-action div { border-right: 0; border-bottom: 1px solid var(--line); }

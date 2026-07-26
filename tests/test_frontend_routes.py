@@ -66,6 +66,7 @@ def test_css_asset_served() -> None:
     assert ".progress-checklist" in response.text
     assert ".featured-card" in response.text
     assert ".recent-table" in response.text
+    assert ".data-table" in response.text
     assert ".skeleton" in response.text
     assert ".toast" in response.text
     assert ".filter-chip" in response.text

@@ -298,6 +298,40 @@ function progressStep(title, description, stateName, index, actionLabel = null, 
   return item;
 }
 
+function responsiveTable(columns, rows, emptyMessage) {
+  const table = el("table", "data-table");
+  const thead = el("thead");
+  const headRow = el("tr");
+  columns.forEach((column) => {
+    const th = el("th", column.priority ? `priority-${column.priority}` : null, column.label);
+    th.scope = "col";
+    headRow.appendChild(th);
+  });
+  thead.appendChild(headRow);
+  const tbody = el("tbody");
+  if (!rows.length) {
+    const row = el("tr", "empty-row");
+    const cell = el("td", null, emptyMessage);
+    cell.colSpan = columns.length;
+    row.appendChild(cell);
+    tbody.appendChild(row);
+  }
+  rows.forEach((rowData) => {
+    const row = el("tr");
+    columns.forEach((column) => {
+      const cell = el("td", column.priority ? `priority-${column.priority}` : null);
+      cell.setAttribute("data-label", column.label);
+      const value = typeof column.render === "function" ? column.render(rowData) : rowData[column.key];
+      if (value && typeof value === "object" && "tagName" in value) cell.appendChild(value);
+      else cell.textContent = formatValue(value);
+      row.appendChild(cell);
+    });
+    tbody.appendChild(row);
+  });
+  append(table, thead, tbody);
+  return table;
+}
+
 function githubIntegrationLabel(run) {
   if (run?.github_source) return "Real GitHub";
   return "Ready for GitHub webhooks";
@@ -1237,34 +1271,29 @@ function renderOverviewRows() {
   clear(alertsNode);
   const rows = overviewReviews();
   const prRows = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).slice(0, 5);
-  if (!prRows.length) reviewNode.appendChild(el("p", "muted", "No PR reviews are loaded yet."));
-  if (prRows.length) {
-    const header = el("div", "recent-table-row recent-table-head");
-    append(header, el("span", null, "Name"), el("span", null, "Status"), el("span", null, "Savings"), el("span", null, "Action"));
-    reviewNode.appendChild(header);
-  }
-  prRows.forEach((item) => {
-    const row = el("article", "recent-table-row");
-    const open = el("button", "secondary compact", "Open");
-    open.type = "button";
-    open.addEventListener("click", async () => {
-      if (item.id) {
-        state.run = await api(`/api/runs/${item.id}`);
-        state.selectedReviewContext = { source: "overview", type: "terraform_pr", runId: item.id };
-        startAnimation(true);
-      }
-      switchMode("simple");
-      showToast("Review loaded", "Opened PR review details.", "success");
-    });
-    append(
-      row,
-      append(el("div"), el("strong", "row-title", item.repository || "Terraform review"), el("span", "row-meta", item.pull_request_number ? `PR #${item.pull_request_number} | ${item.resource_name || "Terraform change"}` : item.resource_name || "Terraform change not recorded")),
-      append(el("div", "row-state"), el("strong", null, runStatusLabel(item.status)), el("span", null, item.recommendation || "Not recorded")),
-      append(el("div", "row-metric"), el("strong", null, `${money(item.estimated_monthly_savings)}/month`), el("span", null, percentage(item.confidence))),
-      open
-    );
-    reviewNode.appendChild(row);
-  });
+  const reviewColumns = [
+    { label: "Repository", render: (item) => append(el("div"), el("strong", "row-title", item.repository || "Terraform review"), el("span", "row-meta", item.pull_request_number ? `PR #${item.pull_request_number}` : "Pull request not recorded")) },
+    { label: "Terraform change", priority: "tablet", render: (item) => item.resource_name || "Not recorded" },
+    { label: "Recommendation", priority: "tablet", render: (item) => item.recommendation || "Not recorded" },
+    { label: "Status", render: (item) => runStatusLabel(item.status) },
+    { label: "Savings", priority: "mobile", render: (item) => `${money(item.estimated_monthly_savings)}/month` },
+    { label: "Action", render: (item) => {
+      const open = el("button", "secondary compact", "Open");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open review for ${item.repository || item.resource_name || "case"}`);
+      open.addEventListener("click", async () => {
+        if (item.id) {
+          state.run = await api(`/api/runs/${item.id}`);
+          state.selectedReviewContext = { source: "overview", type: "terraform_pr", runId: item.id };
+          startAnimation(true);
+        }
+        switchMode("simple");
+        showToast("Review loaded", "Opened PR review details.", "success");
+      });
+      return open;
+    } },
+  ];
+  reviewNode.appendChild(responsiveTable(reviewColumns, prRows, "No PR reviews are loaded yet."));
   const alerts = rows.filter((item) => ["pending", "pending_human_review", "needs_more_evidence", "abstained"].includes(item.status)).slice(0, 4);
   if (!alerts.length) alertsNode.appendChild(el("p", "muted", "No cases currently require human approval."));
   alerts.forEach((item) => {
@@ -1324,19 +1353,13 @@ function renderOverviewActivity() {
   clear(node);
   const events = (state.run?.audit_events || []).slice(-5).reverse();
   $("overview-activity-count").textContent = `${events.length} event${events.length === 1 ? "" : "s"}`;
-  if (!events.length) {
-    ["PR analyzed", "Evidence gathered", "Recommendation produced", "Approval recorded", "Remediation PR created"].forEach((item) => {
-      const li = el("li");
-      append(li, el("strong", null, item), el("span", null, "Waiting for the first review workflow."));
-      node.appendChild(li);
-    });
-    return;
-  }
-  events.forEach((event) => {
-    const li = el("li");
-    append(li, el("strong", null, event.summary || labelFor(event.event_type)), el("span", null, labelFor(event.event_type)));
-    node.appendChild(li);
-  });
+  const columns = [
+    { label: "Activity", render: (event) => event.summary || labelFor(event.event_type) },
+    { label: "Stage", priority: "tablet", render: (event) => labelFor(event.event_type) },
+    { label: "Actor", priority: "mobile", render: (event) => labelFor(event.actor) },
+    { label: "Recorded", priority: "mobile", render: (event) => event.timestamp || "Not recorded" },
+  ];
+  node.appendChild(responsiveTable(columns, events, "Waiting for the first review workflow."));
 }
 
 function renderOverview() {
@@ -1501,27 +1524,28 @@ function renderCloudHunt() {
   const allCandidates = state.hunt.candidates || [];
   renderCloudHuntFilterChips(allCandidates);
   const candidates = allCandidates.filter(candidateMatchesCloudFilter);
-  candidates.forEach((candidate) => {
-    const resource = candidate.resource;
-    const card = el("article", "candidate-card");
-    const supporting = candidate.signals.filter((signal) => signal.supports_ghost_hypothesis).slice(0, 5).map((signal) => signal.description);
-    const protective = candidate.signals.filter((signal) => !signal.supports_ghost_hypothesis).map((signal) => signal.description);
-    const tags = el("div", "tag-row");
-    const primaryStatus = cloudCandidatePrimaryStatus(candidate);
-    const reviewStatus = cloudReviewStatusForCandidate(candidate);
-    tags.appendChild(statusBadge(primaryStatus));
-    if (reviewStatus) tags.appendChild(statusBadge(reviewStatus));
-    const cardActions = el("div", "queue-actions");
-    const openReview = el("button", "secondary compact", "Open Review");
-    openReview.type = "button";
-    openReview.addEventListener("click", () => switchMode("review-queue"));
-    cardActions.appendChild(openReview);
-    append(card, el("p", "kicker", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("h3", null, resource.resource_name), tags, dataList([["Environment", resource.environment], ["Monthly cost", money(resource.estimated_monthly_cost)], ["Confidence", percentage(candidate.candidate_score)], ["Current state", reviewStatus?.label || primaryStatus.label]]), cardActions, el("strong", "candidate-heading", "Why GhostBusters flagged it"));
-    supporting.forEach((item) => card.appendChild(el("p", "candidate-signal", item)));
-    if (protective.length) { card.appendChild(el("strong", "candidate-heading", "Why GhostBusters is cautious")); protective.forEach((item) => card.appendChild(el("p", "candidate-protection", item))); }
-    list.appendChild(card);
-  });
-  if (!candidates.length) list.appendChild(el("p", "muted", "No cloud-hunt candidates match the selected filters."));
+  const columns = [
+    { label: "Provider", priority: "mobile", render: (candidate) => labelFor(candidate.resource?.provider) },
+    { label: "Resource", render: (candidate) => candidate.resource?.resource_name || "Cloud resource" },
+    { label: "Resource type", priority: "tablet", render: (candidate) => labelFor(candidate.resource?.normalized_resource_type) },
+    { label: "Environment", priority: "mobile", render: (candidate) => candidate.resource?.environment || "Not recorded" },
+    { label: "Monthly cost", priority: "mobile", render: (candidate) => money(candidate.resource?.estimated_monthly_cost) },
+    { label: "Potential savings", render: (candidate) => candidate.exclusion_reason ? "Not available" : `${money(candidate.resource?.estimated_monthly_cost)}/month` },
+    { label: "Confidence", render: (candidate) => percentage(candidate.candidate_score) },
+    { label: "Classification", render: (candidate) => statusBadge(cloudCandidatePrimaryStatus(candidate)) },
+    { label: "Review status", render: (candidate) => {
+      const reviewStatus = cloudReviewStatusForCandidate(candidate);
+      return reviewStatus ? statusBadge(reviewStatus) : statusBadge({ label: "No Action", className: "status-neutral" });
+    } },
+    { label: "Action", render: (candidate) => {
+      const openReview = el("button", "secondary compact", "Open Review");
+      openReview.type = "button";
+      openReview.setAttribute("aria-label", `Open review for ${candidate.resource?.resource_name || "cloud resource"}`);
+      openReview.addEventListener("click", () => switchMode("review-queue"));
+      return openReview;
+    } },
+  ];
+  list.appendChild(responsiveTable(columns, candidates, "No cloud-hunt candidates match the selected filters."));
 }
 
 async function actOnCloudCase(id, action) {
@@ -1536,32 +1560,36 @@ function renderReviewQueue() {
   if (!node) return;
   clear(node);
   if (state.loading.reviews) return renderSkeletonList(node, 4);
-  if (!state.reviews.length) return node.appendChild(el("p", "muted", "No review cases are waiting right now."));
-  state.reviews.forEach((item) => {
-    const card = el("article", "queue-card");
-    const heading = item.source_type === "terraform_pr"
-      ? item.repository || "Terraform review"
-      : item.provider ? labelFor(item.provider) : "Cloud Hunt";
-    append(card, el("p", "kicker", labelFor(item.source_type)), el("h3", null, heading), dataList([["Resource", item.resource_name], ["Recommendation", item.recommendation], ["Confidence", percentage(item.confidence)], ["Savings", `${money(item.estimated_monthly_savings)}/month`], ["Policy status", policyStatusLabel(item.policy_status)], ["Current state", runStatusLabel(item.status)]]), el("p", "queue-reason", item.recommendation_reason));
-    const actions = el("div", "queue-actions");
-    const open = el("button", "secondary", "Open Review");
-    if (item.source_type === "terraform_pr") {
-      open.addEventListener("click", async () => {
-        state.run = await api(`/api/runs/${item.id}`);
-        state.selectedReviewContext = { source: "approvals", type: "terraform_pr", runId: item.id };
-        startAnimation(true);
-        switchMode("simple");
-      });
-    } else {
-      open.addEventListener("click", () => {
-        state.selectedReviewContext = { source: "approvals", type: item.source_type, runId: item.id };
-        switchMode("cloud-hunt");
-      });
-    }
-    actions.appendChild(open);
-    card.appendChild(actions);
-    node.appendChild(card);
-  });
+  const columns = [
+    { label: "Source", priority: "mobile", render: (item) => labelFor(item.source_type) },
+    { label: "Resource or repository", render: (item) => item.source_type === "terraform_pr" ? item.repository || item.resource_name || "Review case" : item.resource_name || item.repository || "Review case" },
+    { label: "Recommendation", priority: "tablet", render: (item) => item.recommendation || "Not recorded" },
+    { label: "Confidence", render: (item) => percentage(item.confidence) },
+    { label: "Savings", priority: "mobile", render: (item) => `${money(item.estimated_monthly_savings)}/month` },
+    { label: "Policy status", render: (item) => policyStatusLabel(item.policy_status) },
+    { label: "Current state", render: (item) => statusBadge(reviewStateStatus(item.status)) },
+    { label: "Updated", priority: "tablet", render: (item) => item.updated_at || item.created_at || "Not recorded" },
+    { label: "Action", render: (item) => {
+      const open = el("button", "secondary compact", "Open Review");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open review for ${item.resource_name || item.repository || "case"}`);
+      if (item.source_type === "terraform_pr") {
+        open.addEventListener("click", async () => {
+          state.run = await api(`/api/runs/${item.id}`);
+          state.selectedReviewContext = { source: "approvals", type: "terraform_pr", runId: item.id };
+          startAnimation(true);
+          switchMode("simple");
+        });
+      } else {
+        open.addEventListener("click", () => {
+          state.selectedReviewContext = { source: "approvals", type: item.source_type, runId: item.id };
+          switchMode("cloud-hunt");
+        });
+      }
+      return open;
+    } },
+  ];
+  node.appendChild(responsiveTable(columns, state.reviews, "No review cases are waiting right now."));
 }
 
 const assistantSuggestions = {
