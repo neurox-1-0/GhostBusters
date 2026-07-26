@@ -7,6 +7,7 @@ const state = {
   paused: false,
   skipAnimation: false,
   selectedReviewAction: null,
+  selectedCloudReviewAction: null,
   hunt: null,
   reviews: [],
   selectedReviewContext: null,
@@ -110,6 +111,12 @@ function ensureCompatibleDom() {
   }
   console.error(`GhostBusters UI could not start because these elements are missing: ${missing.join(", ")}`);
   return false;
+}
+
+function portalCloudFindingDialog() {
+  const dialog = $("cloud-finding-detail");
+  if (!dialog || !document.body || dialog.parentNode === document.body) return;
+  document.body.appendChild(dialog);
 }
 
 function clear(node) {
@@ -920,7 +927,7 @@ function selectReviewAction(action) {
   $("sources-field").hidden = action !== "request_evidence";
   $("context-field").hidden = action !== "add_context";
   $("modify-field").hidden = action !== "modify";
-  $("submit-review-button").textContent = action === "approve" ? "Approve Remediation" : action === "reject" ? "Confirm Rejection" : "Send Review Update";
+  $("submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : "Send Review Update";
   $("review-form").scrollIntoView({ block: "nearest" });
 }
 
@@ -1300,7 +1307,7 @@ function renderOverviewRows() {
     { label: "Status", render: (item) => runStatusLabel(item.status) },
     { label: "Savings", priority: "mobile", render: (item) => `${money(item.estimated_monthly_savings)}/month` },
     { label: "Action", render: (item) => {
-      const open = el("button", "secondary compact", "Open Review");
+      const open = el("button", "secondary compact", "Open PR Review");
       open.type = "button";
       open.setAttribute("aria-label", `Open review for ${item.repository || item.resource_name || "case"}`);
       open.addEventListener("click", async () => {
@@ -1320,7 +1327,7 @@ function renderOverviewRows() {
   if (!alerts.length) alertsNode.appendChild(el("p", "muted", "No cases currently require human approval."));
   alerts.forEach((item) => {
     const row = el("article", "alert-row");
-    const open = el("button", "secondary compact", "Open Review");
+    const open = el("button", "secondary compact", "Review Decision");
     open.type = "button";
     open.addEventListener("click", () => switchMode("review-queue"));
     append(
@@ -1438,6 +1445,125 @@ function cloudReviewStatusForCandidate(candidate) {
   return reviewStateStatus("pending_human_review");
 }
 
+function cloudCaseForCandidate(candidate) {
+  if (!candidate) return null;
+  const resource = candidate.resource || {};
+  return (state.reviews || []).find((item) =>
+    item.source_type === "cloud_hunt" && (
+      item.id === state.selectedReviewContext?.runId ||
+      item.candidate?.candidate_id === candidate.candidate_id ||
+      item.resource_id === resource.resource_id ||
+      item.resource_name === resource.resource_name
+    )
+  ) || null;
+}
+
+function selectedCloudCase() {
+  const context = state.selectedReviewContext;
+  if (context?.type !== "cloud_hunt") return null;
+  return (state.reviews || []).find((item) =>
+    item.id === context.runId ||
+    item.candidate?.candidate_id === context.candidateId ||
+    item.resource_id === context.resourceId
+  ) || null;
+}
+
+function selectedCloudCandidate() {
+  const context = state.selectedReviewContext;
+  if (context?.type !== "cloud_hunt") return null;
+  const fromCase = selectedCloudCase()?.candidate;
+  if (fromCase?.resource) return fromCase;
+  return (state.hunt?.candidates || []).find((candidate) =>
+    candidate.candidate_id === context.candidateId ||
+    candidate.resource?.resource_id === context.resourceId
+  ) || null;
+}
+
+function updateBrowserCaseState(context) {
+  if (typeof window === "undefined" || !window.history?.replaceState) return;
+  const token = context?.runId || context?.candidateId || context?.resourceId;
+  if (!token) return;
+  window.history.replaceState(null, "", `#cloud-hunt/${encodeURIComponent(token)}`);
+}
+
+function selectCloudFinding(candidate, source = "cloud-hunt", caseItem = null) {
+  const resource = candidate?.resource || caseItem?.candidate?.resource || {};
+  const reviewCase = caseItem || cloudCaseForCandidate(candidate);
+  state.selectedReviewContext = {
+    source,
+    type: "cloud_hunt",
+    runId: reviewCase?.id || null,
+    candidateId: candidate?.candidate_id || reviewCase?.candidate?.candidate_id || null,
+    resourceId: resource.resource_id || reviewCase?.resource_id || null,
+    resourceName: resource.resource_name || reviewCase?.resource_name || "Cloud resource",
+  };
+  closeCloudReviewForm();
+  updateBrowserCaseState(state.selectedReviewContext);
+  switchMode("cloud-hunt");
+  renderCloudHunt();
+  $("cloud-finding-detail")?.focus?.();
+}
+
+function backFromCloudFinding() {
+  const source = state.selectedReviewContext?.source;
+  state.selectedReviewContext = null;
+  closeCloudReviewForm();
+  renderCloudHunt();
+  if (source === "approvals") {
+    switchMode("review-queue");
+    return;
+  }
+  switchMode("cloud-hunt");
+}
+
+function signalList(candidate, supports) {
+  return (candidate?.signals || []).filter((signal) => Boolean(signal.supports_ghost_hypothesis) === supports);
+}
+
+function dependencySummary(candidate) {
+  const dependencies = (candidate?.signals || [])
+    .filter((signal) => /dependency/i.test(signal.signal_type || signal.description || ""))
+    .map((signal) => signal.description);
+  return dependencies.length ? dependencies.join("; ") : "No dependency signal recorded";
+}
+
+function cloudCaseStatus(caseItem, candidate) {
+  if (caseItem) return reviewStateStatus(caseItem.status);
+  return cloudReviewStatusForCandidate(candidate) || { key: "neutral", label: "No action required", className: "status-neutral" };
+}
+
+function isCloudProtected(candidate, caseItem) {
+  if (candidate?.exclusion_reason) return true;
+  if (caseItem?.policy_status === "blocked") return true;
+  return (candidate?.signals || []).some((signal) => ["active_dependency", "production_resource"].includes(signal.signal_type));
+}
+
+function cloudAllowedReviewActions(caseItem, candidate) {
+  if (!caseItem) return [];
+  const status = caseItem.status;
+  const protectedResource = isCloudProtected(candidate, caseItem);
+  if (["blocked", "protected", "rejected", "pr_created", "waived", "approved", "completed"].includes(status)) return [];
+  if (caseItem.policy_status === "blocked") return [];
+  if (protectedResource) return status === "needs_more_evidence" ? ["request_evidence", "add_context", "reject"] : ["request_evidence", "add_context", "reject"];
+  if (status === "needs_more_evidence") return ["request_evidence", "add_context", "reject"];
+  if (status === "pending" || status === "pending_human_review") return ["approve", "request_evidence", "reject", "add_context"];
+  return [];
+}
+
+function renderSignalBullets(nodeId, items, emptyMessage) {
+  const node = $(nodeId);
+  clear(node);
+  if (!items.length) {
+    node.appendChild(el("p", "muted", emptyMessage));
+    return;
+  }
+  items.forEach((signal) => {
+    const item = el("div", "signal");
+    append(item, el("strong", null, labelFor(signal.signal_type || "Signal")), el("span", null, signal.description || formatValue(signal.value)));
+    node.appendChild(item);
+  });
+}
+
 function cloudHuntFilterCounts(candidates) {
   return candidates.reduce((counts, candidate) => {
     const primary = cloudCandidatePrimaryStatus(candidate);
@@ -1515,11 +1641,121 @@ function renderCloudJourney() {
   });
 }
 
+function renderCloudFindingDetail() {
+  const panel = $("cloud-finding-detail");
+  if (!panel) return;
+  const candidate = selectedCloudCandidate();
+  const caseItem = selectedCloudCase() || cloudCaseForCandidate(candidate);
+  panel.hidden = !candidate && !caseItem;
+  if (panel.hidden) return;
+  const resource = candidate?.resource || caseItem?.candidate?.resource || {};
+  const status = cloudCaseStatus(caseItem, candidate);
+  const primary = cloudCandidatePrimaryStatus(candidate || caseItem?.candidate);
+  const source = state.selectedReviewContext?.source === "approvals" ? "Approvals" : "Cloud Hunt";
+  const resourceName = resource.resource_name || caseItem?.resource_name || "Cloud resource";
+  const managedByTerraform = Boolean(resource.infrastructure_as_code_managed && resource.terraform_address);
+  $("cloud-finding-path").textContent = source === "Approvals" ? `Approvals -> ${resourceName}` : `Cloud Hunt -> ${resourceName}`;
+  $("cloud-finding-title").textContent = resourceName;
+  $("cloud-finding-context").textContent = source === "Approvals" ? "Review the selected approval case without returning to the generic Cloud Hunt list." : "Inspect this finding before opening a human approval decision.";
+  $("cloud-back-button").textContent = source === "Approvals" ? "Back to Approvals" : "Back to Cloud Hunt";
+  $("cloud-detail-provider").textContent = labelFor(resource.provider || caseItem?.provider);
+  $("cloud-detail-resource").textContent = resourceName;
+  $("cloud-detail-type").textContent = labelFor(resource.normalized_resource_type || resource.provider_resource_type);
+  $("cloud-detail-environment").textContent = resource.environment || "Not recorded";
+  $("cloud-detail-cost").textContent = money(resource.estimated_monthly_cost);
+  $("cloud-detail-savings").textContent = caseItem?.estimated_monthly_savings ? `${money(caseItem.estimated_monthly_savings)}/month` : candidate?.exclusion_reason ? "Not available" : `${money(resource.estimated_monthly_cost)}/month`;
+  $("cloud-detail-confidence").textContent = percentage(candidate?.candidate_score ?? caseItem?.confidence);
+  $("cloud-detail-review-state").textContent = status.key === "awaiting-review" ? "Awaiting human review" : status.label;
+  $("cloud-detail-owner").textContent = resource.owner || "Owner not recorded";
+  $("cloud-detail-project").textContent = resource.project || "Project not recorded";
+  $("cloud-detail-dependencies").textContent = dependencySummary(candidate || caseItem?.candidate);
+  $("cloud-detail-terraform").textContent = resource.terraform_address || caseItem?.terraform_address || "No Terraform repository mapping";
+  $("cloud-detail-classification").textContent = primary.label;
+  $("cloud-detail-recommendation").textContent = recommendationLabel(caseItem?.recommendation || (candidate?.exclusion_reason ? "keep" : "request_owner_confirmation"));
+  $("cloud-detail-policy").textContent = policyStatusLabel(caseItem?.policy_status || (candidate?.exclusion_reason ? "needs_human_context" : "passed"));
+  $("cloud-detail-human-required").textContent = caseItem ? "Human review required" : "No approval case found";
+  renderSignalBullets("cloud-detail-flagged", signalList(candidate || caseItem?.candidate, true), "No positive waste signals were recorded.");
+  renderSignalBullets("cloud-detail-caution", signalList(candidate || caseItem?.candidate, false), "No caution signals were recorded.");
+  $("cloud-open-approval-button").hidden = !(caseItem && ["pending", "pending_human_review", "needs_more_evidence"].includes(caseItem.status));
+  $("cloud-human-title").textContent = caseItem ? status.label === "Pending human review" ? "Awaiting human review" : status.label : "Finding detail";
+  $("cloud-human-status").textContent = caseItem?.human_decision ? labelFor(caseItem.human_decision) : caseItem ? status.label : "No approval case";
+  $("cloud-human-technical").textContent = caseItem ? `Review case: ${caseItem.id}` : "No review case is linked";
+  $("cloud-human-guidance").textContent = !caseItem
+    ? "This finding can be inspected, but no human approval case is currently linked."
+    : isCloudProtected(candidate, caseItem)
+      ? "Approval is unavailable because this resource has protection or dependency signals. A reviewer can request more evidence, add context, or reject the recommendation."
+      : caseItem.status === "needs_more_evidence"
+        ? "Approval is unavailable until missing evidence or owner context is resolved."
+        : cloudAllowedReviewActions(caseItem, candidate).length
+          ? "Choose a decision action for this Cloud Hunt approval case."
+          : "No further human action is available for this case.";
+  $("cloud-safety-notice").textContent = managedByTerraform
+    ? "Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly."
+    : "Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.";
+  renderCloudHumanControls(caseItem, candidate);
+}
+
+function renderCloudHumanControls(caseItem, candidate) {
+  const allowed = cloudAllowedReviewActions(caseItem, candidate);
+  document.querySelectorAll("[data-cloud-review-action]").forEach((button) => {
+    const visible = allowed.includes(button.dataset.cloudReviewAction);
+    button.hidden = !visible;
+    button.disabled = !visible;
+  });
+  if (state.selectedCloudReviewAction && !allowed.includes(state.selectedCloudReviewAction)) closeCloudReviewForm();
+}
+
+function selectCloudReviewAction(action) {
+  state.selectedCloudReviewAction = action;
+  $("cloud-review-form").hidden = false;
+  $("cloud-review-form-title").textContent = labelFor(action);
+  $("cloud-sources-field").hidden = action !== "request_evidence";
+  $("cloud-context-field").hidden = action !== "add_context";
+  $("cloud-submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : "Send Decision Update";
+  $("cloud-review-form").scrollIntoView({ block: "nearest" });
+}
+
+function closeCloudReviewForm() {
+  state.selectedCloudReviewAction = null;
+  const form = $("cloud-review-form");
+  if (form) form.hidden = true;
+}
+
+async function submitSelectedCloudReview() {
+  const action = state.selectedCloudReviewAction;
+  const caseItem = selectedCloudCase();
+  if (!action || !caseItem) return;
+  const payload = { action, reviewer: $("cloud-reviewer-input").value || "judge", comment: $("cloud-comment-input").value || null };
+  if (action === "request_evidence") payload.requested_sources = $("cloud-requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
+  if (action === "add_context") payload.human_context = $("cloud-human-context").value || null;
+  return withButtonState("cloud-submit-review-button", action === "approve" ? "Recording approval..." : "Saving decision...", async () => {
+    const updated = await api(`/api/reviews/${caseItem.id}/action`, { method: "POST", body: JSON.stringify(payload) });
+    state.reviews = state.reviews.map((item) => item.id === updated.id ? updated : item);
+    state.selectedReviewContext = {
+      ...state.selectedReviewContext,
+      runId: updated.id,
+      candidateId: updated.candidate?.candidate_id || state.selectedReviewContext?.candidateId,
+      resourceId: updated.resource_id || state.selectedReviewContext?.resourceId,
+      resourceName: updated.resource_name || state.selectedReviewContext?.resourceName,
+    };
+    closeCloudReviewForm();
+    renderCloudHunt();
+    renderReviewQueue();
+    renderOverview();
+    showToast(action === "approve" ? "Approval recorded" : "Decision recorded", `${labelFor(action)} accepted by the backend.`, "success");
+  }, "Recorded").catch((error) => {
+    const message = friendlyError(error, "Failed to record cloud decision.");
+    setMessage("cloud-review-message", message);
+    showToast("Decision failed", message, "error");
+  });
+}
+
 function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
   clear(summary);
   renderCloudJourney();
+  renderCloudFindingDetail();
   if (state.loading.cloudHunt) {
     renderSkeletonList(summary, 6);
     renderSkeletonList($("candidate-list"), 4);
@@ -1556,18 +1792,19 @@ function renderCloudHunt() {
     { label: "Confidence", render: (candidate) => percentage(candidate.candidate_score) },
     { label: "Classification", render: (candidate) => statusBadge(cloudCandidatePrimaryStatus(candidate)) },
     { label: "Review status", render: (candidate) => {
-      const reviewStatus = cloudReviewStatusForCandidate(candidate);
+      const reviewStatus = cloudCaseStatus(cloudCaseForCandidate(candidate), candidate);
       return reviewStatus ? statusBadge(reviewStatus) : statusBadge({ label: "No Action", className: "status-neutral" });
     } },
     { label: "Action", render: (candidate) => {
-      const openReview = el("button", "secondary compact", "Open Review");
-      openReview.type = "button";
-      openReview.setAttribute("aria-label", `Open review for ${candidate.resource?.resource_name || "cloud resource"}`);
-      openReview.addEventListener("click", () => switchMode("review-queue"));
-      return openReview;
+      const viewFinding = el("button", "secondary compact", "View Finding");
+      viewFinding.type = "button";
+      viewFinding.setAttribute("aria-label", `View finding for ${candidate.resource?.resource_name || "cloud resource"}`);
+      viewFinding.addEventListener("click", () => selectCloudFinding(candidate, "cloud-hunt"));
+      return viewFinding;
     } },
   ];
   list.appendChild(responsiveTable(columns, candidates, "No cloud-hunt candidates match the selected filters."));
+  renderCloudFindingDetail();
 }
 
 async function actOnCloudCase(id, action) {
@@ -1592,20 +1829,20 @@ function renderReviewQueue() {
     { label: "Current state", render: (item) => statusBadge(reviewStateStatus(item.status)) },
     { label: "Updated", priority: "tablet", render: (item) => item.updated_at || item.created_at || "Not recorded" },
     { label: "Action", render: (item) => {
-      const open = el("button", "secondary compact", "Open Review");
+      const open = el("button", "secondary compact", "Review Decision");
       open.type = "button";
-      open.setAttribute("aria-label", `Open review for ${item.resource_name || item.repository || "case"}`);
+      open.setAttribute("aria-label", `Review decision for ${item.resource_name || item.repository || "case"}`);
       if (item.source_type === "terraform_pr") {
         open.addEventListener("click", async () => {
           state.run = await api(`/api/runs/${item.id}`);
           state.selectedReviewContext = { source: "approvals", type: "terraform_pr", runId: item.id };
           startAnimation(true);
           switchMode("simple");
+          $("human-title")?.scrollIntoView({ block: "start" });
         });
       } else {
         open.addEventListener("click", () => {
-          state.selectedReviewContext = { source: "approvals", type: item.source_type, runId: item.id };
-          switchMode("cloud-hunt");
+          selectCloudFinding(item.candidate, "approvals", item);
         });
       }
       return open;
@@ -1708,6 +1945,10 @@ if (typeof window !== "undefined") {
     renderCloudHunt,
     renderReviewQueue,
     loadReviewQueue,
+    selectCloudFinding,
+    selectedCloudCandidate,
+    selectedCloudCase,
+    cloudAllowedReviewActions,
     renderTechnical,
     openDemoModal,
     closeDemoModal,
@@ -1754,6 +1995,18 @@ function bindEvents() {
   $("cancel-review-button").addEventListener("click", closeReviewForm);
   $("start-cloud-hunt-button").addEventListener("click", startCloudHunt);
   $("refresh-review-queue-button").addEventListener("click", loadReviewQueue);
+  $("cloud-back-button").addEventListener("click", backFromCloudFinding);
+  $("cloud-finding-detail").addEventListener("click", (event) => {
+    if (event.target.id === "cloud-finding-detail") backFromCloudFinding();
+  });
+  $("cloud-open-approval-button").addEventListener("click", () => {
+    state.selectedReviewContext = { ...state.selectedReviewContext, source: "approvals" };
+    renderCloudHunt();
+    $("cloud-human-decision").scrollIntoView({ block: "start" });
+  });
+  document.querySelectorAll("[data-cloud-review-action]").forEach((button) => button.addEventListener("click", () => selectCloudReviewAction(button.dataset.cloudReviewAction)));
+  $("cloud-submit-review-button").addEventListener("click", submitSelectedCloudReview);
+  $("cloud-cancel-review-button").addEventListener("click", closeCloudReviewForm);
   $("ask-case-button").addEventListener("click", () => openAssistant("pr_review"));
   $("ask-cloud-button").addEventListener("click", () => openAssistant("cloud_hunt"));
   $("ask-approvals-button").addEventListener("click", () => openAssistant("approvals"));
@@ -1767,6 +2020,11 @@ function bindEvents() {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) askAssistant();
     if (event.key === "Escape") closeAssistant();
   });
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !$("cloud-finding-detail").hidden) backFromCloudFinding();
+    });
+  }
   $("assistant-backdrop").addEventListener("click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
   document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("click", () => {
     state.cloudHuntFilter = filter.dataset.huntFilter || "all";
@@ -1783,6 +2041,7 @@ function bindEvents() {
 }
 
 if (ensureCompatibleDom()) {
+  portalCloudFindingDialog();
   bindEvents();
   loadInitial();
 }

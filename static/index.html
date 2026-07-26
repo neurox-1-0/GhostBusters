@@ -277,15 +277,15 @@
                 <h2 id="human-title" class="section-title">Approve the next step</h2>
                 <div class="human-outcome"><span>Decision status</span><strong id="human-decision">Not made</strong><small id="human-decision-technical">No review recorded</small></div>
                 <p id="review-guidance">Start a run to see the actions permitted by its safety state.</p>
-                <p class="safety-callout">Approval creates a remediation pull request only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p>
+                <p class="safety-callout">Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p>
               </div>
               <div class="review-control">
                 <label for="reviewer-input">Reviewer</label>
                 <input id="reviewer-input" value="judge" />
                 <div class="review-actions" id="review-actions">
-                  <button data-review-action="approve" type="button">Approve</button>
+                  <button data-review-action="approve" type="button">Approve Recommendation</button>
                   <button data-review-action="modify" type="button" class="secondary">Modify Recommendation</button>
-                  <button data-review-action="request_evidence" type="button" class="secondary">Request Evidence</button>
+                  <button data-review-action="request_evidence" type="button" class="secondary">Request More Evidence</button>
                   <button data-review-action="add_context" type="button" class="secondary">Add Context</button>
                   <button data-review-action="reject" type="button" class="danger">Reject</button>
                 </div>
@@ -366,6 +366,92 @@
                 <span class="count-badge" id="cloud-journey-state">Waiting</span>
               </div>
               <ol class="progress-checklist compact" id="cloud-journey-list" aria-live="polite"></ol>
+            </section>
+            <section class="cloud-finding-detail" id="cloud-finding-detail" hidden role="dialog" aria-modal="true" aria-labelledby="cloud-finding-title" tabindex="-1">
+              <div class="panel cloud-finding-dialog">
+              <div class="section-heading">
+                <div>
+                  <p class="kicker" id="cloud-finding-path">Cloud Hunt</p>
+                  <h2 id="cloud-finding-title" class="section-title">Selected finding</h2>
+                  <p class="helper" id="cloud-finding-context">Choose a Cloud Hunt finding to inspect its evidence and decision state.</p>
+                </div>
+                <div class="toolbar-actions">
+                  <button id="cloud-back-button" class="secondary compact" type="button">Back to Cloud Hunt</button>
+                  <button id="cloud-open-approval-button" type="button" hidden>Open Approval</button>
+                </div>
+              </div>
+              <div class="case-status-row cloud-finding-summary" aria-label="Cloud finding summary">
+                <div class="case-status-card"><span>Provider</span><strong id="cloud-detail-provider">Not recorded</strong></div>
+                <div class="case-status-card"><span>Resource</span><strong id="cloud-detail-resource" class="technical-value">Not recorded</strong></div>
+                <div class="case-status-card"><span>Type</span><strong id="cloud-detail-type">Not recorded</strong></div>
+                <div class="case-status-card"><span>Environment</span><strong id="cloud-detail-environment">Not recorded</strong></div>
+              </div>
+              <div class="case-status-row cloud-finding-summary" aria-label="Cloud finding financial and review state">
+                <div class="case-status-card"><span>Monthly cost</span><strong id="cloud-detail-cost" class="metric-value-sm">Not recorded</strong></div>
+                <div class="case-status-card"><span>Potential savings</span><strong id="cloud-detail-savings" class="metric-value-sm">Not available</strong></div>
+                <div class="case-status-card"><span>Confidence</span><strong id="cloud-detail-confidence">Not recorded</strong></div>
+                <div class="case-status-card"><span>Review state</span><strong id="cloud-detail-review-state">Not recorded</strong></div>
+              </div>
+              <div class="story-grid">
+                <article class="story-card">
+                  <p class="kicker">Finding evidence</p>
+                  <h3 class="card-title">Why GhostBusters flagged it</h3>
+                  <div id="cloud-detail-flagged" class="evidence-bullet-list"></div>
+                </article>
+                <article class="story-card">
+                  <p class="kicker">Caution</p>
+                  <h3 class="card-title">Why GhostBusters is cautious</h3>
+                  <div id="cloud-detail-caution" class="evidence-bullet-list"></div>
+                </article>
+                <article class="story-card">
+                  <p class="kicker">Ownership and dependencies</p>
+                  <h3 class="card-title">Operational context</h3>
+                  <dl class="story-list compact">
+                    <div><dt>Owner</dt><dd id="cloud-detail-owner">Not recorded</dd></div>
+                    <div><dt>Project</dt><dd id="cloud-detail-project">Not recorded</dd></div>
+                    <div><dt>Dependencies</dt><dd id="cloud-detail-dependencies">Not recorded</dd></div>
+                    <div><dt>Terraform mapping</dt><dd id="cloud-detail-terraform" class="technical-value">Not recorded</dd></div>
+                  </dl>
+                </article>
+                <article class="story-card">
+                  <p class="kicker">Recommendation</p>
+                  <h3 class="card-title">Decision readiness</h3>
+                  <dl class="story-list compact">
+                    <div><dt>Classification</dt><dd id="cloud-detail-classification">Not recorded</dd></div>
+                    <div><dt>Recommended action</dt><dd id="cloud-detail-recommendation">Not recorded</dd></div>
+                    <div><dt>Policy result</dt><dd id="cloud-detail-policy">Not recorded</dd></div>
+                    <div><dt>Human review</dt><dd id="cloud-detail-human-required">Not recorded</dd></div>
+                  </dl>
+                </article>
+              </div>
+              <section class="decision-panel cloud-decision-panel" id="cloud-human-decision" aria-labelledby="cloud-human-title">
+                <div class="decision-copy">
+                  <p class="kicker">Human Decision</p>
+                  <h2 id="cloud-human-title" class="section-title">Awaiting human review</h2>
+                  <div class="human-outcome"><span>Decision status</span><strong id="cloud-human-status">Not made</strong><small id="cloud-human-technical">No review recorded</small></div>
+                  <p id="cloud-human-guidance">Open an approval case to see the available actions.</p>
+                  <p class="safety-callout" id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p>
+                </div>
+                <div class="review-control">
+                  <label for="cloud-reviewer-input">Reviewer</label>
+                  <input id="cloud-reviewer-input" value="judge" />
+                  <div class="review-actions" id="cloud-review-actions">
+                    <button data-cloud-review-action="approve" type="button">Approve Recommendation</button>
+                    <button data-cloud-review-action="reject" type="button" class="secondary">Reject</button>
+                    <button data-cloud-review-action="request_evidence" type="button" class="secondary">Request More Evidence</button>
+                    <button data-cloud-review-action="add_context" type="button" class="secondary">Add Context</button>
+                  </div>
+                  <div id="cloud-review-form" class="review-form" hidden>
+                    <p id="cloud-review-form-title"></p>
+                    <div id="cloud-comment-field"><label for="cloud-comment-input">Comment</label><textarea id="cloud-comment-input" rows="2" placeholder="Optional decision note"></textarea></div>
+                    <div id="cloud-sources-field" hidden><label for="cloud-requested-sources">Requested sources</label><input id="cloud-requested-sources" placeholder="owner, utilization, dependency map" /></div>
+                    <div id="cloud-context-field" hidden><label for="cloud-human-context">Business context</label><textarea id="cloud-human-context" rows="2" placeholder="Owner note or workload context"></textarea></div>
+                    <div class="start-actions"><button id="cloud-submit-review-button" type="button">Send Decision Update</button><button id="cloud-cancel-review-button" class="secondary" type="button">Cancel</button></div>
+                  </div>
+                  <p class="message" id="cloud-review-message" role="status"></p>
+                </div>
+              </section>
+              </div>
             </section>
             <section class="panel" aria-labelledby="candidate-title"><div class="section-heading"><div><p class="kicker">Investigation leads</p><h2 id="candidate-title" class="section-title">Cloud Hunt findings</h2></div><span class="count-badge" id="candidate-count">0 candidates</span></div><div class="candidate-grid" id="candidate-list"><p class="muted">Start a hunt to scan the fixture inventory.</p></div></section>
           </section>

@@ -31,7 +31,7 @@ def test_root_serves_agent_console() -> None:
     assert "Open Source PR" in response.text
     assert "Launch Demo" in response.text
     assert "Why GhostBusters recommends this" in response.text
-    assert "Approval creates a remediation pull request only." in response.text
+    assert "Approval creates a remediation pull request or approved remediation proposal only." in response.text
     assert "Open Technical Audit" in response.text
     assert "Cloud Hunt" in response.text
     assert "Ask GhostBusters" in response.text
@@ -121,8 +121,14 @@ def test_frontend_text_roles_and_labels_remain_accessible() -> None:
     assert "font-size: var(--text-sm)" in css
     assert ".status-badge" in css
     assert "line-height: 1.2" in css
-    assert "Open Review" in html + script
-    assert "Approve Remediation" in html + script
+    assert "Open Review" not in html + script
+    assert "View Finding" in script
+    assert "Review Decision" in script
+    assert 'id="cloud-finding-detail" hidden role="dialog" aria-modal="true"' in html
+    assert "position: fixed" in css
+    assert "z-index: 2147483000" in css
+    assert "Approve Recommendation" in html + script
+    assert "Request More Evidence" in html
     assert "Start Cloud Hunt" in html
     assert "Ask GhostBusters" in html
     assert "Send Review Update" in html + script

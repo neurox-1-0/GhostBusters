@@ -818,6 +818,37 @@ samp {
 .hunt-metric { padding: 0.7rem; }
 .hunt-metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .hunt-metric strong { display: block; margin-top: 0.25rem; font-size: 1.18rem; }
+.cloud-finding-detail {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: grid;
+  place-items: center;
+  width: 100vw;
+  height: 100vh;
+  padding: 1rem;
+  overflow: hidden;
+  background: rgba(19, 47, 67, 0.42);
+  backdrop-filter: blur(2px);
+  animation: fadeIn var(--duration-fast) ease both;
+}
+.cloud-finding-dialog {
+  display: grid;
+  gap: 0.85rem;
+  width: min(1120px, 100%);
+  max-height: min(860px, calc(100vh - 2rem));
+  overflow: auto;
+  border-top: 4px solid var(--teal);
+  box-shadow: 0 24px 70px rgba(18, 48, 68, 0.28);
+  animation: modalIn var(--duration) ease both;
+}
+.cloud-finding-summary {
+  margin-top: 0;
+}
+.cloud-decision-panel {
+  margin-top: 0.2rem;
+  box-shadow: none;
+}
 .candidate-grid, .queue-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 0.65rem; }
 .candidate-card, .queue-card { min-width: 0; padding: 0.9rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-soft); }
 .candidate-card h3, .queue-card h3 { font-size: 1.05rem; }
@@ -919,7 +950,7 @@ samp {
 .toast strong { display: block; }
 .toast span { display: block; margin-top: 0.12rem; color: var(--muted); font-size: 13px; }
 
-@keyframes pageIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pageIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes checkIn { from { transform: scale(0.82); } to { transform: scale(1); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modalIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
@@ -980,6 +1011,13 @@ samp {
   .audit-row > :nth-child(n+3) { grid-column: 2; }
   .assistant-backdrop { display: block; }
   .assistant-panel { width: 100%; }
+  .cloud-finding-detail {
+    padding: 0.55rem;
+  }
+  .cloud-finding-dialog {
+    width: 100%;
+    max-height: calc(100vh - 1.1rem);
+  }
 }
 
 @media (max-width: 450px) {

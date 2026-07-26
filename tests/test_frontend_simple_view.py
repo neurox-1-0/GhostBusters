@@ -70,6 +70,11 @@ const reviewButtons = ["approve", "modify", "request_evidence", "add_context", "
   button.dataset.reviewAction = action;
   return button;
 }});
+const cloudReviewButtons = ["approve", "request_evidence", "add_context", "reject"].map((action) => {{
+  const button = createNode("button");
+  button.dataset.cloudReviewAction = action;
+  return button;
+}});
 const filterButtons = ["all", "high-confidence", "protected", "needs-context", "awaiting-review"].map((filter) => {{
   const button = createNode("button");
   button.dataset.huntFilter = filter;
@@ -88,6 +93,7 @@ const document = {{
   }},
   querySelectorAll(selector) {{
     if (selector === "[data-review-action]") return reviewButtons;
+    if (selector === "[data-cloud-review-action]") return cloudReviewButtons;
     if (selector === "[data-hunt-filter]") return filterButtons;
     return [];
   }},
@@ -170,6 +176,14 @@ function collectNodes(node, predicate, output = []) {{
   if ({json.dumps(payload.get("open_demo", False))}) hooks.openDemoModal();
   if ({json.dumps(payload.get("mode"))}) hooks.switchMode({json.dumps(payload.get("mode"))});
   hooks.renderAll();
+  if ({json.dumps(payload.get("select_cloud_candidate_id"))}) {{
+    const candidate = (hooks.state.hunt?.candidates || []).find((item) => item.candidate_id === {json.dumps(payload.get("select_cloud_candidate_id"))});
+    if (candidate) hooks.selectCloudFinding(candidate, {json.dumps(payload.get("select_cloud_source", "cloud-hunt"))});
+  }}
+  if ({json.dumps(payload.get("select_cloud_case_id"))}) {{
+    const reviewCase = (hooks.state.reviews || []).find((item) => item.id === {json.dumps(payload.get("select_cloud_case_id"))});
+    if (reviewCase) hooks.selectCloudFinding(reviewCase.candidate, {json.dumps(payload.get("select_cloud_source", "approvals"))}, reviewCase);
+  }}
   if ({json.dumps(payload.get("call_load_review_queue", False))}) {{
     await hooks.loadReviewQueue();
   }}
@@ -188,6 +202,14 @@ function collectNodes(node, predicate, output = []) {{
     "overview-activity-list", "cloud-journey-list", "cloud-journey-state", "toast-region",
     "filter-count-all", "filter-count-high-confidence", "filter-count-protected",
     "filter-count-needs-context", "filter-count-awaiting-review",
+    "cloud-finding-detail", "cloud-finding-path", "cloud-finding-title", "cloud-finding-context",
+    "cloud-detail-provider", "cloud-detail-resource", "cloud-detail-type", "cloud-detail-environment",
+    "cloud-detail-cost", "cloud-detail-savings", "cloud-detail-confidence", "cloud-detail-review-state",
+    "cloud-detail-owner", "cloud-detail-project", "cloud-detail-dependencies", "cloud-detail-terraform",
+    "cloud-detail-classification", "cloud-detail-recommendation", "cloud-detail-policy",
+    "cloud-detail-human-required", "cloud-detail-flagged", "cloud-detail-caution",
+    "cloud-human-title", "cloud-human-status", "cloud-human-guidance", "cloud-safety-notice",
+    "cloud-back-button", "cloud-open-approval-button",
   ];
   const output = {{}};
   for (const id of ids) {{
@@ -204,6 +226,12 @@ function collectNodes(node, predicate, output = []) {{
       hidden: button.hidden,
       disabled: button.disabled,
     }}));
+    output.cloudReviewButtons = cloudReviewButtons.map((button) => ({{
+      action: button.dataset.cloudReviewAction,
+      hidden: button.hidden,
+      disabled: button.disabled,
+    }}));
+    output.selectedReviewContext = hooks.state.selectedReviewContext;
     output.queueCards = (elements.get("review-queue-list")?.children || []).map((child) => nodeText(child));
     output.cloudCards = (elements.get("candidate-list")?.children || []).map((child) => nodeText(child));
     output.cloudCardTags = collectNodes(elements.get("candidate-list"), (child) => (child.className || "").includes("status-badge")).map((child) => ({{ text: nodeText(child), className: child.className, tagName: child.tagName }}));
@@ -430,6 +458,113 @@ def sample_run(real_pr: bool = False, demo: bool = False) -> dict[str, object]:
     return run
 
 
+def sample_cloud_candidate(
+    candidate_id: str = "ghost-1",
+    protected: bool = False,
+    terraform: bool = True,
+) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "resource": {
+            "provider": "aws",
+            "account_or_subscription_id": "123",
+            "region_or_location": "us-east-1",
+            "resource_id": "i-forgotten-test",
+            "resource_name": "forgotten-test",
+            "provider_resource_type": "ec2",
+            "normalized_resource_type": "virtual_machine",
+            "status": "running",
+            "environment": "staging",
+            "owner": "payments-team",
+            "project": "migration-cleanup",
+            "created_at": None,
+            "age_days": 120,
+            "tags": {},
+            "infrastructure_as_code_managed": terraform,
+            "terraform_address": "aws_instance.forgotten" if terraform else None,
+            "estimated_monthly_cost": 120.0,
+            "metadata": {},
+        },
+        "candidate_score": 0.95,
+        "suspicion_level": "high",
+        "signals": [
+            {"signal_type": "low_utilization", "description": "CPU stayed below 5%.", "value": 0.05, "weight": 0.7, "supports_ghost_hypothesis": True, "evidence_source": "utilization"},
+            {"signal_type": "old_resource", "description": "Resource is older than 90 days.", "value": 120, "weight": 0.4, "supports_ghost_hypothesis": True, "evidence_source": "inventory"},
+            {"signal_type": "active_dependency" if protected else "dependency_check", "description": "One dependency still references this VM." if protected else "No active dependency was found.", "value": 1 if protected else 0, "weight": 0.4, "supports_ghost_hypothesis": False, "evidence_source": "dependencies"},
+        ],
+        "requires_investigation": True,
+        "exclusion_reason": "active_dependency" if protected else None,
+    }
+
+
+def sample_cloud_hunt(candidate: dict[str, object] | None = None) -> dict[str, object]:
+    candidate = candidate or sample_cloud_candidate()
+    return {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "trigger_source": "manual_cloud_hunt",
+        "provider_scope": "multi_cloud",
+        "inventory_source": "fixtures",
+        "goal": "Find forgotten cloud resources",
+        "started_at": "2026-07-26T00:00:00Z",
+        "completed_at": "2026-07-26T00:03:00Z",
+        "status": "completed",
+        "resources_scanned": 1,
+        "candidates_found": 1,
+        "investigations_created": 1,
+        "protected_resources": 1 if candidate.get("exclusion_reason") else 0,
+        "errors": [],
+        "planning_mode": "deterministic_only",
+        "audit_events": [],
+        "summary": {
+            "total_resources": 1,
+            "healthy_resources": 0,
+            "candidates": 1,
+            "high_confidence_candidates": 1,
+            "protected_candidates": 1 if candidate.get("exclusion_reason") else 0,
+            "needs_human_context": 0,
+            "estimated_monthly_waste": 0.0 if candidate.get("exclusion_reason") else 120.0,
+            "estimated_annual_waste": 0.0 if candidate.get("exclusion_reason") else 1440.0,
+            "provider_breakdown": {},
+        },
+        "candidates": [candidate],
+    }
+
+
+def sample_cloud_review(
+    candidate: dict[str, object] | None = None,
+    status: str = "pending",
+    policy_status: str = "passed",
+) -> dict[str, object]:
+    candidate = candidate or sample_cloud_candidate()
+    resource = candidate["resource"]
+    return {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "source_type": "cloud_hunt",
+        "source_reference": "33333333-3333-3333-3333-333333333333",
+        "repository": None,
+        "provider": resource["provider"],
+        "resource_id": resource["resource_id"],
+        "resource_name": resource["resource_name"],
+        "recommendation": "stop_for_observation",
+        "recommendation_reason": "CPU stayed below 5%. Resource is older than 90 days.",
+        "confidence": candidate["candidate_score"],
+        "risk_level": "medium",
+        "estimated_monthly_savings": 120.0 if not candidate.get("exclusion_reason") else 0.0,
+        "estimated_annual_savings": 1440.0 if not candidate.get("exclusion_reason") else 0.0,
+        "policy_status": policy_status,
+        "required_reviewer_role": "application_owner",
+        "human_decision": None,
+        "final_outcome": None,
+        "created_at": "2026-07-26T00:00:00Z",
+        "updated_at": "2026-07-26T00:05:00Z",
+        "status": status,
+        "candidate": candidate,
+        "terraform_address": resource.get("terraform_address"),
+        "simulated_pr": None,
+        "audit_events": [],
+    }
+
+
 def test_simple_view_renders_real_github_case_story_and_hides_invalid_actions() -> None:
     rendered = render_frontend({"run": sample_run(), "reviews": []})
 
@@ -471,7 +606,7 @@ def test_demo_and_result_states_are_clearly_labeled() -> None:
     assert demo_rendered["approval-pill"]["text"] == "Demo Environment: Active"
     assert demo_rendered["evidence-source-card"]["hidden"] is False
     assert demo_rendered["result-title"]["text"] == "Awaiting Human Approval"
-    assert "Approval creates a remediation pull request only." in root
+    assert "Approval creates a remediation pull request or approved remediation proposal only." in root
     assert "Open Technical Audit" in root
 
     assert real_rendered["result-title"]["text"] == "Real Remediation PR Created"
@@ -597,7 +732,7 @@ def test_review_queue_and_cloud_hunt_views_remain_functional() -> None:
     assert rendered["cloudCards"]
     assert rendered["queueTables"]
     assert rendered["cloudTables"]
-    assert any("Open Review" in card for card in rendered["queueCards"])
+    assert any("Review Decision" in card for card in rendered["queueCards"])
 
 
 def test_review_queue_replaces_skeletons_after_async_load_finishes() -> None:
@@ -627,8 +762,95 @@ def test_review_queue_replaces_skeletons_after_async_load_finishes() -> None:
 
     assert rendered["queueCards"]
     assert any("demo/infra" in card for card in rendered["queueCards"])
-    assert any("Open Review" in card for card in rendered["queueCards"])
+    assert any("Review Decision" in card for card in rendered["queueCards"])
     assert all("skeleton" not in card for card in rendered["queueCards"])
+
+
+def test_cloud_hunt_view_finding_opens_selected_detail_with_evidence_and_actions() -> None:
+    candidate = sample_cloud_candidate()
+    review = sample_cloud_review(candidate)
+    rendered = render_frontend({
+        "run": None,
+        "reviews": [review],
+        "hunt": sample_cloud_hunt(candidate),
+        "mode": "cloud-hunt",
+        "select_cloud_candidate_id": "ghost-1",
+    })
+
+    assert rendered["cloud-finding-detail"]["hidden"] is False
+    assert rendered["cloud-finding-path"]["text"] == "Cloud Hunt -> forgotten-test"
+    assert rendered["cloud-finding-title"]["text"] == "forgotten-test"
+    assert rendered["cloud-detail-provider"]["text"] == "Aws"
+    assert rendered["cloud-detail-resource"]["text"] == "forgotten-test"
+    assert rendered["cloud-detail-type"]["text"] == "Virtual Machine"
+    assert rendered["cloud-detail-environment"]["text"] == "staging"
+    assert rendered["cloud-detail-cost"]["text"] == "$120"
+    assert rendered["cloud-detail-savings"]["text"] == "$120/month"
+    assert rendered["cloud-detail-confidence"]["text"] == "95%"
+    assert rendered["cloud-detail-review-state"]["text"] == "Awaiting human review"
+    assert "CPU stayed below 5%" in " ".join(rendered["cloud-detail-flagged"]["children"])
+    assert "No active dependency" in " ".join(rendered["cloud-detail-caution"]["children"])
+    assert rendered["cloud-detail-owner"]["text"] == "payments-team"
+    assert rendered["cloud-detail-dependencies"]["text"] == "No active dependency was found."
+    assert rendered["cloud-detail-recommendation"]["text"] == "Stop temporarily and observe"
+    assert rendered["cloud-detail-policy"]["text"] == "Allowed with safety conditions"
+    assert rendered["cloud-detail-human-required"]["text"] == "Human review required"
+    assert rendered["cloud-open-approval-button"]["hidden"] is False
+    assert rendered["cloud-back-button"]["text"] == "Back to Cloud Hunt"
+    visible_actions = {button["action"] for button in rendered["cloudReviewButtons"] if not button["hidden"]}
+    assert {"approve", "reject", "request_evidence", "add_context"} <= visible_actions
+    assert rendered["selectedReviewContext"]["source"] == "cloud-hunt"
+    assert rendered["selectedReviewContext"]["runId"] == review["id"]
+
+
+def test_approvals_review_decision_opens_cloud_detail_and_preserves_source_context() -> None:
+    candidate = sample_cloud_candidate(terraform=False)
+    review = sample_cloud_review(candidate)
+    rendered = render_frontend({
+        "run": None,
+        "reviews": [review],
+        "hunt": sample_cloud_hunt(candidate),
+        "mode": "review-queue",
+        "select_cloud_case_id": review["id"],
+        "select_cloud_source": "approvals",
+    })
+
+    assert rendered["cloud-finding-detail"]["hidden"] is False
+    assert rendered["cloud-finding-path"]["text"] == "Approvals -> forgotten-test"
+    assert rendered["cloud-back-button"]["text"] == "Back to Approvals"
+    assert rendered["selectedReviewContext"]["source"] == "approvals"
+    assert rendered["selectedReviewContext"]["runId"] == review["id"]
+    assert rendered["cloud-safety-notice"]["text"] == "Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly."
+
+
+def test_cloud_human_actions_hide_approval_for_protected_and_completed_cases() -> None:
+    protected_candidate = sample_cloud_candidate(candidate_id="protected-1", protected=True)
+    protected_review = sample_cloud_review(protected_candidate, policy_status="needs_human_context")
+    protected = render_frontend({
+        "run": None,
+        "reviews": [protected_review],
+        "hunt": sample_cloud_hunt(protected_candidate),
+        "mode": "cloud-hunt",
+        "select_cloud_candidate_id": "protected-1",
+    })
+    protected_actions = {button["action"]: button for button in protected["cloudReviewButtons"]}
+
+    assert protected_actions["approve"]["hidden"] is True
+    assert protected_actions["reject"]["hidden"] is False
+    assert protected_actions["request_evidence"]["hidden"] is False
+    assert protected_actions["add_context"]["hidden"] is False
+
+    completed_candidate = sample_cloud_candidate(candidate_id="done-1")
+    completed_review = sample_cloud_review(completed_candidate, status="pr_created")
+    completed = render_frontend({
+        "run": None,
+        "reviews": [completed_review],
+        "hunt": sample_cloud_hunt(completed_candidate),
+        "mode": "cloud-hunt",
+        "select_cloud_candidate_id": "done-1",
+    })
+
+    assert all(button["hidden"] for button in completed["cloudReviewButtons"])
 
 
 def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
@@ -658,9 +880,9 @@ def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
     assert any("Open PR Reviews 2" in card for card in rendered["summaryCards"])
     assert any("Awaiting Approval 2" in card for card in rendered["summaryCards"])
     assert any("Potential Monthly Savings $140" in card for card in rendered["summaryCards"])
-    assert any("demo/infra" in row and "Open" in row for row in rendered["overviewRows"])
+    assert any("demo/infra" in row and "Open PR Review" in row for row in rendered["overviewRows"])
     assert any("demo/infra" in row and "Connected" in row for row in rendered["overviewRepos"])
-    assert any("Open Review" in row for row in rendered["overviewAlerts"])
+    assert any("Review Decision" in row for row in rendered["overviewAlerts"])
     assert "pending_human_review" not in combined
     assert "[object Object]" not in combined
 
@@ -775,7 +997,8 @@ def test_cloud_hunt_status_badges_and_filter_chips_are_semantic() -> None:
     assert "[object Object]" not in card_text
     assert rendered["cloudTables"]
     assert "Provider Resource Resource type Environment Monthly cost Potential savings Confidence Classification Review status Action" in rendered["cloudTables"][0]
-    assert any("Open Review" in card for card in rendered["cloudCards"])
+    assert any("View Finding" in card for card in rendered["cloudCards"])
+    assert "Open Review" not in card_text
     assert all(chip["tagName"] == "BUTTON" for chip in rendered["filterChips"])
     assert any(chip["filter"] == "all" and chip["ariaPressed"] == "true" and "filter-chip-active" in chip["className"] for chip in rendered["filterChips"])
     assert rendered["filter-count-all"]["text"] == "3"
