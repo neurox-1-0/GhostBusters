@@ -99,6 +99,7 @@ const context = {{
     location: {{ href: "http://localhost/", replace() {{}} }},
     setInterval() {{ return 1; }},
     clearInterval() {{}},
+    setTimeout(callback) {{ callback(); return 1; }},
     scrollTo() {{}},
   }},
 }};
@@ -124,6 +125,14 @@ function nodeText(node) {{
   hooks.state.visibleEvents = hooks.state.run ? (hooks.state.run.audit_events || []) : [];
   hooks.state.reviews = {json.dumps(payload.get("reviews", []))};
   hooks.state.hunt = {json.dumps(payload.get("hunt"))};
+  hooks.state.loading = {json.dumps(payload.get("loading", {
+      "initial": False,
+      "reviews": False,
+      "cloudHunt": False,
+      "run": False,
+      "review": False,
+      "assistant": False,
+  }))};
   if ({json.dumps(payload.get("open_demo", False))}) hooks.openDemoModal();
   if ({json.dumps(payload.get("mode"))}) hooks.switchMode({json.dumps(payload.get("mode"))});
   hooks.renderAll();
@@ -136,6 +145,8 @@ function nodeText(node) {{
     "trigger-source", "run-pill", "approval-pill", "evidence-count", "candidate-count",
     "pr-empty-state", "case-view", "demo-modal-backdrop", "technical-content", "technical-empty-state",
     "case-status", "human-decision-summary", "recommendation-summary", "evidence-source-card",
+    "page-title", "overview-summary", "overview-pr-list", "overview-savings-list",
+    "overview-approval-alerts", "overview-activity-list", "toast-region",
   ];
   const output = {{}};
   for (const id of ids) {{
@@ -154,6 +165,11 @@ function nodeText(node) {{
     }}));
     output.queueCards = (elements.get("review-queue-list")?.children || []).map((child) => nodeText(child));
     output.cloudCards = (elements.get("candidate-list")?.children || []).map((child) => nodeText(child));
+    output.summaryCards = (elements.get("overview-summary")?.children || []).map((child) => nodeText(child) || child.className);
+    output.overviewRows = (elements.get("overview-pr-list")?.children || []).map((child) => nodeText(child) || child.className);
+    output.overviewSavings = (elements.get("overview-savings-list")?.children || []).map((child) => nodeText(child) || child.className);
+    output.overviewAlerts = (elements.get("overview-approval-alerts")?.children || []).map((child) => nodeText(child) || child.className);
+    output.overviewActivity = (elements.get("overview-activity-list")?.children || []).map((child) => nodeText(child) || child.className);
     output.sourceLink = {{
       hidden: elements.get("source-pr-link")?.hidden ?? true,
       href: elements.get("source-pr-link")?.href || "",
@@ -527,3 +543,50 @@ def test_review_queue_and_cloud_hunt_views_remain_functional() -> None:
     assert rendered["queueCards"]
     assert rendered["cloudCards"]
     assert any("Open Review" in card for card in rendered["queueCards"])
+
+
+def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
+    reviews = [
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "source_type": "terraform_pr",
+            "repository": "demo/infra",
+            "pull_request_number": 42,
+            "resource_name": "aws_instance.app",
+            "recommendation": "Downsize to m5.large",
+            "recommendation_reason": "Rightsizing looks safe.",
+            "confidence": 0.91,
+            "estimated_monthly_savings": 70.0,
+            "policy_status": "passed",
+            "status": "pending_human_review",
+        }
+    ]
+
+    rendered = render_frontend({"run": sample_run(), "reviews": reviews, "mode": "overview"})
+    combined = " ".join(rendered["summaryCards"] + rendered["overviewRows"] + rendered["overviewAlerts"] + rendered["overviewActivity"])
+
+    assert rendered["page-title"]["text"] == "Overview"
+    assert any("Open PR Reviews 2" in card for card in rendered["summaryCards"])
+    assert any("Awaiting Approval 2" in card for card in rendered["summaryCards"])
+    assert any("Potential Monthly Savings $140" in card for card in rendered["summaryCards"])
+    assert any("demo/infra" in row and "Open" in row for row in rendered["overviewRows"])
+    assert any("Open Review" in row for row in rendered["overviewAlerts"])
+    assert "pending_human_review" not in combined
+    assert "[object Object]" not in combined
+
+
+def test_overview_and_cloud_hunt_show_skeleton_loading_states() -> None:
+    loading = {
+        "initial": False,
+        "reviews": True,
+        "cloudHunt": True,
+        "run": False,
+        "review": False,
+        "assistant": False,
+    }
+    rendered = render_frontend({"run": None, "reviews": [], "hunt": None, "mode": "overview", "loading": loading})
+
+    assert rendered["summaryCards"]
+    assert all("skeleton" in card for card in rendered["summaryCards"])
+    assert rendered["overviewRows"]
+    assert all("skeleton" in row for row in rendered["overviewRows"])

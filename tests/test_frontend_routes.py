@@ -18,8 +18,11 @@ def test_root_serves_agent_console() -> None:
     assert "Technical Audit" in response.text
     assert 'id="simple-view"' in response.text
     assert 'id="technical-view" hidden' in response.text
-    assert "/static/app.js?v=judge-v5" in response.text
-    assert "/static/styles.css?v=judge-v5" in response.text
+    assert 'id="overview-view"' in response.text
+    assert 'id="overview-summary"' in response.text
+    assert 'id="overview-view-button"' in response.text
+    assert "/static/app.js?v=judge-v6" in response.text
+    assert "/static/styles.css?v=judge-v6" in response.text
     assert "Open Source PR" in response.text
     assert "Launch Demo" in response.text
     assert "Why GhostBusters recommends this" in response.text
@@ -27,6 +30,9 @@ def test_root_serves_agent_console() -> None:
     assert "Open Technical Audit" in response.text
     assert "Cloud Hunt" in response.text
     assert "Ask GhostBusters" in response.text
+    assert "Settings" in response.text
+    assert "Help" in response.text
+    assert "Search reviews, resources, repositories" not in response.text
     assert "It cannot approve actions or modify infrastructure" in response.text
     assert "[object Object]" not in response.text
 
@@ -51,6 +57,12 @@ def test_css_asset_served() -> None:
     assert response.status_code == 200
     assert "text/css" in response.headers["content-type"]
     assert "--bg" in response.text
+    assert "--radius" in response.text
+    assert ".sidebar" in response.text
+    assert ".summary-card" in response.text
+    assert ".skeleton" in response.text
+    assert ".toast" in response.text
+    assert "prefers-reduced-motion" in response.text
     assert ".stage-list" in response.text
     assert "max-width: 1500px" not in response.text
 
@@ -65,6 +77,10 @@ def test_javascript_asset_served() -> None:
     assert "safeObject" in response.text
     assert "ensureCompatibleDom" in response.text
     assert "assistantSuggestions" in response.text
+    assert "renderOverview" in response.text
+    assert "withButtonState" in response.text
+    assert "showToast" in response.text
+    assert "renderSkeletonList" in response.text
     assert "Deterministic fallback" in response.text
     assert "Deterministic Safety Policy" in response.text
     assert "More Evidence Required" in response.text

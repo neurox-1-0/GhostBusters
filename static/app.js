@@ -11,6 +11,15 @@ const state = {
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
+  loading: {
+    initial: true,
+    reviews: false,
+    cloudHunt: false,
+    run: false,
+    review: false,
+    assistant: false,
+  },
+  activeMode: "overview",
 };
 
 const stageDefinitions = [
@@ -23,9 +32,18 @@ const stageDefinitions = [
 
 const toolNames = ["pricing", "utilization", "jira", "git_activity", "dependencies"];
 const $ = (id) => document.getElementById(id);
-const uiVersion = "judge-v4";
+const uiVersion = "judge-v6";
 const requiredElementIds = [
   "api-pill",
+  "overview-view",
+  "overview-view-button",
+  "overview-summary",
+  "overview-pr-list",
+  "overview-savings-list",
+  "overview-approval-alerts",
+  "overview-activity-list",
+  "toast-region",
+  "page-title",
   "simple-view",
   "technical-view",
   "pr-empty-state",
@@ -315,7 +333,54 @@ function setMessage(id, message, success = false) {
   node.style.color = success ? "var(--green)" : "var(--red)";
 }
 
+function showToast(title, detail = "", type = "success") {
+  const region = $("toast-region");
+  if (!region) return;
+  const toast = el("div", `toast ${type}`);
+  toast.setAttribute("role", "status");
+  append(toast, el("strong", null, title), detail ? el("span", null, detail) : null);
+  region.appendChild(toast);
+  const timer = typeof window.setTimeout === "function" ? window.setTimeout.bind(window) : null;
+  if (!timer) return;
+  timer(() => {
+    if (toast.parentNode) toast.parentNode.removeChild(toast);
+  }, 4200);
+}
+
+function friendlyError(error, fallback = "Request failed. Try again.") {
+  const message = error?.message || fallback;
+  if (/traceback|stack|exception|file "/i.test(message)) return fallback;
+  return message.length > 180 ? `${message.slice(0, 177)}...` : message;
+}
+
+async function withButtonState(buttonId, loadingLabel, work, successLabel = null) {
+  const button = $(buttonId);
+  const original = button.textContent;
+  button.disabled = true;
+  button.classList.add("is-loading");
+  button.textContent = loadingLabel;
+  try {
+    const result = await work();
+    if (successLabel) {
+      button.textContent = successLabel;
+      window.setTimeout(() => { button.textContent = original; }, 900);
+    }
+    return result;
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+    if (!successLabel) button.textContent = original;
+  }
+}
+
+function renderSkeletonList(node, count = 3) {
+  clear(node);
+  for (let index = 0; index < count; index += 1) node.appendChild(el("div", "skeleton"));
+}
+
 async function loadInitial() {
+  state.loading.initial = true;
+  renderAll();
   try {
     const [health, scenarios] = await Promise.all([api("/health"), api("/api/scenarios")]);
     $("api-pill").textContent = `System Online: ${health.status === "ok" ? "Yes" : labelFor(health.status)}`;
@@ -325,31 +390,51 @@ async function loadInitial() {
     setMessage("ui-message", "Ready for incoming reviews.", true);
   } catch (error) {
     $("api-pill").textContent = "System Online: No";
-    setMessage("ui-message", error.message);
+    const message = friendlyError(error, "API unavailable. Check the server and retry.");
+    setMessage("ui-message", message);
+    showToast("API unavailable", message, "error");
+  } finally {
+    state.loading.initial = false;
   }
   loadReviewQueue();
   renderAll();
 }
 
 async function loadReviewQueue() {
+  state.loading.reviews = true;
+  renderOverview();
+  renderReviewQueue();
   try {
     state.reviews = await api("/api/reviews");
     renderReviewQueue();
   } catch (error) {
-    setMessage("cloud-hunt-message", error.message);
+    const message = friendlyError(error, "Failed to load approval queue.");
+    setMessage("cloud-hunt-message", message);
+    showToast("Review load failed", message, "error");
+  } finally {
+    state.loading.reviews = false;
+    renderOverview();
   }
 }
 
 async function startCloudHunt() {
-  try {
+  return withButtonState("start-cloud-hunt-button", "Scanning...", async () => {
+    state.loading.cloudHunt = true;
+    renderCloudHunt();
     setMessage("cloud-hunt-message", "Scanning fixture inventory...", true);
     state.hunt = await api("/api/cloud/hunts", { method: "POST", body: JSON.stringify({ provider_scope: $("cloud-provider-scope").value, inventory_source: "fixtures" }) });
     await loadReviewQueue();
     renderCloudHunt();
     setMessage("cloud-hunt-message", "Cloud Hunt completed. No cloud resource was changed.", true);
-  } catch (error) {
-    setMessage("cloud-hunt-message", error.message);
-  }
+    showToast("Cloud Hunt completed", "No cloud resource was changed.", "success");
+  }, "Scan complete").catch((error) => {
+    const message = friendlyError(error, "Failed to complete Cloud Hunt.");
+    setMessage("cloud-hunt-message", message);
+    showToast("Cloud Hunt failed", message, "error");
+  }).finally(() => {
+    state.loading.cloudHunt = false;
+    renderCloudHunt();
+  });
 }
 
 function renderScenarioOptions() {
@@ -363,7 +448,8 @@ function renderScenarioOptions() {
 }
 
 async function startRun() {
-  try {
+  return withButtonState("start-button", "Running demo...", async () => {
+    state.loading.run = true;
     setMessage("demo-message", "Starting demo...", true);
     const run = await api("/api/runs", {
       method: "POST",
@@ -381,9 +467,15 @@ async function startRun() {
     startAnimation();
     switchMode("simple");
     setMessage("ui-message", "Demo case loaded.", true);
-  } catch (error) {
-    setMessage("demo-message", error.message);
-  }
+    showToast("Demo started", "Prepared review evidence is loaded.", "success");
+  }, "Demo loaded").catch((error) => {
+    const message = friendlyError(error, "Failed to start demo.");
+    setMessage("demo-message", message);
+    showToast("Demo failed", message, "error");
+  }).finally(() => {
+    state.loading.run = false;
+    renderOverview();
+  });
 }
 
 async function refreshRun() {
@@ -392,13 +484,16 @@ async function refreshRun() {
     loadReviewQueue();
     return setMessage("ui-message", "Reviews refreshed.");
   }
-  try {
+  return withButtonState(state.activeMode === "overview" ? "overview-refresh-button" : "refresh-button", "Refreshing...", async () => {
     state.run = await api(`/api/runs/${runId}`);
     startAnimation(true);
     setMessage("ui-message", "Current review refreshed.", true);
-  } catch (error) {
-    setMessage("ui-message", error.message);
-  }
+    showToast("Review loaded", "Current case data refreshed.", "success");
+  }).catch((error) => {
+    const message = friendlyError(error, "Failed to load review.");
+    setMessage("ui-message", message);
+    showToast("Review load failed", message, "error");
+  });
 }
 
 async function resetDemo() {
@@ -413,8 +508,11 @@ async function resetDemo() {
     closeDemoModal();
     renderAll();
     setMessage("ui-message", "Demo reset.", true);
+    showToast("Demo reset", "Workspace returned to an empty review state.", "success");
   } catch (error) {
-    setMessage("ui-message", error.message);
+    const message = friendlyError(error, "Failed to reset demo.");
+    setMessage("ui-message", message);
+    showToast("Reset failed", message, "error");
   }
 }
 
@@ -717,14 +815,21 @@ async function submitSelectedReview() {
   if (action === "request_evidence") payload.requested_sources = $("requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
   if (action === "add_context") payload.human_context = $("human-context").value || null;
   if (action === "modify") payload.modified_action = $("modified-action").value || null;
-  try {
+  return withButtonState("submit-review-button", action === "approve" ? "Creating PR..." : "Submitting...", async () => {
+    state.loading.review = true;
     state.run = await api(`/api/runs/${state.run.id}/review`, { method: "POST", body: JSON.stringify(payload) });
     closeReviewForm();
     startAnimation(true);
     setMessage("review-message", `${labelFor(action)} accepted by the backend.`, true);
-  } catch (error) {
-    setMessage("review-message", error.message);
-  }
+    showToast(action === "approve" ? "Remediation PR created" : "Approval recorded", `${labelFor(action)} accepted by the backend.`, "success");
+  }, "Recorded").catch((error) => {
+    const message = friendlyError(error, "Failed to record approval.");
+    setMessage("review-message", message);
+    showToast("Approval failed", message, "error");
+  }).finally(() => {
+    state.loading.review = false;
+    renderOverview();
+  });
 }
 
 function finalOutcome(run) {
@@ -963,15 +1068,169 @@ function renderAIDecisions() {
   });
 }
 
+function reviewSavings(item) {
+  return Number(item?.estimated_monthly_savings || 0);
+}
+
+function currentRunSavings() {
+  const preferred = preferredAlternative();
+  return Number(preferred?.estimated_monthly_savings || state.run?.mock_pr?.monthly_savings || 0);
+}
+
+function overviewReviews() {
+  const rows = [...state.reviews];
+  if (state.run?.id && !rows.some((item) => item.id === state.run.id)) {
+    rows.unshift({
+      id: state.run.id,
+      source_type: state.run.source_type || "terraform_pr",
+      repository: state.run.github_source?.repository || state.run.mock_pr?.repository || "Demo review",
+      pull_request_number: state.run.github_source?.pull_request_number || state.run.mock_pr?.pr_number,
+      resource_name: state.run.decision_record?.resource_id,
+      recommendation: plainRecommendationTitle(state.run),
+      recommendation_reason: recommendationReason(state.run.decision_record, preferredAlternative()),
+      confidence: state.run.decision_record?.confidence?.final_confidence,
+      estimated_monthly_savings: currentRunSavings(),
+      policy_status: state.run.decision_record?.policy_result?.status,
+      status: state.run.status,
+    });
+  }
+  return rows;
+}
+
+function renderOverviewSummary() {
+  const node = $("overview-summary");
+  if (!node) return;
+  clear(node);
+  if (state.loading.initial || state.loading.reviews) return renderSkeletonList(node, 4);
+  const rows = overviewReviews();
+  const openPrs = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).length;
+  const cloudFindings = state.hunt?.summary?.candidates ?? rows.filter((item) => item.source_type === "cloud_hunt").length;
+  const awaitingApproval = rows.filter((item) => ["pending", "pending_human_review", "needs_more_evidence", "abstained"].includes(item.status)).length;
+  const savings = state.hunt?.summary?.estimated_monthly_waste ?? rows.reduce((total, item) => total + reviewSavings(item), 0);
+  [
+    ["Open PR Reviews", openPrs || "0", rows.length ? "Reviews with recorded context" : "No reviews loaded yet", "teal"],
+    ["Cloud Hunt Findings", cloudFindings || "0", state.hunt ? "From the latest inventory scan" : "Run Cloud Hunt to populate", "green"],
+    ["Awaiting Approval", awaitingApproval || "0", awaitingApproval ? "Needs human attention" : "No approval alerts", "amber"],
+    ["Potential Monthly Savings", savings ? money(savings) : "Not recorded", savings ? "Based on available evidence" : "Unavailable until evidence exists", "blue"],
+  ].forEach(([label, value, helper, tone]) => {
+    const card = el("article", "panel summary-card");
+    card.dataset.tone = tone;
+    append(card, el("span", null, label), el("strong", null, value), el("small", null, helper));
+    node.appendChild(card);
+  });
+}
+
+function renderOverviewRows() {
+  const reviewNode = $("overview-pr-list");
+  const alertsNode = $("overview-approval-alerts");
+  if (!reviewNode || !alertsNode) return;
+  if (state.loading.reviews) {
+    renderSkeletonList(reviewNode, 3);
+    renderSkeletonList(alertsNode, 2);
+    return;
+  }
+  clear(reviewNode);
+  clear(alertsNode);
+  const rows = overviewReviews();
+  const prRows = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).slice(0, 5);
+  if (!prRows.length) reviewNode.appendChild(el("p", "muted", "No PR reviews are loaded yet."));
+  prRows.forEach((item) => {
+    const row = el("article", "compact-row");
+    const open = el("button", "secondary compact", "Open");
+    open.type = "button";
+    open.addEventListener("click", async () => {
+      if (item.id) {
+        state.run = await api(`/api/runs/${item.id}`);
+        state.selectedReviewContext = { source: "overview", type: "terraform_pr", runId: item.id };
+        startAnimation(true);
+      }
+      switchMode("simple");
+      showToast("Review loaded", "Opened PR review details.", "success");
+    });
+    append(
+      row,
+      append(el("div"), el("strong", "row-title", item.repository || "Terraform review"), el("span", "row-meta", item.pull_request_number ? `PR #${item.pull_request_number}` : "Pull request not recorded"), el("span", "row-detail", item.resource_name || "Terraform change not recorded")),
+      append(el("div", "row-metric"), el("span", null, "Recommendation"), el("strong", null, item.recommendation || "Not recorded")),
+      append(el("div", "row-state"), el("span", null, "Status"), el("strong", null, runStatusLabel(item.status))),
+      open
+    );
+    reviewNode.appendChild(row);
+  });
+  const alerts = rows.filter((item) => ["pending", "pending_human_review", "needs_more_evidence", "abstained"].includes(item.status)).slice(0, 4);
+  if (!alerts.length) alertsNode.appendChild(el("p", "muted", "No cases currently require human approval."));
+  alerts.forEach((item) => {
+    const row = el("article", "alert-row");
+    const open = el("button", "secondary compact", "Open Review");
+    open.type = "button";
+    open.addEventListener("click", () => switchMode("review-queue"));
+    append(
+      row,
+      append(el("div"), el("strong", "row-title", item.resource_name || item.repository || "Review case"), el("span", "row-meta", policyStatusLabel(item.policy_status)), el("span", "row-detail", item.recommendation_reason || "Human approval is required before remediation.")),
+      open
+    );
+    alertsNode.appendChild(row);
+  });
+}
+
+function renderOverviewSavings() {
+  const node = $("overview-savings-list");
+  if (!node) return;
+  if (state.loading.cloudHunt) return renderSkeletonList(node, 3);
+  clear(node);
+  const candidates = [...(state.hunt?.candidates || [])].sort((a, b) => Number(b.resource?.estimated_monthly_cost || 0) - Number(a.resource?.estimated_monthly_cost || 0)).slice(0, 4);
+  if (!candidates.length) return node.appendChild(el("p", "muted", "Run Cloud Hunt to surface highest-value opportunities."));
+  candidates.forEach((candidate) => {
+    const resource = candidate.resource || {};
+    const row = el("article", "compact-row");
+    append(
+      row,
+      append(el("div"), el("strong", "row-title", resource.resource_name || "Cloud resource"), el("span", "row-meta", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("span", "row-detail", candidate.exclusion_reason ? "Protected by context" : "Candidate for review")),
+      append(el("div", "row-metric"), el("span", null, "Monthly cost"), el("strong", null, money(resource.estimated_monthly_cost))),
+      append(el("div", "row-state"), el("span", null, "Confidence"), el("strong", null, percentage(candidate.candidate_score))),
+      el("span", `signal-tag ${candidate.exclusion_reason ? "info" : candidate.candidate_score >= 0.8 ? "success" : "warning"}`, candidate.exclusion_reason ? "Protected" : candidate.requires_investigation ? "Needs context" : "Awaiting approval")
+    );
+    node.appendChild(row);
+  });
+}
+
+function renderOverviewActivity() {
+  const node = $("overview-activity-list");
+  if (!node) return;
+  clear(node);
+  const events = (state.run?.audit_events || []).slice(-5).reverse();
+  $("overview-activity-count").textContent = `${events.length} event${events.length === 1 ? "" : "s"}`;
+  if (!events.length) {
+    ["PR analyzed", "Evidence gathered", "Recommendation produced", "Approval recorded", "Remediation PR created"].forEach((item) => {
+      const li = el("li");
+      append(li, el("strong", null, item), el("span", null, "Waiting for the first review workflow."));
+      node.appendChild(li);
+    });
+    return;
+  }
+  events.forEach((event) => {
+    const li = el("li");
+    append(li, el("strong", null, event.summary || labelFor(event.event_type)), el("span", null, labelFor(event.event_type)));
+    node.appendChild(li);
+  });
+}
+
+function renderOverview() {
+  renderOverviewSummary();
+  renderOverviewRows();
+  renderOverviewSavings();
+  renderOverviewActivity();
+}
+
 function renderAll() {
   $("pr-empty-state").hidden = hasSelectedCase();
   $("case-view").hidden = !hasSelectedCase();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderCloudHunt(); renderReviewQueue();
+  renderCloudHunt(); renderReviewQueue(); renderOverview();
 }
 
 function renderAssistantTriggers() {
+  $("ask-global-button").hidden = false;
   $("ask-case-button").hidden = !hasSelectedCase();
   $("ask-technical-button").hidden = !hasSelectedCase();
   $("ask-cloud-button").hidden = !(state.hunt || state.selectedReviewContext?.type === "cloud_hunt");
@@ -979,13 +1238,23 @@ function renderAssistantTriggers() {
 }
 
 function switchMode(mode) {
-  ["simple", "cloud-hunt", "review-queue", "technical"].forEach((item) => {
+  const titles = {
+    overview: ["Workspace", "Overview"],
+    simple: ["Reviews", "PR Reviews"],
+    "cloud-hunt": ["Discovery", "Cloud Hunt"],
+    "review-queue": ["Human control", "Approvals"],
+    technical: ["Audit", "Technical Audit"],
+  };
+  ["overview", "simple", "cloud-hunt", "review-queue", "technical"].forEach((item) => {
     const view = item === "simple" ? "simple-view" : `${item}-view`;
     const button = item === "simple" ? "simple-view-button" : `${item}-view-button`;
     $(view).hidden = item !== mode;
     $(button).classList.toggle("active", item === mode);
     $(button).setAttribute("aria-pressed", String(item === mode));
   });
+  state.activeMode = mode;
+  $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
+  $("page-title").textContent = titles[mode]?.[1] || "Overview";
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -995,6 +1264,12 @@ function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
   clear(summary);
+  if (state.loading.cloudHunt) {
+    renderSkeletonList(summary, 6);
+    renderSkeletonList($("candidate-list"), 4);
+    $("candidate-count").textContent = "Scanning";
+    return;
+  }
   const data = state.hunt?.summary;
   if (!data) {
     summary.appendChild(el("p", "muted", "No cloud-hunt scan has been run yet."));
@@ -1011,7 +1286,16 @@ function renderCloudHunt() {
   });
   $("candidate-count").textContent = `${data.candidates} candidate${data.candidates === 1 ? "" : "s"}`;
   const list = $("candidate-list"); clear(list);
-  (state.hunt.candidates || []).forEach((candidate) => {
+  const activeFilters = new Set([...document.querySelectorAll("[data-hunt-filter]")].filter((item) => item.checked).map((item) => item.dataset.huntFilter));
+  const candidates = (state.hunt.candidates || []).filter((candidate) => {
+    if (!activeFilters.size) return true;
+    if (activeFilters.has("high-confidence") && candidate.candidate_score >= 0.8 && !candidate.exclusion_reason) return true;
+    if (activeFilters.has("needs-context") && candidate.requires_investigation && !candidate.exclusion_reason) return true;
+    if (activeFilters.has("protected") && candidate.exclusion_reason) return true;
+    if (activeFilters.has("awaiting-approval") && !candidate.exclusion_reason) return true;
+    return false;
+  });
+  candidates.forEach((candidate) => {
     const resource = candidate.resource;
     const card = el("article", "candidate-card");
     const supporting = candidate.signals.filter((signal) => signal.supports_ghost_hypothesis).slice(0, 5).map((signal) => signal.description);
@@ -1031,7 +1315,7 @@ function renderCloudHunt() {
     if (protective.length) { card.appendChild(el("strong", "candidate-heading", "Why GhostBusters is cautious")); protective.forEach((item) => card.appendChild(el("p", "candidate-protection", item))); }
     list.appendChild(card);
   });
-  if (!state.hunt.candidates.length) list.appendChild(el("p", "muted", "No cloud-hunt candidates met the configured threshold."));
+  if (!candidates.length) list.appendChild(el("p", "muted", "No cloud-hunt candidates match the selected filters."));
 }
 
 async function actOnCloudCase(id, action) {
@@ -1045,6 +1329,7 @@ function renderReviewQueue() {
   const node = $("review-queue-list");
   if (!node) return;
   clear(node);
+  if (state.loading.reviews) return renderSkeletonList(node, 4);
   if (!state.reviews.length) return node.appendChild(el("p", "muted", "No review cases are waiting right now."));
   state.reviews.forEach((item) => {
     const card = el("article", "queue-card");
@@ -1120,24 +1405,23 @@ function renderAssistantSuggestions() {
 async function askAssistant() {
   const question = $("assistant-question-input").value.trim();
   if (!question) return setMessage("assistant-message", "Enter a question first.");
-  const askButton = $("assistant-ask-button");
-  askButton.disabled = true;
-  askButton.textContent = "Asking...";
-  setMessage("assistant-message", "Reading recorded data...", true);
-  try {
+  return withButtonState("assistant-ask-button", "Generating explanation...", async () => {
+    state.loading.assistant = true;
+    setMessage("assistant-message", "Reading recorded data...", true);
     const caseId = selectedAssistantCaseId();
     const payload = { question, context: state.assistantContext };
     if (caseId) payload.case_id = caseId;
     const response = await api("/api/assistant/ask", { method: "POST", body: JSON.stringify(payload) });
     renderAssistantAnswer(response);
     setMessage("assistant-message", "", true);
-  } catch (error) {
+  }).catch((error) => {
     clear($("assistant-answer"));
-    setMessage("assistant-message", error.message);
-  } finally {
-    askButton.disabled = false;
-    askButton.textContent = "Ask";
-  }
+    const message = friendlyError(error, "Assistant unavailable. Try again.");
+    setMessage("assistant-message", message);
+    showToast("Assistant unavailable", message, "error");
+  }).finally(() => {
+    state.loading.assistant = false;
+  });
 }
 
 function renderAssistantAnswer(response) {
@@ -1187,6 +1471,12 @@ if (typeof window !== "undefined") {
 
 function bindEvents() {
   $("start-button").addEventListener("click", startRun);
+  $("overview-view-button").addEventListener("click", () => switchMode("overview"));
+  $("overview-launch-demo-button").addEventListener("click", openDemoModal);
+  $("overview-refresh-button").addEventListener("click", refreshRun);
+  $("overview-open-prs-button").addEventListener("click", () => switchMode("simple"));
+  $("overview-open-approvals-button").addEventListener("click", () => { switchMode("review-queue"); loadReviewQueue(); });
+  $("overview-open-cloud-button").addEventListener("click", () => switchMode("cloud-hunt"));
   $("refresh-button").addEventListener("click", refreshRun);
   $("case-refresh-button").addEventListener("click", refreshRun);
   $("launch-demo-button").addEventListener("click", openDemoModal);
@@ -1211,6 +1501,8 @@ function bindEvents() {
   $("ask-cloud-button").addEventListener("click", () => openAssistant("cloud_hunt"));
   $("ask-approvals-button").addEventListener("click", () => openAssistant("approvals"));
   $("ask-technical-button").addEventListener("click", () => openAssistant("technical_audit"));
+  $("ask-global-button").addEventListener("click", () => openAssistant("product_help"));
+  $("notification-button").addEventListener("click", () => showToast("No new notifications", "This workspace has no notification feed configured.", "success"));
   $("assistant-close-button").addEventListener("click", closeAssistant);
   $("assistant-clear-button").addEventListener("click", () => { $("assistant-question-input").value = ""; clear($("assistant-answer")); setMessage("assistant-message", ""); });
   $("assistant-ask-button").addEventListener("click", askAssistant);
@@ -1219,6 +1511,7 @@ function bindEvents() {
     if (event.key === "Escape") closeAssistant();
   });
   $("assistant-backdrop").addEventListener("click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
+  document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("change", renderCloudHunt));
   document.querySelectorAll(".audit-section").forEach((section) => {
     section.addEventListener("toggle", () => {
       if (!section.open) return;
