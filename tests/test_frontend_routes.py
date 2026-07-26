@@ -13,27 +13,32 @@ def test_root_serves_agent_console() -> None:
 
     assert response.status_code == 200
     assert "GhostBusters" in response.text
-    assert "Simple View" in response.text
+    assert "PR Reviews" in response.text
+    assert "Approvals" in response.text
     assert "Technical Audit" in response.text
     assert 'id="simple-view"' in response.text
     assert 'id="technical-view" hidden' in response.text
-    assert "/static/app.js?v=milestone7b" in response.text
-    assert "/static/styles.css?v=milestone7b" in response.text
-    assert "GitHub Pull Request" in response.text
-    assert "Agent recommendation" in response.text
-    assert "Human decision" in response.text
-    assert "Final workflow outcome" in response.text
-    assert "Planning:" in response.text
+    assert "/static/app.js?v=judge-v5" in response.text
+    assert "/static/styles.css?v=judge-v5" in response.text
+    assert "Open Source PR" in response.text
+    assert "Launch Demo" in response.text
+    assert "Why GhostBusters recommends this" in response.text
+    assert "Approval creates a remediation pull request only." in response.text
+    assert "Open Technical Audit" in response.text
+    assert "Cloud Hunt" in response.text
+    assert "[object Object]" not in response.text
 
 
 def test_root_explains_objective_and_entry_modes_accurately() -> None:
     response = client.get("/")
 
-    assert "Investigation objective" in response.text
-    assert "deterministic planner uses explicit FinOps and safety rules" in response.text
-    assert "Demo Mode runs prepared Terraform pull-request examples" in response.text
-    assert "GitHub sends a pull-request webhook" in response.text
-    assert "Context input" in response.text
+    assert "No review selected." in response.text
+    assert "Open a case from Approvals" in response.text
+    assert "Demo Mode uses prepared fixture data" in response.text
+    assert "Demo scenario" in response.text
+    assert "Demo objective" in response.text
+    assert "Review objective" not in response.text
+    assert "Prepared case" not in response.text
     assert "High-level goal" not in response.text
     assert "chatbot" not in response.text.lower()
 
@@ -57,8 +62,8 @@ def test_javascript_asset_served() -> None:
     assert "stageDefinitions" in response.text
     assert "safeObject" in response.text
     assert "ensureCompatibleDom" in response.text
-    assert "Deterministic Python fallback" in response.text
-    assert "More human information is required" in response.text
-    assert "Gemini proposed investigation steps" in response.text
-    assert "deterministic planner" in response.text
+    assert "Deterministic Safety Policy" in response.text
+    assert "More Evidence Required" in response.text
+    assert "AI-assisted planning" in response.text
+    assert "Prepared fixtures are backing this demo case." in response.text
     assert "[object Object]" not in response.text

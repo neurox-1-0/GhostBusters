@@ -1,6 +1,7 @@
 const state = {
   run: null,
   scenarios: [],
+  demoScenarios: [],
   visibleEvents: [],
   animationTimer: null,
   paused: false,
@@ -8,26 +9,26 @@ const state = {
   selectedReviewAction: null,
   hunt: null,
   reviews: [],
+  selectedReviewContext: null,
 };
 
 const stageDefinitions = [
-  { id: "goal", title: "Goal received", description: "Business objective recorded.", matches: ["run_created", "goal_received"] },
-  { id: "terraform", title: "Terraform understood", description: "Proposed change parsed.", matches: ["terraform_parsed"] },
-  { id: "plan", title: "Investigation planned", description: "Evidence sources selected.", matches: ["investigation_plan_created", "tool_selected"] },
-  { id: "evidence", title: "Evidence collected", description: "Cost, usage and context checked.", prefix: ["tool_", "external_call_", "alternative_evidence_"] },
-  { id: "risk", title: "Risks checked", description: "Conflicts and safety verified.", matches: ["conflicts_detected", "verifier_completed", "failure_handled_safely"] },
-  { id: "alternatives", title: "Options compared", description: "Safe alternatives compared.", matches: ["alternatives_generated", "recommendation_produced"] },
-  { id: "policy", title: "Policy evaluated", description: "Rules allowed or blocked review.", prefix: ["policy_"] },
-  { id: "human", title: "Human review / execution", description: "A person authorizes the PR.", matches: ["human_review_received", "additional_evidence_requested", "human_context_added", "workflow_resumed", "preferred_action_modified", "mock_pr_created"] },
+  { id: "detected", title: "Detected", description: "Terraform pull-request change captured.", matches: ["run_created", "goal_received", "terraform_parsed"] },
+  { id: "investigated", title: "Investigated", description: "Cost, usage, dependency, and activity evidence gathered.", matches: ["investigation_plan_created", "tool_selected"], prefix: ["tool_", "external_call_", "alternative_evidence_"] },
+  { id: "recommended", title: "Recommended", description: "GhostBusters selected the safest cost action.", matches: ["conflicts_detected", "verifier_completed", "alternatives_generated", "recommendation_produced"], prefix: ["policy_"] },
+  { id: "human", title: "Human Review", description: "A reviewer confirms, rejects, or requests more context.", matches: ["human_review_received", "additional_evidence_requested", "human_context_added", "workflow_resumed", "preferred_action_modified"] },
+  { id: "remediation", title: "Remediation PR", description: "A simulated or real remediation pull request is recorded.", matches: ["mock_pr_created", "real_pr_created"] },
 ];
 
 const toolNames = ["pricing", "utilization", "jira", "git_activity", "dependencies"];
 const $ = (id) => document.getElementById(id);
-const uiVersion = "judge-v3";
+const uiVersion = "judge-v4";
 const requiredElementIds = [
   "api-pill",
   "simple-view",
   "technical-view",
+  "pr-empty-state",
+  "case-view",
   "stage-list",
   "recommendation-title",
   "important-alternatives",
@@ -36,9 +37,27 @@ const requiredElementIds = [
   "review-form",
   "result-view",
   "planning-badge",
-  "objective-helper",
   "planning-note",
+  "change-resource",
+  "source-title",
+  "recommendation-annual-savings",
+  "evidence-mode-badge",
+  "demo-modal-backdrop",
+  "demo-scenario-select",
+  "case-status",
+  "human-decision-summary",
+  "recommendation-summary",
+  "technical-content",
+  "technical-empty-state",
 ];
+
+const demoScenarioLabels = {
+  safe: "Safe optimization",
+  conflicting: "Conflicting evidence",
+  dependency: "Active dependency",
+  destructive: "Destructive change",
+  missing_evidence: "Missing evidence",
+};
 
 function ensureCompatibleDom() {
   const missing = requiredElementIds.filter((id) => !$(id));
@@ -117,7 +136,7 @@ function rawDetails(label, value) {
 }
 
 function labelFor(value) {
-  if (value === "terraform_pr") return "TERRAFORM PR";
+  if (value === "terraform_pr") return "Terraform PR";
   return String(value || "Not recorded").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
@@ -137,48 +156,133 @@ function percentage(value) {
 
 function recommendationLabel(action) {
   return {
-    request_evidence: "Request more evidence",
-    downsize: "Downsize the instance",
-    schedule: "Schedule the workload",
-    keep: "Keep the current configuration",
-    abstain: "Do not recommend a change",
-    blocked: "Do not proceed",
+    request_evidence: "More Evidence Required",
+    downsize: "Downsize to a safer lower-cost size",
+    schedule: "Schedule non-critical usage",
+    keep: "Keep resource unchanged",
+    stop_for_observation: "Stop temporarily and observe",
+    request_owner_confirmation: "Confirm owner before action",
+    release_unused_ip: "Release unused public IP",
+    abstain: "No change recommended",
+    blocked: "Blocked by policy",
   }[action] || labelFor(action);
 }
 
 function policyStatusLabel(status) {
   return {
-    needs_human_context: "More human information is required",
+    needs_human_context: "More Evidence Required",
     passed: "Allowed with safety conditions",
-    blocked: "Blocked by safety policy",
+    blocked: "Blocked by policy",
   }[status] || labelFor(status);
 }
 
 function policyEngineLabel(engine) {
   return {
-    python_fallback: "Deterministic Python fallback",
-    python: "Deterministic Python policy",
+    python_fallback: "Deterministic Safety Policy",
+    python: "Deterministic Safety Policy",
     conftest: "Conftest policy engine",
   }[engine] || "Not recorded";
 }
 
 function planningModeLabel(mode) {
   return {
-    gemini_primary: "Gemini-assisted",
-    gemini_fallback_model: "Gemini fallback model",
-    mock_gemini: "Mock Gemini Planner",
+    gemini_primary: "AI-assisted planning",
+    gemini_fallback_model: "AI fallback planning",
+    mock_gemini: "Mock AI planning",
     deterministic_fallback: "Deterministic fallback",
-    deterministic_only: "Deterministic only",
+    deterministic_only: "Deterministic safety policy",
   }[mode] || "Not recorded";
 }
 
 function runStatusLabel(status) {
   return {
-    pending_human_review: "Pending review",
-    needs_more_evidence: "Needs evidence",
-    pr_created: "PR created",
+    created: "Case created",
+    planning: "Investigating",
+    investigating: "Investigating",
+    verifying: "Investigating",
+    pending_human_review: "Awaiting Human Review",
+    needs_more_evidence: "More Evidence Required",
+    pr_created: "Remediation PR Created",
     failed_safely: "Failed safely",
-  }[status] || labelFor(status || "none");
+    rejected: "Recommendation Rejected",
+    approved: "Approved",
+    blocked: "Blocked by policy",
+    keep: "No change recommended",
+    abstained: "No recommendation",
+  }[status] || labelFor(status || "no_case");
+}
+
+function githubIntegrationLabel(run) {
+  if (run?.github_source) return "Real GitHub";
+  return "Ready for GitHub webhooks";
+}
+
+function integrationLabel(run) {
+  return run?.github_source ? "Real GitHub" : run ? "Fixture-backed" : "Not available";
+}
+
+function sourceKindLabel(run) {
+  return run?.github_source ? "GitHub Pull Request" : run ? "Controlled Demo" : "No case loaded";
+}
+
+function currentResourceChange(run) {
+  return run?.github_source?.resource_changes?.[0] || null;
+}
+
+function currentConfiguration(run) {
+  const resource = currentResourceChange(run);
+  return resource?.before?.instance_type || run?.mock_pr?.current_instance_type || "Not available";
+}
+
+function proposedConfiguration(run) {
+  const resource = currentResourceChange(run);
+  const preferred = preferredAlternative();
+  return resource?.after?.instance_type || preferred?.proposed_instance_type || run?.mock_pr?.proposed_instance_type || "Not available";
+}
+
+function changeTypeLabel(resource) {
+  if (!resource) return "Not available";
+  if (resource.destructive || resource.replacement) return "High-risk change";
+  if ((resource.actions || []).includes("create")) return "Resource creation";
+  if ((resource.actions || []).includes("delete")) return "Resource deletion";
+  return "Safe update";
+}
+
+function estimatedCostImpact(run) {
+  const pricing = evidenceValue("pricing");
+  if (!pricing) return "Not available";
+  const delta = Number(pricing.proposed_monthly_cost || 0) - Number(pricing.current_monthly_cost || 0);
+  if (delta === 0) return "$0/month";
+  return `${delta > 0 ? "+" : "-"}${money(Math.abs(delta)).replace("$", "$")}/month`;
+}
+
+function plainRecommendationTitle(run) {
+  const preferred = preferredAlternative();
+  const decision = run?.decision_record;
+  if (!decision) return "Waiting for review";
+  if (decision.policy_result?.status === "blocked") return "Blocked by Production Policy";
+  if (decision.policy_result?.status === "needs_human_context" || run?.status === "needs_more_evidence") return "More Evidence Required";
+  if (preferred?.action === "keep") return `Keep ${currentConfiguration(run)}`;
+  if (preferred?.action === "downsize" && preferred.proposed_instance_type) return `Downsize to ${preferred.proposed_instance_type}`;
+  return recommendationLabel(decision.preferred_action);
+}
+
+function fallbackText(value, fallback = "Not available") {
+  return value === null || value === undefined || value === "" ? fallback : formatValue(value);
+}
+
+function selectedCaseTitle(run) {
+  if (!run) return "Terraform PR Reviews";
+  if (run.github_source) return `PR #${run.github_source.pull_request_number}: ${run.github_source.pull_request_title || "Terraform review"}`;
+  return `${demoScenarioLabels[run.scenario_name] || labelFor(run.scenario_name)} demo case`;
+}
+
+function isDemoRun(run) {
+  return run?.source_type === "manual_demo";
+}
+
+function hasSelectedCase() {
+  return Boolean(state.run);
 }
 
 async function api(path, options = {}) {
@@ -203,12 +307,13 @@ function setMessage(id, message, success = false) {
 async function loadInitial() {
   try {
     const [health, scenarios] = await Promise.all([api("/health"), api("/api/scenarios")]);
-    $("api-pill").textContent = `API: ${health.status === "ok" ? "Online" : labelFor(health.status)}`;
+    $("api-pill").textContent = `System Online: ${health.status === "ok" ? "Yes" : labelFor(health.status)}`;
     state.scenarios = scenarios.scenarios || [];
+    state.demoScenarios = state.scenarios.filter((scenario) => demoScenarioLabels[scenario]);
     renderScenarioOptions();
-    setMessage("ui-message", "API ready. Choose a prepared scenario.", true);
+    setMessage("ui-message", "Ready for incoming reviews.", true);
   } catch (error) {
-    $("api-pill").textContent = "API: Unavailable";
+    $("api-pill").textContent = "System Online: No";
     setMessage("ui-message", error.message);
   }
   loadReviewQueue();
@@ -237,10 +342,10 @@ async function startCloudHunt() {
 }
 
 function renderScenarioOptions() {
-  const select = $("scenario-select");
+  const select = $("demo-scenario-select");
   clear(select);
-  state.scenarios.forEach((scenario) => {
-    const option = el("option", null, scenario);
+  state.demoScenarios.forEach((scenario) => {
+    const option = el("option", null, demoScenarioLabels[scenario] || scenario);
     option.value = scenario;
     select.appendChild(option);
   });
@@ -248,32 +353,38 @@ function renderScenarioOptions() {
 
 async function startRun() {
   try {
-    setMessage("ui-message", "Starting investigation...", true);
+    setMessage("demo-message", "Starting demo...", true);
     const run = await api("/api/runs", {
       method: "POST",
       body: JSON.stringify({
         goal: $("goal-input").value,
-        scenario_name: $("scenario-select").value,
+        scenario_name: $("demo-scenario-select").value,
         idempotency_key: `ui-${Date.now()}`,
       }),
     });
     state.run = run;
+    state.selectedReviewContext = { source: "demo", runId: run.id };
     localStorage.setItem("ghostbusters:lastRunId", run.id);
     state.skipAnimation = $("skip-animation").checked;
+    closeDemoModal();
     startAnimation();
-    setMessage("ui-message", "Investigation complete. Replaying the recorded audit stages.", true);
+    switchMode("simple");
+    setMessage("ui-message", "Demo case loaded.", true);
   } catch (error) {
-    setMessage("ui-message", error.message);
+    setMessage("demo-message", error.message);
   }
 }
 
 async function refreshRun() {
   const runId = state.run?.id || localStorage.getItem("ghostbusters:lastRunId");
-  if (!runId) return setMessage("ui-message", "No run is available to refresh.");
+  if (!runId) {
+    loadReviewQueue();
+    return setMessage("ui-message", "Reviews refreshed.");
+  }
   try {
     state.run = await api(`/api/runs/${runId}`);
     startAnimation(true);
-    setMessage("ui-message", "Current run refreshed.", true);
+    setMessage("ui-message", "Current review refreshed.", true);
   } catch (error) {
     setMessage("ui-message", error.message);
   }
@@ -284,14 +395,25 @@ async function resetDemo() {
     await api("/api/reset", { method: "POST", body: "{}" });
     window.clearInterval(state.animationTimer);
     state.run = null;
+    state.selectedReviewContext = null;
     state.visibleEvents = [];
     localStorage.removeItem("ghostbusters:lastRunId");
     closeReviewForm();
+    closeDemoModal();
     renderAll();
     setMessage("ui-message", "Demo reset.", true);
   } catch (error) {
     setMessage("ui-message", error.message);
   }
+}
+
+function openDemoModal() {
+  $("demo-modal-backdrop").hidden = false;
+  setMessage("demo-message", "");
+}
+
+function closeDemoModal() {
+  $("demo-modal-backdrop").hidden = true;
 }
 
 function startAnimation(showAll = false) {
@@ -334,18 +456,12 @@ function renderStages() {
     let stageState = "pending";
     if (events.length && events.length === allStageEvents.length) stageState = "complete";
     if (index === lastCompleted && visible.length < allEvents.length) stageState = "active";
-    if (stage.id === "human" && state.run?.status === "blocked") stageState = "blocked";
-    if (stage.id === "human" && ["needs_more_evidence", "abstained"].includes(state.run?.status)) stageState = "warning";
+    if (stage.id === "recommended" && state.run?.status === "blocked") stageState = "blocked";
+    if (["human", "recommended"].includes(stage.id) && ["needs_more_evidence", "abstained"].includes(state.run?.status)) stageState = "warning";
+    if (stage.id === "remediation" && state.run?.status === "pr_created") stageState = "complete";
     const item = el("li", `stage ${stageState}`);
     const stageStatusLabel = { pending: "Waiting", active: "Current", complete: "Complete", warning: "Needs attention", blocked: "Blocked" }[stageState];
     append(item, el("span", "stage-number", index + 1), el("strong", null, stage.title), el("p", null, stage.description), el("span", "stage-status", stageStatusLabel));
-    if (events.length) {
-      const details = el("details");
-      const eventList = el("ol", "stage-events");
-      events.forEach((event) => eventList.appendChild(el("li", null, event.summary)));
-      append(details, el("summary", null, `${events.length} recorded event${events.length === 1 ? "" : "s"}`), eventList);
-      item.appendChild(details);
-    }
     list.appendChild(item);
   });
   renderCurrentAction(visible[visible.length - 1]);
@@ -353,10 +469,10 @@ function renderStages() {
 
 function renderCurrentAction(event) {
   if (!event) {
-    $("current-action").textContent = "No run started";
-    $("current-reason").textContent = "Start an investigation to see the recorded workflow.";
+    $("current-action").textContent = "No case loaded";
+    $("current-reason").textContent = "Open a review from Approvals or launch a demo.";
     $("current-output").textContent = "Waiting";
-    $("current-next").textContent = "Choose a prepared scenario";
+    $("current-next").textContent = "Open Approvals";
     return;
   }
   const stage = stageForEvent(event);
@@ -398,16 +514,16 @@ function evidenceSummary(source, item) {
     return { title: labelFor(source), detail: "Evidence unavailable", conclusion: item?.claim || "Source did not return evidence" };
   }
   const value = item.value;
-  if (source === "pricing") return { title: "Cost impact", detail: `${money(value.current_monthly_cost)} to ${money(value.proposed_monthly_cost)} monthly`, conclusion: `Potential saving: ${money(Number(value.current_monthly_cost || 0) - Number(value.proposed_monthly_cost || 0))} per month` };
+  if (source === "pricing") return { title: "Pricing", detail: `Current option costs ${money(value.current_monthly_cost)}/month`, conclusion: `Recommended option costs ${money(value.proposed_monthly_cost)}/month` };
   if (source === "utilization") {
     const headroom = Number(value.peak_cpu_pct) < 60;
-    return { title: "Utilization", detail: `Average CPU ${formatValue(value.average_cpu_pct)}%, peak ${formatValue(value.peak_cpu_pct)}%`, conclusion: headroom ? "Rightsizing headroom exists" : "Not enough clearly safe headroom" };
+    return { title: "Utilization", detail: `Average CPU is ${formatValue(value.average_cpu_pct)}%`, conclusion: `Peak CPU is ${formatValue(value.peak_cpu_pct)}%` };
   }
-  if (source === "jira") return { title: "Jira", detail: `${formatValue(value.issue_key)} is ${labelFor(value.status)}`, conclusion: String(value.status).toLowerCase() === "completed" ? "Project may appear inactive" : "Project remains active or under review" };
-  if (source === "git_activity") return { title: "Git activity", detail: `${formatValue(value.recent_commit_count)} recent commits; last commit ${formatValue(value.days_since_last_commit)} days ago`, conclusion: Number(value.recent_commit_count) > 0 ? "Recent work may contradict project status" : "No recent repository activity recorded" };
+  if (source === "jira") return { title: "Jira", detail: `${formatValue(value.issue_key)} is ${labelFor(value.status)}`, conclusion: String(value.status).toLowerCase() === "completed" ? "Project appears completed" : "Project remains active or under review" };
+  if (source === "git_activity") return { title: "Git activity", detail: `${formatValue(value.recent_commit_count)} recent commits were found`, conclusion: `Last commit was ${formatValue(value.days_since_last_commit)} days ago` };
   if (source === "dependencies") {
     const dependencies = value.active_downstream_dependencies || value.blocking_services || [];
-    return { title: "Dependencies", detail: dependencies.length ? `Active: ${formatValue(dependencies)}` : "No active downstream dependencies", conclusion: dependencies.length ? "Automatic remediation may be unsafe" : "No dependency blocker found" };
+    return { title: "Dependencies", detail: dependencies.length ? `Active dependencies: ${formatValue(dependencies)}` : "No active dependencies were found", conclusion: dependencies.length ? "Automatic remediation may be unsafe" : "No dependency blocker was found" };
   }
   return { title: labelFor(source), detail: item.claim, conclusion: formatValue(value) };
 }
@@ -416,14 +532,22 @@ function renderEvidenceSummary() {
   const node = $("evidence-summary-view");
   clear(node);
   const evidence = state.run?.decision_record?.evidence || [];
-  $("evidence-count").textContent = `${evidence.length} source${evidence.length === 1 ? "" : "s"}`;
-  if (!evidence.length) {
-    node.appendChild(el("p", "muted", "Evidence summaries appear after investigation."));
+  const badge = $("evidence-mode-badge");
+  badge.hidden = state.run?.source_type !== "manual_demo";
+  const bullets = [];
+  evidence.filter((item) => toolNames.includes(item.source)).forEach((item) => {
+    const summary = evidenceSummary(item.source, item);
+    bullets.push(summary.detail);
+    bullets.push(summary.conclusion);
+  });
+  const uniqueBullets = bullets.filter(Boolean).filter((item, index, all) => all.indexOf(item) === index).slice(0, 5);
+  $("evidence-count").textContent = `${uniqueBullets.length} bullet${uniqueBullets.length === 1 ? "" : "s"}`;
+  if (!uniqueBullets.length) {
+    node.appendChild(el("p", "muted", state.run ? "Evidence is still being gathered." : "Evidence bullets appear after a review starts."));
   } else {
-    evidence.filter((item) => toolNames.includes(item.source)).forEach((item) => {
-      const summary = evidenceSummary(item.source, item);
+    uniqueBullets.forEach((text) => {
       const signal = el("div", "signal");
-      append(signal, el("strong", null, summary.title), el("span", null, summary.detail), el("span", null, `Conclusion: ${summary.conclusion}`));
+      append(signal, el("strong", null, text));
       node.appendChild(signal);
     });
   }
@@ -446,7 +570,7 @@ function renderEvidenceSummary() {
 function recommendationReason(decision, preferred) {
   const highConflicts = (decision?.conflicts || []).filter((item) => item.severity === "high");
   if (highConflicts.length) return `${highConflicts.length} high-risk conflict${highConflicts.length === 1 ? " remains" : "s remain"}: ${highConflicts.map((item) => item.explanation).join(" ")}`;
-  if (decision?.missing_evidence?.length) return `Critical evidence is incomplete: ${decision.missing_evidence.map((item) => labelFor(item.source)).join(", ")}.`;
+  if (decision?.missing_evidence?.length) return `GhostBusters needs more evidence before it can recommend a safe remediation.`;
   return preferred?.description || decision?.final_summary || "No recommendation recorded.";
 }
 
@@ -458,11 +582,11 @@ function riskLevel(decision, preferred) {
 }
 
 function nextHumanAction(run) {
-  if (!run) return "Start an investigation";
+  if (!run) return "Start a review";
   if (run.status === "pending_human_review") return "Approve, modify, request evidence, or reject";
   if (run.status === "needs_more_evidence") return "Add business context or request updated evidence";
   if (run.status === "blocked") return "Add context where supported; approval is unavailable";
-  if (run.status === "pr_created") return "Review the simulated remediation pull request";
+  if (run.status === "pr_created") return "Review the remediation pull request";
   if (run.status === "rejected") return "Review closed by human rejection";
   return "Review the recorded outcome";
 }
@@ -470,13 +594,14 @@ function nextHumanAction(run) {
 function renderRecommendation() {
   const decision = state.run?.decision_record;
   const preferred = preferredAlternative();
-  $("recommendation-title").textContent = decision ? recommendationLabel(decision.preferred_action) : "Waiting for investigation";
-  $("recommendation-reason").textContent = decision ? recommendationReason(decision, preferred) : "The recommendation will appear here after evidence and safety checks complete.";
+  $("recommendation-title").textContent = plainRecommendationTitle(state.run);
+  $("recommendation-reason").textContent = decision ? recommendationReason(decision, preferred) : "The recommendation will appear here after GhostBusters completes its investigation.";
   $("recommendation-confidence").textContent = percentage(decision?.confidence?.final_confidence);
   $("recommendation-risk").textContent = decision ? riskLevel(decision, preferred) : "--";
   $("recommendation-policy").textContent = decision ? policyStatusLabel(decision.policy_result?.status) : "--";
-  $("recommendation-policy-technical").textContent = decision ? `Status: ${decision.policy_result?.status} | Engine ID: ${decision.policy_result?.engine}` : "";
+  $("recommendation-policy-technical").textContent = "";
   $("recommendation-savings").textContent = preferred ? `${money(preferred.estimated_monthly_savings)}/month` : "--";
+  $("recommendation-annual-savings").textContent = preferred ? `${money(preferred.estimated_annual_savings)}/year` : "--";
   $("recommendation-next").textContent = nextHumanAction(state.run);
   const alternativesNode = $("important-alternatives");
   clear(alternativesNode);
@@ -493,19 +618,15 @@ function renderRecommendation() {
 
 function renderPlanningStatus() {
   const mode = state.run?.decision_record?.planning_mode || "deterministic_only";
-  $("planning-badge").textContent = `Planning: ${planningModeLabel(mode)}`;
+  $("planning-badge").textContent = isDemoRun(state.run) ? "Demo Case" : "GitHub Review";
   if (mode === "gemini_primary" || mode === "gemini_fallback_model") {
-    $("objective-helper").textContent = "This objective is interpreted by Gemini to help plan the investigation. Every proposed action is validated by deterministic safety rules.";
-    $("planning-note").textContent = "Gemini proposed investigation steps. GhostBusters validated each action before execution.";
+    $("planning-note").textContent = "AI-assisted planning was used for this case. Deterministic safety checks remained in control.";
   } else if (mode === "mock_gemini") {
-    $("objective-helper").textContent = "This objective is interpreted by the local mock planner for demonstration. Every proposed action is validated by deterministic safety rules.";
-    $("planning-note").textContent = "Mock Gemini proposed investigation steps. GhostBusters validated each action before execution.";
+    $("planning-note").textContent = "Mock AI planning was used for demonstration only.";
   } else if (mode === "deterministic_fallback") {
-    $("objective-helper").textContent = "This objective is recorded as business context. The deterministic planner uses explicit FinOps and safety rules.";
-    $("planning-note").textContent = "Gemini was unavailable or disabled. GhostBusters continued using its deterministic planner.";
+    $("planning-note").textContent = "AI planning was unavailable, so GhostBusters continued with deterministic review logic.";
   } else {
-    $("objective-helper").textContent = "This objective is recorded as business context. The deterministic planner uses explicit FinOps and safety rules.";
-    $("planning-note").textContent = "Deterministic planning is active; no AI provider handled this run.";
+    $("planning-note").textContent = isDemoRun(state.run) ? "Prepared fixtures are backing this demo case." : "";
   }
 }
 
@@ -530,15 +651,15 @@ function renderHumanControls() {
   });
   const humanQuestion = state.run?.decision_record?.human_question;
   $("review-guidance").textContent = humanQuestion
-    ? `Agent question: ${humanQuestion}`
+    ? humanQuestion
     : !state.run
-    ? "Start a run to see the actions permitted by its safety state."
+    ? "Start a review to see the actions permitted by this case."
     : status === "blocked"
-      ? "This run is blocked. Approval and remediation controls are unavailable."
+      ? "This case is blocked. Approval and remediation controls are unavailable."
       : status === "needs_more_evidence"
         ? "The recommendation is not ready for approval. Add context or request missing evidence."
         : status === "pending_human_review"
-          ? "Policy permits a human to decide whether a remediation PR should be created."
+          ? "A human reviewer can decide whether GhostBusters should create a remediation pull request."
         : allowed.length ? "Human input can refine the recorded decision." : "No further review action is available in this state.";
   if (state.selectedReviewAction && !allowed.includes(state.selectedReviewAction)) closeReviewForm();
 }
@@ -569,7 +690,7 @@ function selectReviewAction(action) {
   $("sources-field").hidden = action !== "request_evidence";
   $("context-field").hidden = action !== "add_context";
   $("modify-field").hidden = action !== "modify";
-  $("submit-review-button").textContent = action === "approve" ? "Approve and create PR" : action === "reject" ? "Confirm rejection" : "Submit";
+  $("submit-review-button").textContent = action === "approve" ? "Approve Remediation" : action === "reject" ? "Confirm rejection" : "Submit";
   $("review-form").scrollIntoView({ block: "nearest" });
 }
 
@@ -597,37 +718,38 @@ async function submitSelectedReview() {
 
 function finalOutcome(run) {
   return {
-    pr_created: "Remediation PR created",
-    rejected: "Workflow closed. No PR created.",
-    needs_more_evidence: "Workflow paused for more evidence.",
-    blocked: "Workflow blocked. No PR can be created.",
-    failed_safely: "Workflow stopped safely. No PR created.",
-    pending_human_review: "Awaiting human authorization. No PR created yet.",
-    abstained: "Workflow ended without a remediation recommendation.",
-    keep: "Current infrastructure retained. No PR created.",
-  }[run?.status] || "Waiting for human input";
+    pr_created: run?.real_pr ? "Real Remediation PR Created" : "Simulated Remediation PR Created",
+    rejected: "Recommendation Rejected",
+    needs_more_evidence: "More Evidence Requested",
+    blocked: "Blocked by Policy",
+    failed_safely: "Remediation PR Creation Failed Safely",
+    pending_human_review: "Awaiting Human Approval",
+    abstained: "More Evidence Required",
+    keep: "No change recommended",
+  }[run?.status] || "Awaiting Human Approval";
 }
 
 function renderResult() {
   const node = $("result-view");
   clear(node);
   $("result-title").textContent = finalOutcome(state.run);
+  node.appendChild(el("div", "result-state", finalOutcome(state.run)));
   const real = state.run?.real_pr;
-  if (real) {
+  if (real?.url) {
     const summary = el("div", "pr-summary");
-    [["Result", "Real remediation pull request"], ["PR", `#${real.number}`], ["Branch", real.branch], ["Base", real.base_branch], ["Repository", real.repository]].forEach(([label, value]) => { const item = el("div"); append(item, el("span", null, label), el("strong", null, value)); summary.appendChild(item); });
+    [["Result", "Real remediation pull request"], ["PR", `#${real.number}`], ["Remediation branch", real.branch], ["Target branch", real.base_branch], ["Repository", real.repository]].forEach(([label, value]) => { const item = el("div"); append(item, el("span", null, label), el("strong", null, value)); summary.appendChild(item); });
     const link = el("a", "github-link", "Open in GitHub"); link.href = real.url; link.target = "_blank"; link.rel = "noopener noreferrer";
     append(node, summary, link);
     return;
   }
   const pr = state.run?.mock_pr;
   if (!pr) {
-    node.appendChild(el("p", "muted", state.run ? "No PR has been created." : "Start an investigation to see the final workflow outcome."));
+    node.appendChild(el("p", "muted", state.run ? "No remediation pull request has been created." : "Start a review to see the final workflow outcome."));
     return;
   }
   const layout = el("div", "result-grid");
   const summary = el("div", "pr-summary");
-  [["PR", `#${pr.pr_number}`], ["Action", recommendationLabel(pr.chosen_action)], ["Branch", pr.branch], ["Savings", `${money(pr.monthly_savings)}/month | ${money(pr.annual_savings)}/year`], ["From", pr.current_instance_type], ["To", pr.proposed_instance_type]].forEach(([label, value]) => {
+  [["PR", `#${pr.pr_number}`], ["Action", recommendationLabel(pr.chosen_action)], ["Remediation branch", pr.branch], ["Savings", `${money(pr.monthly_savings)}/month | ${money(pr.annual_savings)}/year`], ["Current configuration", pr.current_instance_type], ["Recommended configuration", pr.proposed_instance_type]].forEach(([label, value]) => {
     const item = el("div"); append(item, el("span", null, label), el("strong", null, value)); summary.appendChild(item);
   });
   const diff = el("pre"); diff.textContent = pr.terraform_patch_preview || "Not recorded";
@@ -636,22 +758,44 @@ function renderResult() {
 }
 
 function renderSource() {
-  const source = state.run?.github_source;
-  $("source-kind").textContent = source ? "GitHub Pull Request | Integration: Real" : state.run ? "Fixture / Demo" : "Integration disabled or no run";
-  $("source-repository").textContent = source?.repository || "Not recorded";
-  $("source-pr").textContent = source ? `#${source.pull_request_number} - ${source.pull_request_title || "Title unavailable"}` : "Not recorded";
-  $("source-author").textContent = source?.author || "Not recorded";
-  $("source-branches").textContent = source ? `${source.head_branch} -> ${source.base_branch} | ${source.head_sha}` : "Not recorded";
-  $("source-files").textContent = source?.terraform_files?.length ? source.terraform_files.join(", ") : source ? "No Terraform files selected" : "Prepared fixture";
+  const run = state.run;
+  const source = run?.github_source;
+  const change = currentResourceChange(run);
+  const sourceLink = $("source-pr-link");
+  $("start-title").textContent = selectedCaseTitle(run);
+  $("case-badge").textContent = isDemoRun(run) ? "Demo Case" : "PR Review";
+  $("source-kind").textContent = sourceKindLabel(run);
+  $("source-repository").textContent = source?.repository || "Not available";
+  $("source-pr").textContent = source ? `#${source.pull_request_number}` : "Prepared scenario";
+  $("source-title").textContent = source?.pull_request_title || (run ? demoScenarioLabels[run.scenario_name] || labelFor(run.scenario_name) : "Not available");
+  $("source-head").textContent = source?.head_branch || "Not available";
+  $("source-base").textContent = source?.base_branch || "Not available";
+  $("source-integration").textContent = integrationLabel(run);
+  sourceLink.hidden = !source?.pull_request_url;
+  sourceLink.href = source?.pull_request_url || "#";
+  $("change-resource").textContent = change?.address || run?.decision_record?.resource_id || "Not available";
+  $("change-before").textContent = currentConfiguration(run);
+  $("change-after").textContent = proposedConfiguration(run);
+  $("change-provider").textContent = change?.provider || source?.provider || "Not available";
+  $("change-file").textContent = change?.source_file || source?.terraform_files?.[0] || "Not available";
+  $("change-environment").textContent = source?.environment || change?.environment || "Not available";
+  $("change-type").textContent = changeTypeLabel(change);
+  $("change-cost-impact").textContent = estimatedCostImpact(run);
+  $("change-impact-badge").textContent = run ? estimatedCostImpact(run) : "No change loaded";
 }
 
 function renderStatus() {
   const run = state.run;
-  $("run-pill").textContent = `Run: ${runStatusLabel(run?.status)}`;
-  $("policy-pill").textContent = `Policy: ${policyEngineLabel(run?.decision_record?.policy_result?.engine)}`;
-  $("approval-pill").textContent = `Human: ${humanDecision(run).label}`;
+  $("run-pill").textContent = `GitHub Integration: ${githubIntegrationLabel(run)}`;
+  $("api-pill").textContent = $("api-pill").textContent || "System Online: Yes";
+  $("approval-pill").textContent = "Demo Environment: Active";
+  $("demo-pill-chip").hidden = !isDemoRun(run);
   $("technical-run-id").textContent = `Run ID: ${run?.id || "not recorded"}`;
-  $("trigger-source").textContent = run?.github_source ? "Trigger source: GitHub Pull Request" : run ? "Trigger source: Fixture / Demo" : "Trigger source not recorded";
+  $("trigger-source").textContent = run?.github_source ? "Source: GitHub Pull Request" : run ? "Source: Controlled Demo" : "Webhook not yet received or no demo case started.";
+  $("case-status").textContent = runStatusLabel(run?.status);
+  $("human-decision-summary").textContent = humanDecision(run).label;
+  $("recommendation-summary").textContent = plainRecommendationTitle(run);
+  $("evidence-source-card").hidden = !isDemoRun(run);
 }
 
 function renderAudit() {
@@ -788,6 +932,9 @@ function renderRuntime() {
 }
 
 function renderTechnical() {
+  $("technical-empty-state").hidden = hasSelectedCase();
+  $("technical-content").hidden = !hasSelectedCase();
+  if (!hasSelectedCase()) return;
   renderAudit(); renderAIDecisions(); renderPlan(); renderTools(); renderTerraform(); renderEvidence(); renderConflicts(); renderAlternatives(); renderVerifier(); renderPolicy(); renderResilience(); renderHistory(); renderImpact(); renderRuntime();
 }
 
@@ -806,6 +953,8 @@ function renderAIDecisions() {
 }
 
 function renderAll() {
+  $("pr-empty-state").hidden = hasSelectedCase();
+  $("case-view").hidden = !hasSelectedCase();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
   renderCloudHunt(); renderReviewQueue();
 }
@@ -828,8 +977,15 @@ function renderCloudHunt() {
   if (!summary) return;
   clear(summary);
   const data = state.hunt?.summary;
-  if (!data) return;
-  [["Resources scanned", data.total_resources], ["Candidates", data.candidates], ["Protected", data.protected_candidates], ["Human context", data.needs_human_context], ["Monthly waste", money(data.estimated_monthly_waste)], ["Annual waste", money(data.estimated_annual_waste)]].forEach(([label, value]) => {
+  if (!data) {
+    summary.appendChild(el("p", "muted", "No cloud-hunt scan has been run yet."));
+    $("candidate-count").textContent = "0 candidates";
+    const list = $("candidate-list");
+    clear(list);
+    list.appendChild(el("p", "muted", "No cloud-hunt candidates to review yet."));
+    return;
+  }
+  [["Provider scope", labelFor(state.hunt.provider_scope)], ["Resources scanned", data.total_resources], ["Candidates found", data.candidates], ["Protected resources", data.protected_candidates], ["Pending human reviews", data.needs_human_context], ["Monthly waste", money(data.estimated_monthly_waste)]].forEach(([label, value]) => {
     const card = el("article", "panel hunt-metric");
     append(card, el("span", null, label), el("strong", null, value));
     summary.appendChild(card);
@@ -841,12 +997,22 @@ function renderCloudHunt() {
     const card = el("article", "candidate-card");
     const supporting = candidate.signals.filter((signal) => signal.supports_ghost_hypothesis).slice(0, 5).map((signal) => signal.description);
     const protective = candidate.signals.filter((signal) => !signal.supports_ghost_hypothesis).map((signal) => signal.description);
-    append(card, el("p", "kicker", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("h3", null, resource.resource_name), dataList([["Environment", resource.environment], ["Monthly cost", money(resource.estimated_monthly_cost)], ["Candidate confidence", percentage(candidate.candidate_score)], ["Review state", candidate.exclusion_reason || "Investigation created"]]), el("strong", "candidate-heading", "Why it was flagged"));
+    const tags = el("div", "tag-row");
+    const candidateTag = el("span", `signal-tag ${candidate.exclusion_reason ? "info" : candidate.candidate_score >= 0.8 ? "success" : "warning"}`);
+    candidateTag.textContent = candidate.exclusion_reason
+      ? "Protected resource"
+      : candidate.candidate_score >= 0.8
+        ? "High-confidence ghost resource"
+        : candidate.requires_investigation
+          ? "Needs more context"
+          : "Suspicious candidate";
+    tags.appendChild(candidateTag);
+    append(card, el("p", "kicker", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("h3", null, resource.resource_name), tags, dataList([["Environment", resource.environment], ["Monthly cost", money(resource.estimated_monthly_cost)], ["Confidence", percentage(candidate.candidate_score)], ["Current state", candidate.exclusion_reason || "Pending human review"]]), el("strong", "candidate-heading", "Why GhostBusters flagged it"));
     supporting.forEach((item) => card.appendChild(el("p", "candidate-signal", item)));
-    if (protective.length) { card.appendChild(el("strong", "candidate-heading", "Protection")); protective.forEach((item) => card.appendChild(el("p", "candidate-protection", item))); }
+    if (protective.length) { card.appendChild(el("strong", "candidate-heading", "Why GhostBusters is cautious")); protective.forEach((item) => card.appendChild(el("p", "candidate-protection", item))); }
     list.appendChild(card);
   });
-  if (!state.hunt.candidates.length) list.appendChild(el("p", "muted", "No suspicious candidates met the configured threshold."));
+  if (!state.hunt.candidates.length) list.appendChild(el("p", "muted", "No cloud-hunt candidates met the configured threshold."));
 }
 
 async function actOnCloudCase(id, action) {
@@ -860,26 +1026,66 @@ function renderReviewQueue() {
   const node = $("review-queue-list");
   if (!node) return;
   clear(node);
-  if (!state.reviews.length) return node.appendChild(el("p", "muted", "No review cases loaded."));
+  if (!state.reviews.length) return node.appendChild(el("p", "muted", "No review cases are waiting right now."));
   state.reviews.forEach((item) => {
     const card = el("article", "queue-card");
-    append(card, el("p", "kicker", `${labelFor(item.source_type)}${item.provider ? ` | ${labelFor(item.provider)}` : ""}`), el("h3", null, item.resource_name), dataList([["Recommendation", item.recommendation], ["Confidence", percentage(item.confidence)], ["Savings", money(item.estimated_monthly_savings) + "/month"], ["Risk", item.risk_level], ["Required reviewer", labelFor(item.required_reviewer_role)], ["State", labelFor(item.status)]]), el("p", "queue-reason", item.recommendation_reason));
-    if (item.source_type === "cloud_hunt" && ["pending", "needs_more_evidence"].includes(item.status)) {
-      const actions = el("div", "queue-actions");
-      if (item.status === "pending") { const approve = el("button", null, "Approve simulated PR"); approve.addEventListener("click", () => actOnCloudCase(item.id, "approve")); actions.appendChild(approve); }
-      const reject = el("button", "danger", "Reject"); reject.addEventListener("click", () => actOnCloudCase(item.id, "reject")); actions.appendChild(reject);
-      card.appendChild(actions);
-    } else if (item.source_type === "terraform_pr") {
-      const open = el("button", "secondary", "Open investigation"); open.addEventListener("click", async () => { state.run = await api(`/api/runs/${item.id}`); startAnimation(true); switchMode("simple"); }); card.appendChild(open);
+    const heading = item.source_type === "terraform_pr"
+      ? item.repository || "Terraform review"
+      : item.provider ? labelFor(item.provider) : "Cloud Hunt";
+    append(card, el("p", "kicker", labelFor(item.source_type)), el("h3", null, heading), dataList([["Resource", item.resource_name], ["Recommendation", item.recommendation], ["Confidence", percentage(item.confidence)], ["Savings", `${money(item.estimated_monthly_savings)}/month`], ["Policy status", policyStatusLabel(item.policy_status)], ["Current state", runStatusLabel(item.status)]]), el("p", "queue-reason", item.recommendation_reason));
+    const actions = el("div", "queue-actions");
+    const open = el("button", "secondary", "Open Review");
+    if (item.source_type === "terraform_pr") {
+      open.addEventListener("click", async () => {
+        state.run = await api(`/api/runs/${item.id}`);
+        state.selectedReviewContext = { source: "approvals", type: "terraform_pr", runId: item.id };
+        startAnimation(true);
+        switchMode("simple");
+      });
+    } else {
+      open.addEventListener("click", () => {
+        state.selectedReviewContext = { source: "approvals", type: item.source_type, runId: item.id };
+        switchMode("cloud-hunt");
+      });
     }
+    actions.appendChild(open);
+    card.appendChild(actions);
     node.appendChild(card);
   });
+}
+
+if (typeof window !== "undefined") {
+  window.__ghostbustersTestHooks = {
+    state,
+    renderAll,
+    renderCloudHunt,
+    renderReviewQueue,
+    renderTechnical,
+    openDemoModal,
+    closeDemoModal,
+    switchMode,
+    allowedReviewActions,
+    humanDecision,
+    currentConfiguration,
+    proposedConfiguration,
+    changeTypeLabel,
+    estimatedCostImpact,
+    plainRecommendationTitle,
+    policyStatusLabel,
+    runStatusLabel,
+  };
 }
 
 function bindEvents() {
   $("start-button").addEventListener("click", startRun);
   $("refresh-button").addEventListener("click", refreshRun);
-  $("reset-button").addEventListener("click", resetDemo);
+  $("case-refresh-button").addEventListener("click", refreshRun);
+  $("launch-demo-button").addEventListener("click", openDemoModal);
+  $("case-launch-demo-button").addEventListener("click", openDemoModal);
+  $("cancel-demo-button").addEventListener("click", closeDemoModal);
+  $("close-demo-button").addEventListener("click", closeDemoModal);
+  $("open-approvals-button").addEventListener("click", () => switchMode("review-queue"));
+  $("technical-open-approvals-button").addEventListener("click", () => switchMode("review-queue"));
   $("pause-button").addEventListener("click", () => { state.paused = !state.paused; $("pause-button").textContent = state.paused ? "Resume" : "Pause"; });
   $("skip-animation").addEventListener("change", (event) => { state.skipAnimation = event.target.checked; if (state.run && state.skipAnimation) startAnimation(true); });
   $("simple-view-button").addEventListener("click", () => switchView(false));
