@@ -157,9 +157,30 @@ function append(parent, ...children) {
 
 function dataList(entries) {
   const list = el("dl", "data-list");
+  const technicalLabels = new Set([
+    "Base branch",
+    "Engine",
+    "Event type",
+    "Head SHA",
+    "Idempotency key",
+    "Model",
+    "Policy engine",
+    "Pull request",
+    "Real remediation URL",
+    "Repository",
+    "Resource",
+    "Resource ID",
+    "Run ID",
+    "Scenario fixture",
+    "Source file",
+    "Terraform actions",
+    "Tool",
+    "Trigger source",
+    "Version",
+  ]);
   entries.forEach(([label, value]) => {
     const row = el("div");
-    append(row, el("dt", null, label), el("dd", null, value));
+    append(row, el("dt", null, label), el("dd", technicalLabels.has(label) ? "technical-value" : null, value));
     list.appendChild(row);
   });
   return list;
@@ -303,7 +324,8 @@ function responsiveTable(columns, rows, emptyMessage) {
   const thead = el("thead");
   const headRow = el("tr");
   columns.forEach((column) => {
-    const th = el("th", column.priority ? `priority-${column.priority}` : null, column.label);
+    const thClass = ["table-heading", column.priority ? `priority-${column.priority}` : ""].filter(Boolean).join(" ");
+    const th = el("th", thClass, column.label);
     th.scope = "col";
     headRow.appendChild(th);
   });
@@ -898,7 +920,7 @@ function selectReviewAction(action) {
   $("sources-field").hidden = action !== "request_evidence";
   $("context-field").hidden = action !== "add_context";
   $("modify-field").hidden = action !== "modify";
-  $("submit-review-button").textContent = action === "approve" ? "Approve Remediation" : action === "reject" ? "Confirm rejection" : "Submit";
+  $("submit-review-button").textContent = action === "approve" ? "Approve Remediation" : action === "reject" ? "Confirm Rejection" : "Send Review Update";
   $("review-form").scrollIntoView({ block: "nearest" });
 }
 
@@ -914,7 +936,7 @@ async function submitSelectedReview() {
   if (action === "request_evidence") payload.requested_sources = $("requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
   if (action === "add_context") payload.human_context = $("human-context").value || null;
   if (action === "modify") payload.modified_action = $("modified-action").value || null;
-  return withButtonState("submit-review-button", action === "approve" ? "Creating PR..." : "Submitting...", async () => {
+  return withButtonState("submit-review-button", action === "approve" ? "Creating PR..." : "Saving review...", async () => {
     state.loading.review = true;
     state.run = await api(`/api/runs/${state.run.id}/review`, { method: "POST", body: JSON.stringify(payload) });
     closeReviewForm();
@@ -1253,7 +1275,7 @@ function renderOverviewSummary() {
   ].forEach(([label, value, helper, tone]) => {
     const card = el("article", "panel summary-card");
     card.dataset.tone = tone;
-    append(card, el("span", null, label), el("strong", null, value), el("small", null, helper));
+    append(card, el("span", null, label), el("strong", "metric-value", value), el("small", null, helper));
     node.appendChild(card);
   });
 }
@@ -1278,7 +1300,7 @@ function renderOverviewRows() {
     { label: "Status", render: (item) => runStatusLabel(item.status) },
     { label: "Savings", priority: "mobile", render: (item) => `${money(item.estimated_monthly_savings)}/month` },
     { label: "Action", render: (item) => {
-      const open = el("button", "secondary compact", "Open");
+      const open = el("button", "secondary compact", "Open Review");
       open.type = "button";
       open.setAttribute("aria-label", `Open review for ${item.repository || item.resource_name || "case"}`);
       open.addEventListener("click", async () => {
@@ -1325,7 +1347,7 @@ function renderOverviewSavings() {
       row,
       el("span", "repo-avatar", labelFor(resource.provider).slice(0, 2).toUpperCase()),
       append(el("div"), el("strong", "row-title", resource.resource_name || "Cloud resource"), el("span", "row-meta", `${labelFor(resource.provider)} ${labelFor(resource.normalized_resource_type)}`)),
-      append(el("div", "row-metric"), el("span", null, "Potential savings"), el("strong", null, `${money(resource.estimated_monthly_cost)}/month`)),
+      append(el("div", "row-metric"), el("span", null, "Potential savings"), el("strong", "metric-value-sm", `${money(resource.estimated_monthly_cost)}/month`)),
       statusBadge(primaryStatus)
     );
     node.appendChild(row);
@@ -1516,7 +1538,7 @@ function renderCloudHunt() {
   }
   [["Provider scope", labelFor(state.hunt.provider_scope)], ["Resources scanned", data.total_resources], ["Candidates found", data.candidates], ["Protected resources", data.protected_candidates], ["Pending human reviews", data.needs_human_context], ["Monthly waste", money(data.estimated_monthly_waste)]].forEach(([label, value]) => {
     const card = el("article", "panel hunt-metric");
-    append(card, el("span", null, label), el("strong", null, value));
+    append(card, el("span", null, label), el("strong", "metric-value-sm", value));
     summary.appendChild(card);
   });
   $("candidate-count").textContent = `${data.candidates} candidate${data.candidates === 1 ? "" : "s"}`;

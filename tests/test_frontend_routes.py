@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -80,6 +82,51 @@ def test_css_asset_served() -> None:
     assert "prefers-reduced-motion" in response.text
     assert ".stage-list" in response.text
     assert "max-width: 1500px" not in response.text
+
+
+def test_frontend_typography_system_is_explicit() -> None:
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+    script = client.get("/static/app.js").text
+
+    assert "Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" in css
+    assert '--font-family-primary: "Plus Jakarta Sans", Inter, ui-sans-serif, system-ui' in css
+    assert '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' in css
+    assert "--font-family-mono: ui-monospace" in css
+    assert 'id="page-title" class="page-title"' in html
+    assert "metric-value" in css
+    assert '"metric-value"' in script
+    assert "table-heading" in css
+    assert '"table-heading"' in script
+    assert ".technical-value" in css
+    assert "technicalLabels" in script
+    assert 'font-family: var(--font-family-primary)' in css
+    assert "prefers-reduced-motion" in css
+
+
+def test_frontend_font_weights_stay_within_required_set() -> None:
+    css = client.get("/static/styles.css").text
+    weights = {int(match) for match in re.findall(r"font-weight:\s*(\d+)", css)}
+
+    assert weights
+    assert weights <= {400, 500, 600, 700}
+
+
+def test_frontend_text_roles_and_labels_remain_accessible() -> None:
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+    script = client.get("/static/app.js").text
+
+    assert "--text-sm: 0.875rem" in css
+    assert "font-size: var(--text-sm)" in css
+    assert ".status-badge" in css
+    assert "line-height: 1.2" in css
+    assert "Open Review" in html + script
+    assert "Approve Remediation" in html + script
+    assert "Start Cloud Hunt" in html
+    assert "Ask GhostBusters" in html
+    assert "Send Review Update" in html + script
+    assert ">Submit<" not in html
 
 
 def test_javascript_asset_served() -> None:
