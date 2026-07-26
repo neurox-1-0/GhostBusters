@@ -68,11 +68,24 @@ const elements = new Map();
 const reviewButtons = ["approve", "modify", "request_evidence", "add_context", "reject"].map((action) => {{
   const button = createNode("button");
   button.dataset.reviewAction = action;
+  button.className = {{
+    approve: "button-primary",
+    modify: "button-secondary",
+    request_evidence: "button-warning",
+    add_context: "button-secondary",
+    reject: "button-danger",
+  }}[action];
   return button;
 }});
 const cloudReviewButtons = ["approve", "request_evidence", "add_context", "reject"].map((action) => {{
   const button = createNode("button");
   button.dataset.cloudReviewAction = action;
+  button.className = {{
+    approve: "button-primary",
+    request_evidence: "button-warning",
+    add_context: "button-secondary",
+    reject: "button-danger",
+  }}[action];
   return button;
 }});
 const filterButtons = ["all", "high-confidence", "protected", "needs-context", "awaiting-review"].map((filter) => {{
@@ -195,7 +208,7 @@ function collectNodes(node, predicate, output = []) {{
     "recommendation-annual-savings", "result-title", "result-view", "safety-summary",
     "trigger-source", "run-pill", "approval-pill", "evidence-count", "candidate-count",
     "pr-empty-state", "case-view", "demo-modal-backdrop", "technical-content", "technical-empty-state",
-    "case-status", "human-decision-summary", "recommendation-summary", "evidence-source-card",
+    "case-status", "human-decision", "human-decision-technical", "human-decision-summary", "recommendation-summary", "evidence-source-card",
     "page-title", "overview-summary", "overview-pr-list", "overview-savings-list",
     "overview-repositories-list", "overview-repository-count", "setup-progress-list",
     "setup-progress-percent", "setup-progress-bar", "overview-approval-alerts",
@@ -207,8 +220,10 @@ function collectNodes(node, predicate, output = []) {{
     "cloud-detail-cost", "cloud-detail-savings", "cloud-detail-confidence", "cloud-detail-review-state",
     "cloud-detail-owner", "cloud-detail-project", "cloud-detail-dependencies", "cloud-detail-terraform",
     "cloud-detail-classification", "cloud-detail-recommendation", "cloud-detail-policy",
-    "cloud-detail-human-required", "cloud-detail-flagged", "cloud-detail-caution",
-    "cloud-human-title", "cloud-human-status", "cloud-human-guidance", "cloud-safety-notice",
+    "cloud-detail-human-required", "cloud-detail-classification-inline", "cloud-detail-flagged", "cloud-detail-caution",
+    "cloud-human-title", "cloud-human-status", "cloud-human-technical", "cloud-human-guidance", "cloud-safety-notice",
+    "cloud-technical-details", "cloud-detail-policy-state", "cloud-detail-review-id",
+    "cloud-detail-run-id", "cloud-detail-provider-id", "cloud-detail-audit-ref",
     "cloud-back-button", "cloud-open-approval-button",
   ];
   const output = {{}};
@@ -217,6 +232,9 @@ function collectNodes(node, predicate, output = []) {{
       output[id] = {{
         text: node.textContent,
         hidden: node.hidden,
+        open: node.open,
+        className: node.className,
+        value: node.value,
         children: node.children.map((child) => nodeText(child) || child.href || child.className || ""),
         href: node.href,
       }};
@@ -225,11 +243,13 @@ function collectNodes(node, predicate, output = []) {{
       action: button.dataset.reviewAction,
       hidden: button.hidden,
       disabled: button.disabled,
+      className: button.className,
     }}));
     output.cloudReviewButtons = cloudReviewButtons.map((button) => ({{
       action: button.dataset.cloudReviewAction,
       hidden: button.hidden,
       disabled: button.disabled,
+      className: button.className,
     }}));
     output.selectedReviewContext = hooks.state.selectedReviewContext;
     output.queueCards = (elements.get("review-queue-list")?.children || []).map((child) => nodeText(child));
@@ -788,17 +808,37 @@ def test_cloud_hunt_view_finding_opens_selected_detail_with_evidence_and_actions
     assert rendered["cloud-detail-savings"]["text"] == "$120/month"
     assert rendered["cloud-detail-confidence"]["text"] == "95%"
     assert rendered["cloud-detail-review-state"]["text"] == "Awaiting human review"
+    assert "status-awaiting-review" in rendered["cloud-detail-review-state"]["className"]
+    assert "status-high-confidence" in rendered["cloud-detail-classification"]["className"]
     assert "CPU stayed below 5%" in " ".join(rendered["cloud-detail-flagged"]["children"])
     assert "No active dependency" in " ".join(rendered["cloud-detail-caution"]["children"])
     assert rendered["cloud-detail-owner"]["text"] == "payments-team"
     assert rendered["cloud-detail-dependencies"]["text"] == "No active dependency was found."
     assert rendered["cloud-detail-recommendation"]["text"] == "Stop temporarily and observe"
+    assert rendered["cloud-detail-recommendation"]["className"] == "recommendation-action-value"
     assert rendered["cloud-detail-policy"]["text"] == "Allowed with safety conditions"
+    assert "status-allowed" in rendered["cloud-detail-policy"]["className"]
+    assert rendered["cloud-detail-policy-state"]["text"] == "Allowed with safety conditions"
     assert rendered["cloud-detail-human-required"]["text"] == "Human review required"
+    assert "status-awaiting-review" in rendered["cloud-detail-human-required"]["className"]
+    assert rendered["cloud-detail-classification-inline"]["text"] == "High-confidence ghost resource"
+    assert "status-high-confidence" in rendered["cloud-detail-classification-inline"]["className"]
+    assert rendered["cloud-human-technical"]["hidden"] is True
+    assert rendered["cloud-human-technical"]["text"] == ""
+    assert "44444444-4444-4444-4444-444444444444" not in rendered["cloud-human-technical"]["text"]
+    assert rendered["cloud-technical-details"]["open"] is False
+    assert rendered["cloud-detail-review-id"]["text"] == "44444444-4444-4444-4444-444444444444"
+    assert rendered["cloud-detail-run-id"]["text"] == "33333333-3333-3333-3333-333333333333"
+    assert rendered["cloud-detail-provider-id"]["text"] == "i-forgotten-test"
     assert rendered["cloud-open-approval-button"]["hidden"] is False
     assert rendered["cloud-back-button"]["text"] == "Back to Cloud Hunt"
     visible_actions = {button["action"] for button in rendered["cloudReviewButtons"] if not button["hidden"]}
     assert {"approve", "reject", "request_evidence", "add_context"} <= visible_actions
+    visible_classes = {button["action"]: button["className"] for button in rendered["cloudReviewButtons"] if not button["hidden"]}
+    assert visible_classes["approve"] == "button-primary"
+    assert visible_classes["reject"] == "button-danger"
+    assert visible_classes["request_evidence"] == "button-warning"
+    assert visible_classes["add_context"] == "button-secondary"
     assert rendered["selectedReviewContext"]["source"] == "cloud-hunt"
     assert rendered["selectedReviewContext"]["runId"] == review["id"]
 
@@ -839,6 +879,14 @@ def test_cloud_human_actions_hide_approval_for_protected_and_completed_cases() -
     assert protected_actions["reject"]["hidden"] is False
     assert protected_actions["request_evidence"]["hidden"] is False
     assert protected_actions["add_context"]["hidden"] is False
+    assert protected_actions["request_evidence"]["className"] == "button-warning"
+    assert protected_actions["add_context"]["className"] == "button-secondary"
+    assert protected_actions["reject"]["className"] == "button-danger"
+    assert protected["cloud-human-status"]["text"] == "Pending human review"
+    assert "status-awaiting-review" in protected["cloud-human-status"]["className"]
+    assert protected["cloud-human-technical"]["hidden"] is True
+    assert protected["cloud-human-technical"]["text"] == ""
+    assert "Safe by design" not in protected["cloud-human-guidance"]["text"]
 
     completed_candidate = sample_cloud_candidate(candidate_id="done-1")
     completed_review = sample_cloud_review(completed_candidate, status="pr_created")

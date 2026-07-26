@@ -62,6 +62,16 @@ def test_css_asset_served() -> None:
     assert response.status_code == 200
     assert "text/css" in response.headers["content-type"]
     assert "--bg" in response.text
+    assert "--page-background" in response.text
+    assert "--surface-background" in response.text
+    assert "--elevated-card-background" in response.text
+    assert "--brand-teal" in response.text
+    assert "--ai-purple" in response.text
+    assert "--success-green" in response.text
+    assert "--warning-amber" in response.text
+    assert "--blocked-red" in response.text
+    assert "--neutral-slate" in response.text
+    assert "--button-radius" in response.text
     assert "--radius" in response.text
     assert ".sidebar" in response.text
     assert ".summary-card" in response.text
@@ -79,6 +89,25 @@ def test_css_asset_served() -> None:
     assert ".status-needs-context" in response.text
     assert ".status-awaiting-review" in response.text
     assert ".status-blocked" in response.text
+    assert ".status-allowed" in response.text
+    assert ".button-primary" in response.text
+    assert ".button-danger" in response.text
+    assert ".button-warning" in response.text
+    assert ".review-actions .button-warning { border-color: var(--amber); background: var(--amber); color: #fff; }" in response.text
+    assert ".review-actions .button-secondary" in response.text
+    assert ".technical-details-card" in response.text
+    assert ".decision-panel { display: grid; grid-template-columns: minmax(260px, 0.42fr) minmax(0, 0.58fr); gap: 1.5rem; align-items: start; border-left: 0; }" in response.text
+    assert ".human-decision-card { padding: 1.5rem; background: var(--elevated-card-background); }" in response.text
+    assert ".review-actions button { width: 100%; max-width: none; flex-basis: 100%; }" in response.text
+    assert "border-left: 5px solid var(--amber)" not in response.text
+    assert "Technical IDs are available below." not in client.get("/static/app.js").text
+    assert ".cloud-recommendation-card" in response.text
+    assert "border-left: 4px solid var(--teal)" in response.text
+    assert "border-radius: var(--card-radius)" in response.text
+    assert ".cloud-detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: stretch; }" in response.text
+    assert ".cloud-detail-layout { grid-template-columns: 1fr; }" in response.text
+    assert ".recommendation-card { border-top: 5px solid var(--teal); background: var(--navy); color: #fff; }" not in response.text
+    assert ".cloud-recommendation-card { border: 0; border-top: 5px solid var(--teal); }" not in response.text
     assert "prefers-reduced-motion" in response.text
     assert ".stage-list" in response.text
     assert "max-width: 1500px" not in response.text

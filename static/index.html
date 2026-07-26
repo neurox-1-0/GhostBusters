@@ -271,23 +271,23 @@
               </article>
             </section>
 
-            <section class="panel decision-panel" aria-labelledby="human-title">
+            <section class="panel decision-panel human-decision-card" aria-labelledby="human-title">
               <div class="decision-copy">
                 <p class="kicker">Human review</p>
                 <h2 id="human-title" class="section-title">Approve the next step</h2>
-                <div class="human-outcome"><span>Decision status</span><strong id="human-decision">Not made</strong><small id="human-decision-technical">No review recorded</small></div>
+                <div class="human-outcome"><span>Status</span><strong id="human-decision" class="status-badge status-awaiting-review">Not made</strong><small id="human-decision-technical">No review recorded</small></div>
                 <p id="review-guidance">Start a run to see the actions permitted by its safety state.</p>
-                <p class="safety-callout">Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p>
+                <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p>Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
               </div>
               <div class="review-control">
                 <label for="reviewer-input">Reviewer</label>
                 <input id="reviewer-input" value="judge" />
                 <div class="review-actions" id="review-actions">
-                  <button data-review-action="approve" type="button">Approve Recommendation</button>
-                  <button data-review-action="modify" type="button" class="secondary">Modify Recommendation</button>
-                  <button data-review-action="request_evidence" type="button" class="secondary">Request More Evidence</button>
-                  <button data-review-action="add_context" type="button" class="secondary">Add Context</button>
-                  <button data-review-action="reject" type="button" class="danger">Reject</button>
+                  <button data-review-action="approve" type="button" class="button-primary">Approve Recommendation</button>
+                  <button data-review-action="reject" type="button" class="button-danger">Reject</button>
+                  <button data-review-action="request_evidence" type="button" class="button-warning">Request More Evidence</button>
+                  <button data-review-action="add_context" type="button" class="button-secondary">Add Context</button>
+                  <button data-review-action="modify" type="button" class="button-secondary">Modify Recommendation</button>
                 </div>
                 <div id="review-form" class="review-form" hidden>
                   <p id="review-form-title"></p>
@@ -295,7 +295,7 @@
                   <div id="sources-field" hidden><label for="requested-sources">Requested sources</label><input id="requested-sources" placeholder="pricing, utilization, jira" /></div>
                   <div id="context-field" hidden><label for="human-context">Business context</label><textarea id="human-context" rows="2" placeholder="Owner note or workload context"></textarea></div>
                   <div id="modify-field" hidden><label for="modified-action">Alternative</label><select id="modified-action"><option value="">Choose action</option><option value="downsize">Downsize</option><option value="schedule">Schedule</option><option value="keep">Keep</option><option value="request_evidence">Request evidence</option><option value="abstain">Abstain</option></select></div>
-                  <div class="start-actions"><button id="submit-review-button" type="button">Send Review Update</button><button id="cancel-review-button" class="secondary" type="button">Cancel</button></div>
+                  <div class="start-actions"><button id="submit-review-button" type="button" class="button-primary">Send Review Update</button><button id="cancel-review-button" class="secondary" type="button">Cancel</button></div>
                 </div>
                 <p class="message" id="review-message" role="status"></p>
               </div>
@@ -380,77 +380,92 @@
                   <button id="cloud-open-approval-button" type="button" hidden>Open Approval</button>
                 </div>
               </div>
-              <div class="case-status-row cloud-finding-summary" aria-label="Cloud finding summary">
-                <div class="case-status-card"><span>Provider</span><strong id="cloud-detail-provider">Not recorded</strong></div>
-                <div class="case-status-card"><span>Resource</span><strong id="cloud-detail-resource" class="technical-value">Not recorded</strong></div>
-                <div class="case-status-card"><span>Type</span><strong id="cloud-detail-type">Not recorded</strong></div>
-                <div class="case-status-card"><span>Environment</span><strong id="cloud-detail-environment">Not recorded</strong></div>
+              <div class="finding-hero" aria-label="Cloud finding summary">
+                <div class="finding-identity">
+                  <div class="provider-pill" id="cloud-detail-provider">Not recorded</div>
+                  <h3 id="cloud-detail-resource">Not recorded</h3>
+                  <p><span id="cloud-detail-type">Not recorded</span> in <span id="cloud-detail-environment">Not recorded</span></p>
+                </div>
+                <div class="finding-badges">
+                  <span id="cloud-detail-classification" class="status-badge status-neutral">Not recorded</span>
+                  <span id="cloud-detail-review-state" class="status-badge status-awaiting-review">Not recorded</span>
+                </div>
               </div>
-              <div class="case-status-row cloud-finding-summary" aria-label="Cloud finding financial and review state">
-                <div class="case-status-card"><span>Monthly cost</span><strong id="cloud-detail-cost" class="metric-value-sm">Not recorded</strong></div>
-                <div class="case-status-card"><span>Potential savings</span><strong id="cloud-detail-savings" class="metric-value-sm">Not available</strong></div>
-                <div class="case-status-card"><span>Confidence</span><strong id="cloud-detail-confidence">Not recorded</strong></div>
-                <div class="case-status-card"><span>Review state</span><strong id="cloud-detail-review-state">Not recorded</strong></div>
+              <div class="summary-metric-row cloud-finding-summary" aria-label="Cloud finding financial and review state">
+                <div class="summary-card compact-summary"><span>Monthly cost</span><strong id="cloud-detail-cost" class="metric-value-sm">Not recorded</strong></div>
+                <div class="summary-card compact-summary" data-tone="green"><span>Potential savings</span><strong id="cloud-detail-savings" class="metric-value-sm">Not available</strong></div>
+                <div class="summary-card compact-summary" data-tone="teal"><span>Confidence</span><strong id="cloud-detail-confidence">Not recorded</strong></div>
+                <div class="summary-card compact-summary" data-tone="amber"><span>Policy state</span><strong id="cloud-detail-policy-state">Not recorded</strong></div>
               </div>
-              <div class="story-grid">
-                <article class="story-card">
+              <div class="cloud-detail-layout">
+                <article class="evidence-card">
                   <p class="kicker">Finding evidence</p>
                   <h3 class="card-title">Why GhostBusters flagged it</h3>
                   <div id="cloud-detail-flagged" class="evidence-bullet-list"></div>
                 </article>
-                <article class="story-card">
+                <article class="evidence-card caution-card">
                   <p class="kicker">Caution</p>
                   <h3 class="card-title">Why GhostBusters is cautious</h3>
                   <div id="cloud-detail-caution" class="evidence-bullet-list"></div>
                 </article>
-                <article class="story-card">
+                <article class="evidence-card operational-card">
                   <p class="kicker">Ownership and dependencies</p>
                   <h3 class="card-title">Operational context</h3>
                   <dl class="story-list compact">
                     <div><dt>Owner</dt><dd id="cloud-detail-owner">Not recorded</dd></div>
                     <div><dt>Project</dt><dd id="cloud-detail-project">Not recorded</dd></div>
                     <div><dt>Dependencies</dt><dd id="cloud-detail-dependencies">Not recorded</dd></div>
-                    <div><dt>Terraform mapping</dt><dd id="cloud-detail-terraform" class="technical-value">Not recorded</dd></div>
                   </dl>
                 </article>
-                <article class="story-card">
+                <article class="evidence-card recommendation-card cloud-recommendation-card">
                   <p class="kicker">Recommendation</p>
                   <h3 class="card-title">Decision readiness</h3>
+                  <p class="recommendation-helper">GhostBusters' current recommendation and safety state.</p>
                   <dl class="story-list compact">
-                    <div><dt>Classification</dt><dd id="cloud-detail-classification">Not recorded</dd></div>
                     <div><dt>Recommended action</dt><dd id="cloud-detail-recommendation">Not recorded</dd></div>
                     <div><dt>Policy result</dt><dd id="cloud-detail-policy">Not recorded</dd></div>
                     <div><dt>Human review</dt><dd id="cloud-detail-human-required">Not recorded</dd></div>
+                    <div><dt>Classification</dt><dd id="cloud-detail-classification-inline">Not recorded</dd></div>
                   </dl>
                 </article>
               </div>
-              <section class="decision-panel cloud-decision-panel" id="cloud-human-decision" aria-labelledby="cloud-human-title">
+              <section class="decision-panel cloud-decision-panel human-decision-card" id="cloud-human-decision" aria-labelledby="cloud-human-title">
                 <div class="decision-copy">
                   <p class="kicker">Human Decision</p>
                   <h2 id="cloud-human-title" class="section-title">Awaiting human review</h2>
-                  <div class="human-outcome"><span>Decision status</span><strong id="cloud-human-status">Not made</strong><small id="cloud-human-technical">No review recorded</small></div>
+                  <div class="human-outcome"><span>Status</span><strong id="cloud-human-status" class="status-badge status-awaiting-review">Not made</strong><small id="cloud-human-technical" hidden>No review recorded</small></div>
                   <p id="cloud-human-guidance">Open an approval case to see the available actions.</p>
-                  <p class="safety-callout" id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p>
+                  <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
                 </div>
                 <div class="review-control">
                   <label for="cloud-reviewer-input">Reviewer</label>
                   <input id="cloud-reviewer-input" value="judge" />
                   <div class="review-actions" id="cloud-review-actions">
-                    <button data-cloud-review-action="approve" type="button">Approve Recommendation</button>
-                    <button data-cloud-review-action="reject" type="button" class="secondary">Reject</button>
-                    <button data-cloud-review-action="request_evidence" type="button" class="secondary">Request More Evidence</button>
-                    <button data-cloud-review-action="add_context" type="button" class="secondary">Add Context</button>
+                    <button data-cloud-review-action="approve" type="button" class="button-primary">Approve Recommendation</button>
+                    <button data-cloud-review-action="reject" type="button" class="button-danger">Reject</button>
+                    <button data-cloud-review-action="request_evidence" type="button" class="button-warning">Request More Evidence</button>
+                    <button data-cloud-review-action="add_context" type="button" class="button-secondary">Add Context</button>
                   </div>
                   <div id="cloud-review-form" class="review-form" hidden>
                     <p id="cloud-review-form-title"></p>
-                    <div id="cloud-comment-field"><label for="cloud-comment-input">Comment</label><textarea id="cloud-comment-input" rows="2" placeholder="Optional decision note"></textarea></div>
+                    <div id="cloud-comment-field"><label for="cloud-comment-input">Comment or context, optional</label><textarea id="cloud-comment-input" rows="2" placeholder="Optional decision note"></textarea></div>
                     <div id="cloud-sources-field" hidden><label for="cloud-requested-sources">Requested sources</label><input id="cloud-requested-sources" placeholder="owner, utilization, dependency map" /></div>
                     <div id="cloud-context-field" hidden><label for="cloud-human-context">Business context</label><textarea id="cloud-human-context" rows="2" placeholder="Owner note or workload context"></textarea></div>
-                    <div class="start-actions"><button id="cloud-submit-review-button" type="button">Send Decision Update</button><button id="cloud-cancel-review-button" class="secondary" type="button">Cancel</button></div>
+                    <div class="start-actions"><button id="cloud-submit-review-button" type="button" class="button-primary">Send Decision Update</button><button id="cloud-cancel-review-button" class="secondary" type="button">Cancel</button></div>
                   </div>
                   <p class="message" id="cloud-review-message" role="status"></p>
                 </div>
               </section>
+              <details class="technical-details-card" id="cloud-technical-details">
+                <summary>Technical Details</summary>
+                <dl class="story-list compact">
+                  <div><dt>Review case ID</dt><dd id="cloud-detail-review-id" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Internal run ID</dt><dd id="cloud-detail-run-id" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Terraform mapping</dt><dd id="cloud-detail-terraform" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Provider ID</dt><dd id="cloud-detail-provider-id" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Audit reference</dt><dd id="cloud-detail-audit-ref" class="technical-value">Not recorded</dd></div>
+                </dl>
+              </details>
               </div>
             </section>
             <section class="panel" aria-labelledby="candidate-title"><div class="section-heading"><div><p class="kicker">Investigation leads</p><h2 id="candidate-title" class="section-title">Cloud Hunt findings</h2></div><span class="count-badge" id="candidate-count">0 candidates</span></div><div class="candidate-grid" id="candidate-list"><p class="muted">Start a hunt to scan the fixture inventory.</p></div></section>

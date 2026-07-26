@@ -307,6 +307,37 @@ function statusBadge(status) {
   return badge;
 }
 
+function setStatusBadge(id, status) {
+  const node = $(id);
+  if (!node) return;
+  node.className = `status-badge ${status.className}`;
+  node.setAttribute("title", status.label);
+  node.setAttribute("aria-label", status.label);
+  node.textContent = status.icon ? `${status.icon} ${status.label}` : status.label;
+}
+
+function policyStatusMeta(status) {
+  const label = policyStatusLabel(status);
+  if (status === "blocked") return { key: "blocked", label, className: "status-blocked" };
+  if (status === "needs_human_context") return { key: "needs-context", label, className: "status-needs-context" };
+  if (status === "passed") return { key: "allowed", label, className: "status-allowed" };
+  return { key: "neutral", label, className: "status-neutral" };
+}
+
+function humanReviewStatusMeta(caseItem) {
+  if (!caseItem) return { key: "neutral", label: "No approval case found", className: "status-neutral" };
+  return { key: "awaiting-review", label: "Human review required", className: "status-awaiting-review" };
+}
+
+function decisionStatusMeta(status, label) {
+  if (status === "pending_human_review" || status === "pending") return { key: "awaiting-review", label: label || "Pending human review", className: "status-awaiting-review" };
+  if (status === "needs_more_evidence" || status === "abstained") return { key: "needs-context", label: label || "More evidence required", className: "status-needs-context" };
+  if (status === "blocked" || status === "rejected" || status === "failed_safely") return { key: "blocked", label: label || runStatusLabel(status), className: "status-blocked" };
+  if (status === "approved") return { key: "approved", label: label || "Approved", className: "status-approved" };
+  if (status === "pr_created") return { key: "pr-created", label: label || "Remediation PR created", className: "status-pr-created" };
+  return { key: "neutral", label: label || "Not made", className: "status-neutral" };
+}
+
 function progressStep(title, description, stateName, index, actionLabel = null, actionHandler = null) {
   const stateClass = String(stateName).replaceAll(" ", "-");
   const item = el("li", `progress-step progress-${stateClass}`);
@@ -879,8 +910,9 @@ function renderHumanControls() {
   const status = state.run?.status;
   const allowed = allowedReviewActions(status);
   const human = humanDecision(state.run);
-  $("human-decision").textContent = human.label;
-  $("human-decision-technical").textContent = human.technical;
+  setStatusBadge("human-decision", decisionStatusMeta(status, human.label));
+  $("human-decision-technical").hidden = true;
+  $("human-decision-technical").textContent = "";
   document.querySelectorAll("[data-review-action]").forEach((button) => {
     const visible = allowed.includes(button.dataset.reviewAction);
     button.hidden = !visible;
@@ -1553,12 +1585,14 @@ function cloudAllowedReviewActions(caseItem, candidate) {
 function renderSignalBullets(nodeId, items, emptyMessage) {
   const node = $(nodeId);
   clear(node);
+  const caution = /caution/i.test(nodeId);
   if (!items.length) {
     node.appendChild(el("p", "muted", emptyMessage));
     return;
   }
   items.forEach((signal) => {
-    const item = el("div", "signal");
+    const danger = ["active_dependency", "production_resource"].includes(signal.signal_type);
+    const item = el("div", `signal ${danger ? "signal-danger" : caution ? "signal-warning" : "signal-info"}`);
     append(item, el("strong", null, labelFor(signal.signal_type || "Signal")), el("span", null, signal.description || formatValue(signal.value)));
     node.appendChild(item);
   });
@@ -1651,6 +1685,7 @@ function renderCloudFindingDetail() {
   const resource = candidate?.resource || caseItem?.candidate?.resource || {};
   const status = cloudCaseStatus(caseItem, candidate);
   const primary = cloudCandidatePrimaryStatus(candidate || caseItem?.candidate);
+  const policyMeta = policyStatusMeta(caseItem?.policy_status || (candidate?.exclusion_reason ? "needs_human_context" : "passed"));
   const source = state.selectedReviewContext?.source === "approvals" ? "Approvals" : "Cloud Hunt";
   const resourceName = resource.resource_name || caseItem?.resource_name || "Cloud resource";
   const managedByTerraform = Boolean(resource.infrastructure_as_code_managed && resource.terraform_address);
@@ -1665,21 +1700,29 @@ function renderCloudFindingDetail() {
   $("cloud-detail-cost").textContent = money(resource.estimated_monthly_cost);
   $("cloud-detail-savings").textContent = caseItem?.estimated_monthly_savings ? `${money(caseItem.estimated_monthly_savings)}/month` : candidate?.exclusion_reason ? "Not available" : `${money(resource.estimated_monthly_cost)}/month`;
   $("cloud-detail-confidence").textContent = percentage(candidate?.candidate_score ?? caseItem?.confidence);
-  $("cloud-detail-review-state").textContent = status.key === "awaiting-review" ? "Awaiting human review" : status.label;
+  setStatusBadge("cloud-detail-classification", { ...primary, icon: null });
+  setStatusBadge("cloud-detail-review-state", { ...status, icon: null, label: status.key === "awaiting-review" ? "Awaiting human review" : status.label });
   $("cloud-detail-owner").textContent = resource.owner || "Owner not recorded";
   $("cloud-detail-project").textContent = resource.project || "Project not recorded";
   $("cloud-detail-dependencies").textContent = dependencySummary(candidate || caseItem?.candidate);
   $("cloud-detail-terraform").textContent = resource.terraform_address || caseItem?.terraform_address || "No Terraform repository mapping";
-  $("cloud-detail-classification").textContent = primary.label;
   $("cloud-detail-recommendation").textContent = recommendationLabel(caseItem?.recommendation || (candidate?.exclusion_reason ? "keep" : "request_owner_confirmation"));
-  $("cloud-detail-policy").textContent = policyStatusLabel(caseItem?.policy_status || (candidate?.exclusion_reason ? "needs_human_context" : "passed"));
-  $("cloud-detail-human-required").textContent = caseItem ? "Human review required" : "No approval case found";
+  $("cloud-detail-recommendation").className = "recommendation-action-value";
+  setStatusBadge("cloud-detail-policy", policyMeta);
+  $("cloud-detail-policy-state").textContent = policyMeta.label;
+  setStatusBadge("cloud-detail-human-required", humanReviewStatusMeta(caseItem));
+  setStatusBadge("cloud-detail-classification-inline", { ...primary, icon: null });
+  $("cloud-detail-review-id").textContent = caseItem?.id || "No review case is linked";
+  $("cloud-detail-run-id").textContent = state.hunt?.id || caseItem?.source_reference || "Not recorded";
+  $("cloud-detail-provider-id").textContent = resource.resource_id || caseItem?.resource_id || "Not recorded";
+  $("cloud-detail-audit-ref").textContent = caseItem?.source_reference || state.hunt?.trigger_source || "Not recorded";
   renderSignalBullets("cloud-detail-flagged", signalList(candidate || caseItem?.candidate, true), "No positive waste signals were recorded.");
   renderSignalBullets("cloud-detail-caution", signalList(candidate || caseItem?.candidate, false), "No caution signals were recorded.");
   $("cloud-open-approval-button").hidden = !(caseItem && ["pending", "pending_human_review", "needs_more_evidence"].includes(caseItem.status));
   $("cloud-human-title").textContent = caseItem ? status.label === "Pending human review" ? "Awaiting human review" : status.label : "Finding detail";
-  $("cloud-human-status").textContent = caseItem?.human_decision ? labelFor(caseItem.human_decision) : caseItem ? status.label : "No approval case";
-  $("cloud-human-technical").textContent = caseItem ? `Review case: ${caseItem.id}` : "No review case is linked";
+  setStatusBadge("cloud-human-status", decisionStatusMeta(caseItem?.status, caseItem?.human_decision ? labelFor(caseItem.human_decision) : caseItem ? status.label : "No approval case"));
+  $("cloud-human-technical").hidden = true;
+  $("cloud-human-technical").textContent = "";
   $("cloud-human-guidance").textContent = !caseItem
     ? "This finding can be inspected, but no human approval case is currently linked."
     : isCloudProtected(candidate, caseItem)
