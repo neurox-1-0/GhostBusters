@@ -24,11 +24,22 @@ const state = {
 };
 
 const stageDefinitions = [
-  { id: "detected", title: "Detected", description: "Terraform pull-request change captured.", matches: ["run_created", "goal_received", "terraform_parsed"] },
-  { id: "investigated", title: "Investigated", description: "Cost, usage, dependency, and activity evidence gathered.", matches: ["investigation_plan_created", "tool_selected"], prefix: ["tool_", "external_call_", "alternative_evidence_"] },
-  { id: "recommended", title: "Recommended", description: "GhostBusters selected the safest cost action.", matches: ["conflicts_detected", "verifier_completed", "alternatives_generated", "recommendation_produced"], prefix: ["policy_"] },
-  { id: "human", title: "Human Review", description: "A reviewer confirms, rejects, or requests more context.", matches: ["human_review_received", "additional_evidence_requested", "human_context_added", "workflow_resumed", "preferred_action_modified"] },
+  { id: "received", title: "PR received", description: "Terraform pull request captured.", matches: ["run_created", "goal_received"] },
+  { id: "parsed", title: "Terraform change parsed", description: "Resource and configuration change identified.", matches: ["terraform_parsed"] },
+  { id: "planned", title: "Investigation planned", description: "Questions and evidence sources selected.", matches: ["investigation_plan_created", "tool_selected"] },
+  { id: "evidence", title: "Evidence collected", description: "Cost, usage, dependency, and activity evidence gathered.", prefix: ["tool_", "external_call_", "alternative_evidence_"] },
+  { id: "recommended", title: "Recommendation produced", description: "GhostBusters selected the safest cost action.", matches: ["conflicts_detected", "verifier_completed", "alternatives_generated", "recommendation_produced"], prefix: ["policy_"] },
+  { id: "human", title: "Human review", description: "A reviewer confirms, rejects, or requests more context.", matches: ["human_review_received", "additional_evidence_requested", "human_context_added", "workflow_resumed", "preferred_action_modified"] },
   { id: "remediation", title: "Remediation PR", description: "A simulated or real remediation pull request is recorded.", matches: ["mock_pr_created", "real_pr_created"] },
+];
+
+const cloudJourneyDefinitions = [
+  { id: "inventory", title: "Inventory loaded", matches: ["cloud_hunt_started", "inventory_loaded", "provider_inventory_loaded"] },
+  { id: "evaluated", title: "Resources evaluated", matches: ["resources_evaluated", "resource_evaluated"], prefix: ["cloud_resource_", "candidate_signal_"] },
+  { id: "risks", title: "Risks checked", matches: ["risks_checked", "dependencies_checked", "policy_checked"], prefix: ["policy_", "protection_"] },
+  { id: "classified", title: "Candidates classified", matches: ["candidates_classified", "cloud_hunt_completed", "candidate_created"] },
+  { id: "human", title: "Human review", matches: ["human_review_received", "additional_evidence_requested"] },
+  { id: "proposal", title: "Remediation proposal", matches: ["mock_pr_created", "real_pr_created", "remediation_proposed"] },
 ];
 
 const toolNames = ["pricing", "utilization", "jira", "git_activity", "dependencies"];
@@ -41,8 +52,12 @@ const requiredElementIds = [
   "overview-summary",
   "overview-pr-list",
   "overview-savings-list",
+  "overview-repositories-list",
+  "setup-progress-list",
+  "setup-progress-bar",
   "overview-approval-alerts",
   "overview-activity-list",
+  "cloud-journey-list",
   "toast-region",
   "page-title",
   "simple-view",
@@ -262,6 +277,25 @@ function statusBadge(status) {
   badge.setAttribute("aria-label", status.label);
   badge.textContent = status.icon ? `${status.icon} ${status.label}` : status.label;
   return badge;
+}
+
+function progressStep(title, description, stateName, index, actionLabel = null, actionHandler = null) {
+  const stateClass = String(stateName).replaceAll(" ", "-");
+  const item = el("li", `progress-step progress-${stateClass}`);
+  item.setAttribute("aria-label", `${title}: ${labelFor(stateName)}`);
+  const marker = el("span", "progress-marker");
+  marker.setAttribute("aria-hidden", "true");
+  marker.textContent = stateName === "completed" ? "✓" : String(index + 1);
+  const copy = el("div", "progress-copy");
+  append(copy, el("span", "progress-state", labelFor(stateName)), el("strong", null, title), el("small", null, description));
+  append(item, marker, copy);
+  if (actionLabel && actionHandler) {
+    const action = el("button", "secondary compact", actionLabel);
+    action.type = "button";
+    action.addEventListener("click", actionHandler);
+    item.appendChild(action);
+  }
+  return item;
 }
 
 function githubIntegrationLabel(run) {
@@ -1128,6 +1162,45 @@ function overviewReviews() {
   return rows;
 }
 
+function connectedRepositories() {
+  const repos = new Set();
+  state.reviews.forEach((item) => { if (item.repository) repos.add(item.repository); });
+  if (state.run?.github_source?.repository) repos.add(state.run.github_source.repository);
+  if (state.run?.mock_pr?.repository) repos.add(state.run.mock_pr.repository);
+  return [...repos];
+}
+
+function setupSteps() {
+  const repos = connectedRepositories();
+  const hasReviews = overviewReviews().length > 0;
+  const hasCloudEvidence = Boolean(state.hunt);
+  const hasApprovals = state.reviews.some((item) => ["pending", "pending_human_review", "needs_more_evidence", "abstained"].includes(item.status));
+  return [
+    { title: "Create organization", description: "Demo workspace is available.", state: "completed" },
+    { title: "Connect GitHub", description: hasReviews || state.run ? "Repository review data is available." : "Ready for GitHub webhooks.", state: hasReviews || state.run ? "completed" : "running", action: "Launch Demo", handler: openDemoModal },
+    { title: "Select repositories", description: repos.length ? `${repos.length} repository${repos.length === 1 ? "" : "ies"} connected.` : "Open or load a review to discover repositories.", state: repos.length ? "completed" : "waiting", action: "Open PR Reviews", handler: () => switchMode("simple") },
+    { title: "Connect cloud evidence", description: hasCloudEvidence ? "Latest Cloud Hunt inventory is loaded." : "Run Cloud Hunt to load provider evidence.", state: hasCloudEvidence ? "completed" : "waiting", action: "Open Cloud Hunt", handler: () => switchMode("cloud-hunt") },
+    { title: "Add reviewers", description: hasApprovals ? "Approval queue has active review work." : "Reviewers can approve or request evidence from Approvals.", state: hasApprovals ? "completed" : "waiting", action: "Open Approvals", handler: () => switchMode("review-queue") },
+    { title: "Start monitoring", description: hasReviews || hasCloudEvidence ? "GhostBusters has active monitoring context." : "Start with a demo or Cloud Hunt scan.", state: hasReviews || hasCloudEvidence ? "completed" : "waiting" },
+  ];
+}
+
+function renderSetupProgress() {
+  const node = $("setup-progress-list");
+  if (!node) return;
+  clear(node);
+  const steps = setupSteps();
+  const completed = steps.filter((step) => step.state === "completed").length;
+  const percent = Math.round((completed / steps.length) * 100);
+  $("setup-progress-percent").textContent = `${percent}% complete`;
+  $("setup-progress-bar").style.width = `${percent}%`;
+  const activeIndex = steps.findIndex((step) => step.state !== "completed");
+  steps.forEach((step, index) => {
+    const isActive = index === activeIndex && step.state !== "completed";
+    node.appendChild(progressStep(step.title, step.description, isActive ? "running" : step.state, index, isActive ? step.action : null, isActive ? step.handler : null));
+  });
+}
+
 function renderOverviewSummary() {
   const node = $("overview-summary");
   if (!node) return;
@@ -1165,8 +1238,13 @@ function renderOverviewRows() {
   const rows = overviewReviews();
   const prRows = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).slice(0, 5);
   if (!prRows.length) reviewNode.appendChild(el("p", "muted", "No PR reviews are loaded yet."));
+  if (prRows.length) {
+    const header = el("div", "recent-table-row recent-table-head");
+    append(header, el("span", null, "Name"), el("span", null, "Status"), el("span", null, "Savings"), el("span", null, "Action"));
+    reviewNode.appendChild(header);
+  }
   prRows.forEach((item) => {
-    const row = el("article", "compact-row");
+    const row = el("article", "recent-table-row");
     const open = el("button", "secondary compact", "Open");
     open.type = "button";
     open.addEventListener("click", async () => {
@@ -1180,9 +1258,9 @@ function renderOverviewRows() {
     });
     append(
       row,
-      append(el("div"), el("strong", "row-title", item.repository || "Terraform review"), el("span", "row-meta", item.pull_request_number ? `PR #${item.pull_request_number}` : "Pull request not recorded"), el("span", "row-detail", item.resource_name || "Terraform change not recorded")),
-      append(el("div", "row-metric"), el("span", null, "Recommendation"), el("strong", null, item.recommendation || "Not recorded")),
-      append(el("div", "row-state"), el("span", null, "Status"), el("strong", null, runStatusLabel(item.status))),
+      append(el("div"), el("strong", "row-title", item.repository || "Terraform review"), el("span", "row-meta", item.pull_request_number ? `PR #${item.pull_request_number} | ${item.resource_name || "Terraform change"}` : item.resource_name || "Terraform change not recorded")),
+      append(el("div", "row-state"), el("strong", null, runStatusLabel(item.status)), el("span", null, item.recommendation || "Not recorded")),
+      append(el("div", "row-metric"), el("strong", null, `${money(item.estimated_monthly_savings)}/month`), el("span", null, percentage(item.confidence))),
       open
     );
     reviewNode.appendChild(row);
@@ -1212,15 +1290,30 @@ function renderOverviewSavings() {
   if (!candidates.length) return node.appendChild(el("p", "muted", "Run Cloud Hunt to surface highest-value opportunities."));
   candidates.forEach((candidate) => {
     const resource = candidate.resource || {};
-    const row = el("article", "compact-row");
+    const row = el("article", "featured-card");
     const primaryStatus = cloudCandidatePrimaryStatus(candidate);
     append(
       row,
-      append(el("div"), el("strong", "row-title", resource.resource_name || "Cloud resource"), el("span", "row-meta", `${labelFor(resource.provider)} | ${labelFor(resource.normalized_resource_type)}`), el("span", "row-detail", candidate.exclusion_reason ? "Protected by context" : "Candidate for review")),
-      append(el("div", "row-metric"), el("span", null, "Monthly cost"), el("strong", null, money(resource.estimated_monthly_cost))),
-      append(el("div", "row-state"), el("span", null, "Confidence"), el("strong", null, percentage(candidate.candidate_score))),
+      el("span", "repo-avatar", labelFor(resource.provider).slice(0, 2).toUpperCase()),
+      append(el("div"), el("strong", "row-title", resource.resource_name || "Cloud resource"), el("span", "row-meta", `${labelFor(resource.provider)} ${labelFor(resource.normalized_resource_type)}`)),
+      append(el("div", "row-metric"), el("span", null, "Potential savings"), el("strong", null, `${money(resource.estimated_monthly_cost)}/month`)),
       statusBadge(primaryStatus)
     );
+    node.appendChild(row);
+  });
+}
+
+function renderOverviewRepositories() {
+  const node = $("overview-repositories-list");
+  if (!node) return;
+  clear(node);
+  const repos = connectedRepositories();
+  $("overview-repository-count").textContent = `${repos.length} repo${repos.length === 1 ? "" : "s"}`;
+  if (!repos.length) return node.appendChild(el("p", "muted", "No connected repositories are visible yet."));
+  repos.slice(0, 5).forEach((repo) => {
+    const related = overviewReviews().filter((item) => item.repository === repo).length;
+    const row = el("article", "compact-row repo-row");
+    append(row, el("span", "repo-avatar", repo.split("/").map((part) => part[0]).join("").slice(0, 2).toUpperCase()), append(el("div"), el("strong", "row-title", repo), el("span", "row-meta", `${related} review${related === 1 ? "" : "s"} recorded`)), el("span", "status-badge status-approved", "Connected"));
     node.appendChild(row);
   });
 }
@@ -1247,9 +1340,11 @@ function renderOverviewActivity() {
 }
 
 function renderOverview() {
+  renderSetupProgress();
   renderOverviewSummary();
   renderOverviewRows();
   renderOverviewSavings();
+  renderOverviewRepositories();
   renderOverviewActivity();
 }
 
@@ -1336,10 +1431,50 @@ function candidateMatchesCloudFilter(candidate) {
   return true;
 }
 
+function journeyEventMatches(event, definition) {
+  const type = event.event_type || "";
+  return definition.matches?.includes(type) || definition.prefix?.some((prefix) => type.startsWith(prefix));
+}
+
+function cloudJourneyStageState(definition, index, events, hunt) {
+  if (!hunt) return "waiting";
+  if (hunt.status === "failed") return index === 0 ? "failed" : "waiting";
+  if (events.some((event) => journeyEventMatches(event, definition))) return "completed";
+  if (hunt.status === "completed") {
+    if (["inventory", "evaluated", "risks", "classified"].includes(definition.id)) return "completed";
+    if (definition.id === "human" && (hunt.summary?.needs_human_context || 0) > 0) return "human action required";
+    return "waiting";
+  }
+  if (definition.id === "inventory") return "running";
+  return "waiting";
+}
+
+function renderCloudJourney() {
+  const node = $("cloud-journey-list");
+  if (!node) return;
+  clear(node);
+  const hunt = state.hunt;
+  const events = hunt?.audit_events || [];
+  $("cloud-journey-state").textContent = hunt ? runStatusLabel(hunt.status) : "Waiting";
+  const descriptions = {
+    inventory: "Provider inventory is loaded from the configured source.",
+    evaluated: "Resources are evaluated for usage, age, and ownership signals.",
+    risks: "Dependencies, protection signals, and policy constraints are checked.",
+    classified: "Candidates are classified into reviewable states.",
+    human: "Reviewers decide whether remediation is appropriate.",
+    proposal: "A remediation proposal can be prepared after approval.",
+  };
+  cloudJourneyDefinitions.forEach((definition, index) => {
+    const stateName = cloudJourneyStageState(definition, index, events, hunt);
+    node.appendChild(progressStep(definition.title, descriptions[definition.id], stateName, index));
+  });
+}
+
 function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
   clear(summary);
+  renderCloudJourney();
   if (state.loading.cloudHunt) {
     renderSkeletonList(summary, 6);
     renderSkeletonList($("candidate-list"), 4);

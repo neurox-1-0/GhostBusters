@@ -20,6 +20,9 @@ def test_root_serves_agent_console() -> None:
     assert 'id="technical-view" hidden' in response.text
     assert 'id="overview-view"' in response.text
     assert 'id="overview-summary"' in response.text
+    assert 'id="setup-progress-list"' in response.text
+    assert 'id="overview-repositories-list"' in response.text
+    assert 'id="cloud-journey-list"' in response.text
     assert 'id="overview-view-button"' in response.text
     assert "/static/app.js?v=judge-v6" in response.text
     assert "/static/styles.css?v=judge-v6" in response.text
@@ -60,6 +63,9 @@ def test_css_asset_served() -> None:
     assert "--radius" in response.text
     assert ".sidebar" in response.text
     assert ".summary-card" in response.text
+    assert ".progress-checklist" in response.text
+    assert ".featured-card" in response.text
+    assert ".recent-table" in response.text
     assert ".skeleton" in response.text
     assert ".toast" in response.text
     assert ".filter-chip" in response.text
@@ -86,6 +92,8 @@ def test_javascript_asset_served() -> None:
     assert "ensureCompatibleDom" in response.text
     assert "assistantSuggestions" in response.text
     assert "renderOverview" in response.text
+    assert "renderSetupProgress" in response.text
+    assert "renderCloudJourney" in response.text
     assert "withButtonState" in response.text
     assert "showToast" in response.text
     assert "renderSkeletonList" in response.text

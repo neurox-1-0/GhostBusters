@@ -176,7 +176,9 @@ function nodeText(node) {{
     "pr-empty-state", "case-view", "demo-modal-backdrop", "technical-content", "technical-empty-state",
     "case-status", "human-decision-summary", "recommendation-summary", "evidence-source-card",
     "page-title", "overview-summary", "overview-pr-list", "overview-savings-list",
-    "overview-approval-alerts", "overview-activity-list", "toast-region",
+    "overview-repositories-list", "overview-repository-count", "setup-progress-list",
+    "setup-progress-percent", "setup-progress-bar", "overview-approval-alerts",
+    "overview-activity-list", "cloud-journey-list", "cloud-journey-state", "toast-region",
     "filter-count-all", "filter-count-high-confidence", "filter-count-protected",
     "filter-count-needs-context", "filter-count-awaiting-review",
   ];
@@ -207,8 +209,11 @@ function nodeText(node) {{
     output.summaryCards = (elements.get("overview-summary")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewRows = (elements.get("overview-pr-list")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewSavings = (elements.get("overview-savings-list")?.children || []).map((child) => nodeText(child) || child.className);
+    output.overviewRepos = (elements.get("overview-repositories-list")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewAlerts = (elements.get("overview-approval-alerts")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewActivity = (elements.get("overview-activity-list")?.children || []).map((child) => nodeText(child) || child.className);
+    output.setupSteps = (elements.get("setup-progress-list")?.children || []).map((child) => ({{ text: nodeText(child), className: child.className }}));
+    output.cloudJourney = (elements.get("cloud-journey-list")?.children || []).map((child) => ({{ text: nodeText(child), className: child.className }}));
     output.sourceLink = {{
       hidden: elements.get("source-pr-link")?.hidden ?? true,
       href: elements.get("source-pr-link")?.href || "",
@@ -636,10 +641,14 @@ def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
     combined = " ".join(rendered["summaryCards"] + rendered["overviewRows"] + rendered["overviewAlerts"] + rendered["overviewActivity"])
 
     assert rendered["page-title"]["text"] == "Overview"
+    assert rendered["setup-progress-percent"]["text"]
+    assert any("Connect GitHub" in step["text"] for step in rendered["setupSteps"])
+    assert any("Select repositories" in step["text"] and "progress-completed" in step["className"] for step in rendered["setupSteps"])
     assert any("Open PR Reviews 2" in card for card in rendered["summaryCards"])
     assert any("Awaiting Approval 2" in card for card in rendered["summaryCards"])
     assert any("Potential Monthly Savings $140" in card for card in rendered["summaryCards"])
     assert any("demo/infra" in row and "Open" in row for row in rendered["overviewRows"])
+    assert any("demo/infra" in row and "Connected" in row for row in rendered["overviewRepos"])
     assert any("Open Review" in row for row in rendered["overviewAlerts"])
     assert "pending_human_review" not in combined
     assert "[object Object]" not in combined
@@ -761,6 +770,8 @@ def test_cloud_hunt_status_badges_and_filter_chips_are_semantic() -> None:
     assert rendered["filter-count-protected"]["text"] == "1"
     assert rendered["filter-count-needs-context"]["text"] == "1"
     assert rendered["filter-count-awaiting-review"]["text"] == "2"
+    assert any("Inventory loaded" in step["text"] and "progress-completed" in step["className"] for step in rendered["cloudJourney"])
+    assert any("Human review" in step["text"] and "progress-human-action-required" in step["className"] for step in rendered["cloudJourney"])
 
     protected_only = render_frontend({"run": None, "reviews": [], "hunt": hunt, "mode": "cloud-hunt", "cloud_filter": "protected"})
     assert any(chip["filter"] == "protected" and chip["ariaPressed"] == "true" and "filter-chip-active" in chip["className"] for chip in protected_only["filterChips"])

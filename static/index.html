@@ -72,14 +72,32 @@
                 <button id="overview-refresh-button" class="secondary" type="button">Refresh</button>
               </div>
             </div>
+            <section class="panel progress-card setup-card" aria-labelledby="setup-progress-title">
+              <div class="progress-card-head">
+                <div>
+                  <p class="kicker">Getting started</p>
+                  <h2 id="setup-progress-title">Connect GhostBusters</h2>
+                </div>
+                <strong id="setup-progress-percent">0% complete</strong>
+              </div>
+              <div class="progress-track" aria-hidden="true"><span id="setup-progress-bar"></span></div>
+              <ol class="progress-checklist" id="setup-progress-list" aria-live="polite"></ol>
+            </section>
             <section class="summary-grid" id="overview-summary" aria-label="Overview summary cards"></section>
+            <section class="panel" aria-labelledby="overview-featured-title">
+              <div class="section-heading">
+                <div><p class="kicker">Connected repositories</p><h2 id="overview-featured-title">Top savings opportunities</h2></div>
+                <button class="secondary compact" id="overview-open-cloud-button" type="button">Open Cloud Hunt</button>
+              </div>
+              <div id="overview-savings-list" class="featured-card-grid"></div>
+            </section>
             <section class="overview-grid">
               <article class="panel overview-main" aria-labelledby="overview-pr-title">
                 <div class="section-heading">
-                  <div><p class="kicker">Recent PR reviews</p><h2 id="overview-pr-title">Terraform review queue</h2></div>
+                  <div><p class="kicker">Recently viewed projects</p><h2 id="overview-pr-title">Recent PR Reviews</h2></div>
                   <button class="secondary compact" id="overview-open-prs-button" type="button">Open PR Reviews</button>
                 </div>
-                <div id="overview-pr-list" class="compact-list"></div>
+                <div id="overview-pr-list" class="recent-table"></div>
               </article>
               <article class="panel alert-panel" aria-labelledby="overview-alert-title">
                 <div class="section-heading">
@@ -90,12 +108,12 @@
               </article>
             </section>
             <section class="overview-grid lower">
-              <article class="panel" aria-labelledby="overview-savings-title">
+              <article class="panel" aria-labelledby="overview-repositories-title">
                 <div class="section-heading">
-                  <div><p class="kicker">Top savings opportunities</p><h2 id="overview-savings-title">Cloud Hunt candidates</h2></div>
-                  <button class="secondary compact" id="overview-open-cloud-button" type="button">Open Cloud Hunt</button>
+                  <div><p class="kicker">All organizations</p><h2 id="overview-repositories-title">Connected Repositories</h2></div>
+                  <span class="count-badge" id="overview-repository-count">0 repos</span>
                 </div>
-                <div id="overview-savings-list" class="compact-list"></div>
+                <div id="overview-repositories-list" class="compact-list"></div>
               </article>
               <article class="panel" aria-labelledby="overview-activity-title">
                 <div class="section-heading">
@@ -206,8 +224,8 @@
               <article class="panel progress-panel" id="workflow" aria-labelledby="workflow-title">
                 <div class="section-heading">
                   <div>
-                    <p class="kicker">Workflow</p>
-                    <h2 id="workflow-title">Detected to remediation</h2>
+                    <p class="kicker">Agent Journey</p>
+                    <h2 id="workflow-title">PR review stages</h2>
                   </div>
                   <span class="count-badge" id="current-action-title">Current stage</span>
                 </div>
@@ -340,6 +358,13 @@
               <p class="message" id="cloud-hunt-message" role="status"></p>
             </section>
             <section class="hunt-summary-grid" id="cloud-hunt-summary"></section>
+            <section class="panel progress-card" aria-labelledby="cloud-journey-title">
+              <div class="progress-card-head">
+                <div><p class="kicker">Agent Journey</p><h2 id="cloud-journey-title">Cloud Hunt stages</h2></div>
+                <span class="count-badge" id="cloud-journey-state">Waiting</span>
+              </div>
+              <ol class="progress-checklist compact" id="cloud-journey-list" aria-live="polite"></ol>
+            </section>
             <section class="panel" aria-labelledby="candidate-title"><div class="section-heading"><div><p class="kicker">Investigation leads</p><h2 id="candidate-title">Cloud Hunt findings</h2></div><span class="count-badge" id="candidate-count">0 candidates</span></div><div class="candidate-grid" id="candidate-list"><p class="muted">Start a hunt to scan the fixture inventory.</p></div></section>
           </section>
 
