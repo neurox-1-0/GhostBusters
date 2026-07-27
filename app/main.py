@@ -3,19 +3,43 @@
 from __future__ import annotations
 
 import json
+import secrets
+from datetime import timedelta
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import (
     AskGhostBustersRequest, AskGhostBustersResponse,
-    CloudHuntRequest, HealthResponse, HumanReviewRequest, ReviewCaseActionRequest,
+    ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
+    HumanReviewRequest, InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
 )
 from app.settings import settings
+from app.auth import (
+    APPROVALS_DECIDE,
+    APPROVALS_READ,
+    AUDIT_READ,
+    CLOUD_HUNTS_READ,
+    CLOUD_HUNTS_RUN,
+    MEMBERS_INVITE,
+    MEMBERS_READ,
+    MEMBERS_MANAGE_ROLES,
+    PR_REVIEWS_READ,
+    WORKSPACE_READ,
+    Principal,
+    auth_store,
+    clear_session_cookies,
+    csrf_protect,
+    current_principal,
+    require_permission,
+    session_store,
+    set_session_cookies,
+    utc_now,
+)
 from core.run_store import RunNotFoundError
 from core.storage_factory import build_webhook_deduplicator
 from core.workflow_service import (
@@ -56,10 +80,88 @@ def api_scenarios() -> dict[str, list[str]]:
     return {"scenarios": list_scenarios()}
 
 
+def principal_dependency(request: Request) -> Principal:
+    principal = current_principal(request)
+    csrf_protect(request, principal)
+    return principal
+
+
+@app.post("/api/auth/register", response_model=CurrentUserResponse, status_code=201)
+def register(request: RegisterRequest, response: Response) -> CurrentUserResponse:
+    user, organization, membership = auth_store.register_owner(
+        request.email,
+        request.display_name,
+        request.password,
+        request.organization_name,
+        request.timezone,
+        request.organization_slug,
+    )
+    csrf_token = secrets.token_urlsafe(32)
+    session_id = session_store.create(user.id, csrf_token, utc_now() + timedelta(seconds=settings.session_ttl_seconds))
+    set_session_cookies(response, session_id, csrf_token)
+    return auth_store.principal_for_user(user.id, csrf_token).response()
+
+
+@app.post("/api/auth/login", response_model=CurrentUserResponse)
+def login(request: LoginRequest, fastapi_request: Request, response: Response) -> CurrentUserResponse:
+    user, _, _ = auth_store.authenticate(request.email, request.password, fastapi_request.client.host if fastapi_request.client else "")
+    csrf_token = secrets.token_urlsafe(32)
+    session_id = session_store.create(user.id, csrf_token, utc_now() + timedelta(seconds=settings.session_ttl_seconds))
+    set_session_cookies(response, session_id, csrf_token)
+    return auth_store.principal_for_user(user.id, csrf_token).response()
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict[str, str]:
+    session_id = request.cookies.get(settings.session_cookie_name)
+    principal = current_principal(request)
+    if principal.authenticated:
+        csrf_protect(request, principal)
+    if session_id:
+        session_store.revoke(session_id)
+    clear_session_cookies(response)
+    auth_store.record_activity(principal.organization_id, "logout", principal.user.id if principal.user else None, {})
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/me", response_model=CurrentUserResponse)
+def me(principal: Principal = Depends(principal_dependency)) -> CurrentUserResponse:
+    return principal.response()
+
+
+@app.get("/api/members")
+def list_members(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_READ)
+    memberships = [
+        item
+        for item in auth_store.memberships.values()
+        if item.organization_id == principal.organization_id
+    ]
+    users = auth_store.users_by_id
+    return [
+        {"membership": membership, "user": users.get(membership.user_id)}
+        for membership in memberships
+    ]
+
+
+@app.post("/api/invitations", status_code=201)
+def invite_member(request: InviteMemberRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_INVITE)
+    invitation = auth_store.invite(principal, request.email, request.role, request.approval_permission_enabled)
+    return {"invitation": invitation, "development_invitation_link": f"/api/invitations/{invitation.id}/accept?token=development-only"}
+
+
+@app.patch("/api/members/{membership_id}")
+def change_member_role(membership_id: UUID, request: ChangeMemberRoleRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_MANAGE_ROLES)
+    return auth_store.change_role(principal, membership_id, request.role, request.approval_permission_enabled)
+
+
 @app.post("/api/runs", response_model=WorkflowRun, status_code=201)
-def create_run(request: StartRunRequest, response: Response) -> WorkflowRun:
+def create_run(request: StartRunRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, PR_REVIEWS_READ)
     try:
-        run, created = workflow_service.start_run(request)
+        run, created = workflow_service.start_run(request, principal.organization_id)
     except ScenarioNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -70,22 +172,34 @@ def create_run(request: StartRunRequest, response: Response) -> WorkflowRun:
 
 
 @app.get("/api/runs", response_model=list[WorkflowRun])
-def list_runs() -> list[WorkflowRun]:
-    return workflow_service.list_runs()
+def list_runs(principal: Principal = Depends(principal_dependency)) -> list[WorkflowRun]:
+    require_permission(principal, PR_REVIEWS_READ)
+    return workflow_service.list_runs(principal.organization_id)
 
 
 @app.get("/api/runs/{run_id}", response_model=WorkflowRun)
-def get_run(run_id: UUID) -> WorkflowRun:
+def get_run(run_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, PR_REVIEWS_READ)
     try:
-        return workflow_service.get_run(run_id)
+        return workflow_service.get_run(run_id, principal.organization_id)
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/runs/{run_id}/review", response_model=WorkflowRun)
-def review_run(run_id: UUID, request: HumanReviewRequest, response: Response) -> WorkflowRun:
+def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, APPROVALS_DECIDE)
+    reviewer = principal.reviewer_name if principal.authenticated else request.reviewer
+    secured_request = request.model_copy(update={"reviewer": reviewer})
     try:
-        run, maybe_pr_created = workflow_service.review_run(run_id, request)
+        run, maybe_pr_created = workflow_service.review_run(
+            run_id,
+            secured_request,
+            principal.organization_id,
+            principal.user.id if principal.user else None,
+            principal.user.email if principal.user else None,
+            principal.membership.role,
+        )
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except WorkflowConflictError as exc:
@@ -103,7 +217,8 @@ def reset_runs() -> dict[str, str]:
 
 
 @app.post("/api/assistant/ask", response_model=AskGhostBustersResponse)
-def ask_ghostbusters(request: AskGhostBustersRequest) -> AskGhostBustersResponse:
+def ask_ghostbusters(request: AskGhostBustersRequest, principal: Principal = Depends(principal_dependency)) -> AskGhostBustersResponse:
+    require_permission(principal, WORKSPACE_READ)
     try:
         return assistant_service.ask(request)
     except AssistantValidationError as exc:
@@ -113,32 +228,37 @@ def ask_ghostbusters(request: AskGhostBustersRequest) -> AskGhostBustersResponse
 
 
 @app.get("/api/cloud/providers")
-def cloud_providers() -> list[dict[str, object]]:
+def cloud_providers(principal: Principal = Depends(principal_dependency)) -> list[dict[str, object]]:
+    require_permission(principal, CLOUD_HUNTS_READ)
     return cloud_hunt_service.providers()
 
 
 @app.get("/api/cloud/hunt/fixtures")
-def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud")) -> list[object]:
+def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: Principal = Depends(principal_dependency)) -> list[object]:
+    require_permission(principal, CLOUD_HUNTS_READ)
     return cloud_hunt_service.fixtures(provider_scope)
 
 
 @app.post("/api/cloud/hunts")
-def start_cloud_hunt(request: CloudHuntRequest):
+def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_RUN)
     try:
-        return cloud_hunt_service.start_hunt(request)
+        return cloud_hunt_service.start_hunt(request, principal.organization_id)
     except CloudHuntConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/cloud/hunts")
-def list_cloud_hunts():
-    return cloud_hunt_service.list_hunts()
+def list_cloud_hunts(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_READ)
+    return cloud_hunt_service.list_hunts(principal.organization_id)
 
 
 @app.get("/api/cloud/hunts/{hunt_id}")
-def get_cloud_hunt(hunt_id: UUID):
+def get_cloud_hunt(hunt_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_READ)
     try:
-        return cloud_hunt_service.get_hunt(hunt_id)
+        return cloud_hunt_service.get_hunt(hunt_id, principal.organization_id)
     except CloudHuntNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -150,8 +270,10 @@ def list_review_cases(
     status: str | None = None,
     required_role: str | None = None,
     risk: str | None = None,
+    principal: Principal = Depends(principal_dependency),
 ) -> list[ReviewCase]:
-    cases = cloud_hunt_service.list_cases()
+    require_permission(principal, APPROVALS_READ)
+    cases = cloud_hunt_service.list_cases(principal.organization_id)
     return [case for case in cases if
             (source_type is None or case.source_type == source_type) and
             (provider is None or case.provider == provider) and
@@ -161,27 +283,38 @@ def list_review_cases(
 
 
 @app.get("/api/reviews/{review_id}", response_model=ReviewCase)
-def get_review_case(review_id: UUID) -> ReviewCase:
+def get_review_case(review_id: UUID, principal: Principal = Depends(principal_dependency)) -> ReviewCase:
+    require_permission(principal, APPROVALS_READ)
     try:
-        return cloud_hunt_service.get_case(review_id)
+        return cloud_hunt_service.get_case(review_id, principal.organization_id)
     except CloudHuntNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/reviews/{review_id}/action", response_model=ReviewCase)
-def act_on_review_case(review_id: UUID, request: ReviewCaseActionRequest) -> ReviewCase:
+def act_on_review_case(review_id: UUID, request: ReviewCaseActionRequest, principal: Principal = Depends(principal_dependency)) -> ReviewCase:
+    require_permission(principal, APPROVALS_DECIDE)
+    reviewer = principal.reviewer_name if principal.authenticated else request.reviewer
+    secured_request = request.model_copy(update={"reviewer": reviewer})
     try:
-        return cloud_hunt_service.act_on_case(review_id, request)
+        return cloud_hunt_service.act_on_case(
+            review_id,
+            secured_request,
+            principal.organization_id,
+            principal.user.id if principal.user else None,
+            principal.user.email if principal.user else None,
+            principal.membership.role,
+        )
     except CloudHuntNotFoundError:
-        if request.action == "waive":
+        if secured_request.action == "waive":
             raise HTTPException(status_code=404, detail="Cloud Hunt review case not found.")
         try:
             run_request = HumanReviewRequest(
-                action=request.action, reviewer=request.reviewer, comment=request.comment,
-                requested_sources=request.requested_sources, modified_action=request.modified_action, human_context=request.human_context,
+                action=secured_request.action, reviewer=secured_request.reviewer, comment=secured_request.comment,
+                requested_sources=secured_request.requested_sources, modified_action=secured_request.modified_action, human_context=secured_request.human_context,
             )
-            workflow_service.review_run(review_id, run_request)
-            return next(case for case in cloud_hunt_service.list_cases() if case.id == review_id)
+            workflow_service.review_run(review_id, run_request, principal.organization_id, principal.user.id if principal.user else None, principal.user.email if principal.user else None, principal.membership.role)
+            return next(case for case in cloud_hunt_service.list_cases(principal.organization_id) if case.id == review_id)
         except (StopIteration, WorkflowConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CloudHuntConflictError as exc:

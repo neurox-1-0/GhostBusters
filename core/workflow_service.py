@@ -18,6 +18,8 @@ from app.models import (
     PolicyResult,
     RunStatus,
     ScenarioDefinition,
+    DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+    OrganizationRole,
     StartRunRequest,
     TerraformResourceChange,
     ToolExecutionRecord,
@@ -109,9 +111,9 @@ class WorkflowService:
         self.ai_client = ai_client
         self.github_client = github_client or (GitHubClient(configuration.github_token, configuration.github_api_base_url, configuration.github_request_timeout_seconds) if configuration.github_integration_enabled and configuration.github_token else None)
 
-    def start_run(self, request: StartRunRequest) -> tuple[WorkflowRun, bool]:
+    def start_run(self, request: StartRunRequest, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> tuple[WorkflowRun, bool]:
         if request.idempotency_key:
-            existing = self.store.find_by_idempotency_key(request.idempotency_key)
+            existing = self.store.find_by_idempotency_key(request.idempotency_key, organization_id)
             if existing is not None:
                 return existing, False
 
@@ -119,6 +121,7 @@ class WorkflowService:
         now = utc_now()
         run = WorkflowRun(
             id=uuid4(),
+            organization_id=organization_id,
             goal=request.goal,
             scenario_name=request.scenario_name,
             status=RunStatus.created,
@@ -132,7 +135,7 @@ class WorkflowService:
             run = self.store.create(run)
         except DuplicateIdempotencyKeyError:
             if request.idempotency_key:
-                existing = self.store.find_by_idempotency_key(request.idempotency_key)
+                existing = self.store.find_by_idempotency_key(request.idempotency_key, organization_id)
                 if existing is not None:
                     return existing, False
             raise
@@ -173,14 +176,14 @@ class WorkflowService:
             current.updated_at = utc_now()
             return current
 
-        return self.store.update(run.id, execute), True
+        return self.store.update(run.id, execute, organization_id), True
 
     def start_run_request(self, scenario_name: str, goal: str | None = None) -> tuple[WorkflowRun, bool]:
         scenario = load_scenario(scenario_name)
         return self.start_run(StartRunRequest(goal=goal or scenario.goal, scenario_name=scenario_name))
 
-    def start_github_run(self, source: GitHubTerraformChange, delivery_id: str, goal: str | None = None) -> tuple[WorkflowRun, bool]:
-        existing = self.store.find_by_idempotency_key(delivery_id)
+    def start_github_run(self, source: GitHubTerraformChange, delivery_id: str, goal: str | None = None, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> tuple[WorkflowRun, bool]:
+        existing = self.store.find_by_idempotency_key(delivery_id, organization_id)
         if existing is not None and (
             existing.source_type != "manual_demo" or existing.github_source is not None
         ):
@@ -189,6 +192,7 @@ class WorkflowService:
         now = utc_now()
         run = WorkflowRun(
             id=existing.id if existing else uuid4(),
+            organization_id=organization_id,
             goal=goal or "Analyze a GitHub Terraform pull request for safe FinOps remediation.",
             scenario_name="safe", status=RunStatus.created,
             created_at=existing.created_at if existing else now, updated_at=now,
@@ -207,7 +211,7 @@ class WorkflowService:
         append_audit_event(run, event_type="github_pr_loaded", actor="tool", summary="GitHub pull-request metadata loaded.", details={"repository": source.repository, "pull_request": source.pull_request_number, "head_sha": source.head_sha})
         append_audit_event(run, event_type="github_pr_files_loaded", actor="tool", summary="Changed files loaded from GitHub.", details={"files": source.changed_files})
         append_audit_event(run, event_type="terraform_files_selected", actor="agent", summary=f"Selected {len(source.terraform_files)} Terraform file(s).", details={"selected": source.terraform_files, "skipped": source.unsupported_changes})
-        run = self.store.update(existing.id, run) if existing is not None else self.store.create(run)
+        run = self.store.update(existing.id, run, organization_id) if existing is not None else self.store.create(run)
 
         def execute(current: WorkflowRun) -> WorkflowRun:
             if not source.resource_changes:
@@ -236,31 +240,39 @@ class WorkflowService:
                 append_audit_event(current, event_type="github_integration_failed", actor="system", summary="GitHub investigation failed safely.")
             current.updated_at = utc_now()
             return current
-        return self.store.update(run.id, execute), existing is None
+        return self.store.update(run.id, execute, organization_id), existing is None
 
-    def get_run(self, run_id: UUID) -> WorkflowRun:
-        return self.store.get(run_id)
+    def get_run(self, run_id: UUID, organization_id: UUID | None = None) -> WorkflowRun:
+        return self.store.get(run_id, organization_id)
 
-    def find_run_by_idempotency(self, key: str) -> WorkflowRun | None:
-        return self.store.find_by_idempotency_key(key)
+    def find_run_by_idempotency(self, key: str, organization_id: UUID | None = None) -> WorkflowRun | None:
+        return self.store.find_by_idempotency_key(key, organization_id)
 
-    def list_runs(self) -> list[WorkflowRun]:
-        return self.store.list()
+    def list_runs(self, organization_id: UUID | None = None) -> list[WorkflowRun]:
+        return self.store.list(organization_id)
 
     def reset(self) -> dict[str, str]:
         self.store.delete_all()
         return {"status": "ok"}
 
-    def review_run(self, run_id: UUID, request: HumanReviewRequest) -> tuple[WorkflowRun, bool]:
+    def review_run(
+        self,
+        run_id: UUID,
+        request: HumanReviewRequest,
+        organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+        reviewer_user_id: UUID | None = None,
+        reviewer_email: str | None = None,
+        reviewer_role: OrganizationRole | None = None,
+    ) -> tuple[WorkflowRun, bool]:
         try:
-            existing = self.store.get(run_id)
+            existing = self.store.get(run_id, organization_id)
         except RunNotFoundError:
             raise
         if request.action == "approve" and existing.status == RunStatus.pr_created:
             return existing, False
 
         def update(current: WorkflowRun) -> WorkflowRun:
-            record = self._review_record(request)
+            record = self._review_record(request, organization_id, reviewer_user_id, reviewer_email, reviewer_role)
             if request.action == "approve":
                 self._approve(current, record)
             elif request.action == "reject":
@@ -278,7 +290,7 @@ class WorkflowService:
             return current
 
         try:
-            return self.store.update(run_id, update), request.action == "approve"
+            return self.store.update(run_id, update, organization_id), request.action == "approve"
         except HumanReviewError as exc:
             raise WorkflowConflictError(str(exc)) from exc
 
@@ -724,9 +736,20 @@ class WorkflowService:
             details=details,
         )
 
-    def _review_record(self, request: HumanReviewRequest) -> HumanReviewRecord:
+    def _review_record(
+        self,
+        request: HumanReviewRequest,
+        organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+        reviewer_user_id: UUID | None = None,
+        reviewer_email: str | None = None,
+        reviewer_role: OrganizationRole | None = None,
+    ) -> HumanReviewRecord:
         return HumanReviewRecord(
             reviewer=request.reviewer,
+            reviewer_user_id=reviewer_user_id,
+            reviewer_email=reviewer_email,
+            reviewer_role=reviewer_role,
+            organization_id=organization_id,
             action=request.action,
             comment=request.comment,
             requested_sources=request.requested_sources,

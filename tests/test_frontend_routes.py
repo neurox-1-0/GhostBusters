@@ -26,8 +26,8 @@ def test_root_serves_agent_console() -> None:
     assert 'id="overview-repositories-list"' in response.text
     assert 'id="cloud-journey-list"' in response.text
     assert 'id="overview-view-button"' in response.text
-    assert "/static/app.js?v=judge-v7" in response.text
-    assert "/static/styles.css?v=judge-v7" in response.text
+    assert "/static/app.js?v=auth-v1" in response.text
+    assert "/static/styles.css?v=auth-v1" in response.text
     assert "Open Source PR" in response.text
     assert "Launch Demo" in response.text
     assert "Why GhostBusters recommends this" in response.text

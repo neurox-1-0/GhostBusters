@@ -6,10 +6,10 @@
     <title>GhostBusters</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="/static/styles.css?v=judge-v7" />
+    <link rel="stylesheet" href="/static/styles.css?v=auth-v1" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell" hidden>
       <aside class="sidebar" aria-label="Primary navigation">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">GB</span>
@@ -48,9 +48,10 @@
           <div class="topbar-actions">
             <button class="icon-button" id="notification-button" type="button" aria-label="Notifications">!</button>
             <button id="ask-global-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button>
-            <div class="user-chip" aria-label="Current organization">
-              <span aria-hidden="true">GB</span>
-              <div><strong>FinOps</strong><small>Demo workspace</small></div>
+            <div class="user-chip" id="user-menu" aria-label="Signed-in user">
+              <span id="user-initials" aria-hidden="true">GB</span>
+              <div><strong id="user-display-name">FinOps</strong><small id="user-role-org">Demo workspace</small></div>
+              <button class="secondary compact sign-out-button" id="sign-out-button" type="button">Sign Out</button>
             </div>
           </div>
         </header>
@@ -322,8 +323,11 @@
                 <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p>Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
               </div>
               <div class="review-control">
-                <label for="reviewer-input">Reviewer</label>
-                <input id="reviewer-input" value="judge" />
+                <div class="identity-block" id="reviewer-identity-block" aria-label="Reviewing as">
+                  <span>Reviewing as</span>
+                  <strong id="reviewer-identity-name">Demo Reviewer</strong>
+                  <small id="reviewer-identity-detail">Reviewer · demo@ghostbusters.local</small>
+                </div>
                 <div class="review-actions" id="review-actions">
                   <button data-review-action="approve" type="button" class="button-primary">Approve Recommendation</button>
                   <button data-review-action="reject" type="button" class="button-danger">Reject</button>
@@ -480,8 +484,11 @@
                   <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
                 </div>
                 <div class="review-control">
-                  <label for="cloud-reviewer-input">Reviewer</label>
-                  <input id="cloud-reviewer-input" value="judge" />
+                  <div class="identity-block" id="cloud-reviewer-identity-block" aria-label="Reviewing as">
+                    <span>Reviewing as</span>
+                    <strong id="cloud-reviewer-identity-name">Demo Reviewer</strong>
+                    <small id="cloud-reviewer-identity-detail">Reviewer · demo@ghostbusters.local</small>
+                  </div>
                   <div class="review-actions" id="cloud-review-actions">
                     <button data-cloud-review-action="approve" type="button" class="button-primary">Approve Recommendation</button>
                     <button data-cloud-review-action="reject" type="button" class="button-danger">Reject</button>
@@ -522,6 +529,40 @@
     </div>
 
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+    <div class="auth-screen" id="auth-modal-backdrop">
+      <section class="auth-card" aria-labelledby="auth-modal-title">
+        <div class="modal-head">
+          <div>
+            <p class="kicker" id="auth-modal-kicker">Workspace access</p>
+            <h2 id="auth-modal-title" class="section-title">Sign in to GhostBusters</h2>
+          </div>
+        </div>
+        <form id="signin-form" class="auth-form">
+          <label for="signin-email">Email</label>
+          <input id="signin-email" type="email" autocomplete="email" placeholder="you@company.com" required />
+          <label for="signin-password">Password</label>
+          <input id="signin-password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+          <button id="signin-submit-button" type="submit">Sign In</button>
+          <p class="auth-switch">New to GhostOps? <button id="auth-register-link" type="button">Create Workspace</button></p>
+        </form>
+        <form id="register-form" class="auth-form" hidden>
+          <label for="register-name">Display name</label>
+          <input id="register-name" autocomplete="name" placeholder="Varshan Perera" required />
+          <label for="register-email">Email</label>
+          <input id="register-email" type="email" autocomplete="email" placeholder="varshan@acme.com" required />
+          <label for="register-password">Password</label>
+          <input id="register-password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required />
+          <label for="register-organization">Organization</label>
+          <input id="register-organization" autocomplete="organization" placeholder="Acme Cloud Team" required />
+          <label for="register-timezone">Timezone</label>
+          <input id="register-timezone" value="UTC" placeholder="Asia/Colombo" />
+          <button id="register-submit-button" type="submit">Create Workspace</button>
+          <p class="auth-switch">Already have a workspace? <button id="auth-signin-link" type="button">Sign In</button></p>
+        </form>
+        <p class="message" id="auth-message" role="status"></p>
+      </section>
+    </div>
 
     <div class="modal-backdrop" id="demo-modal-backdrop" hidden>
       <section class="demo-modal" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title">
@@ -571,6 +612,6 @@
       </aside>
     </div>
 
-    <script src="/static/app.js?v=judge-v7" defer></script>
+    <script src="/static/app.js?v=auth-v1" defer></script>
   </body>
 </html>

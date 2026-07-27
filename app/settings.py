@@ -18,6 +18,13 @@ class Settings:
     static_dir: Path = Path(os.getenv("STATIC_DIR", "static"))
     database_url: str | None = os.getenv("DATABASE_URL")
     redis_url: str | None = os.getenv("REDIS_URL")
+    auth_required: bool = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes"}
+    demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "true").lower() in {"1", "true", "yes"}
+    session_cookie_name: str = os.getenv("SESSION_COOKIE_NAME", "ghostbusters_session")
+    csrf_cookie_name: str = os.getenv("CSRF_COOKIE_NAME", "ghostbusters_csrf")
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
+    login_rate_limit_attempts: int = int(os.getenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
+    login_rate_limit_window_seconds: int = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "300"))
     auto_create_schema: bool = os.getenv("AUTO_CREATE_SCHEMA", "true").lower() in {"1", "true", "yes"}
     conftest_enabled: bool = os.getenv("CONFTEST_ENABLED", "true").lower() in {"1", "true", "yes"}
     conftest_executable: str = os.getenv("CONFTEST_EXECUTABLE", "conftest")

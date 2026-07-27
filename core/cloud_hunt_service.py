@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from app.models import (
-    AuditEvent, CloudHuntRequest, CloudHuntRun, CloudHuntSummary, GhostCandidate,
-    MockPullRequest, ReviewCase, ReviewCaseActionRequest,
+    AuditEvent, CloudHuntRequest, CloudHuntRun, CloudHuntSummary, DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+    GhostCandidate, MockPullRequest, OrganizationRole, ReviewCase, ReviewCaseActionRequest,
 )
 from app.settings import Settings, settings
 from core.cloud_candidates import detect_candidates
@@ -53,12 +53,13 @@ class CloudHuntService:
     def fixtures(self, scope: str = "multi_cloud") -> list:
         return self.registry.list_resources(scope)
 
-    def start_hunt(self, request: CloudHuntRequest) -> CloudHuntRun:
+    def start_hunt(self, request: CloudHuntRequest, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> CloudHuntRun:
         if not self.configuration.cloud_hunt_enabled:
             raise CloudHuntConflictError("Cloud Hunt Mode is disabled by CLOUD_HUNT_ENABLED.")
         started = _now()
         hunt = CloudHuntRun(
             id=uuid4(), trigger_source=request.trigger_source, provider_scope=request.provider_scope,
+            organization_id=organization_id,
             inventory_source=request.inventory_source, goal=request.goal, started_at=started,
             status="scanning", planning_mode="deterministic_only",
         )
@@ -107,18 +108,18 @@ class CloudHuntService:
                     self.persistence.save_case(case)
         return hunt.model_copy(deep=True)
 
-    def list_hunts(self) -> list[CloudHuntRun]:
-        return [item.model_copy(deep=True) for item in self._hunts.values()]
+    def list_hunts(self, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> list[CloudHuntRun]:
+        return [item.model_copy(deep=True) for item in self._hunts.values() if item.organization_id == organization_id]
 
-    def get_hunt(self, hunt_id: UUID) -> CloudHuntRun:
-        if hunt_id not in self._hunts:
+    def get_hunt(self, hunt_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> CloudHuntRun:
+        if hunt_id not in self._hunts or self._hunts[hunt_id].organization_id != organization_id:
             raise CloudHuntNotFoundError(str(hunt_id))
         return self._hunts[hunt_id].model_copy(deep=True)
 
-    def list_cases(self) -> list[ReviewCase]:
-        cases = [item.model_copy(deep=True) for item in self._cases.values()]
+    def list_cases(self, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> list[ReviewCase]:
+        cases = [item.model_copy(deep=True) for item in self._cases.values() if item.organization_id == organization_id]
         if self.workflow_service is not None:
-            for run in self.workflow_service.list_runs():
+            for run in self.workflow_service.list_runs(organization_id):
                 if run.decision_record is None:
                     continue
                 github_source = run.github_source
@@ -134,6 +135,7 @@ class CloudHuntService:
                     )
                 cases.append(ReviewCase(
                     id=run.id, source_type=run.source_type,
+                    organization_id=run.organization_id,
                     source_reference=github_source.pull_request_url if github_source else str(run.id),
                     repository=github_source.repository if github_source else None,
                     pull_request_number=github_source.pull_request_number if github_source else None,
@@ -158,17 +160,25 @@ class CloudHuntService:
                 ))
         return cases
 
-    def get_case(self, case_id: UUID) -> ReviewCase:
-        if case_id in self._cases:
+    def get_case(self, case_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> ReviewCase:
+        if case_id in self._cases and self._cases[case_id].organization_id == organization_id:
             return self._cases[case_id].model_copy(deep=True)
-        for case in self.list_cases():
+        for case in self.list_cases(organization_id):
             if case.id == case_id:
                 return case
         raise CloudHuntNotFoundError(str(case_id))
 
-    def act_on_case(self, case_id: UUID, request: ReviewCaseActionRequest) -> ReviewCase:
+    def act_on_case(
+        self,
+        case_id: UUID,
+        request: ReviewCaseActionRequest,
+        organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+        reviewer_user_id: UUID | None = None,
+        reviewer_email: str | None = None,
+        reviewer_role: OrganizationRole | None = None,
+    ) -> ReviewCase:
         case = self._cases.get(case_id)
-        if case is None:
+        if case is None or case.organization_id != organization_id:
             raise CloudHuntNotFoundError(str(case_id))
         if case.status in {"rejected", "waived", "pr_created"}:
             raise CloudHuntConflictError(f"Review case is already {case.status}.")
@@ -196,7 +206,7 @@ class CloudHuntService:
             case.recommendation = request.modified_action
             case.status, case.final_outcome, case.human_decision = "pending", "recommendation_modified", "modify"
         case.updated_at = _now()
-        self._case_audit(case, "human_decision_recorded", f"{request.action} recorded by {request.reviewer}.", {"comment": request.comment})
+        self._case_audit(case, "human_decision_recorded", f"{request.action} recorded by {request.reviewer}.", {"comment": request.comment, "reviewer_user_id": str(reviewer_user_id) if reviewer_user_id else None, "reviewer_email": reviewer_email, "reviewer_role": reviewer_role})
         self._cases[case.id] = case.model_copy(deep=True)
         if self.persistence is not None:
             self.persistence.save_case(case)
@@ -229,6 +239,7 @@ class CloudHuntService:
         savings = resource.estimated_monthly_cost or 0.0
         return ReviewCase(
             id=uuid4(), source_type="cloud_hunt", source_reference=str(hunt.id), provider=resource.provider,
+            organization_id=hunt.organization_id,
             resource_id=resource.resource_id, resource_name=resource.resource_name, recommendation=recommendation,
             recommendation_reason=" ".join(signal.description for signal in candidate.signals if signal.supports_ghost_hypothesis) or "Multiple inventory signals require review.",
             confidence=candidate.candidate_score, risk_level="high" if protected or (resource.environment or "").lower() == "production" else "medium",

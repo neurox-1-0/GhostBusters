@@ -82,6 +82,31 @@ class RunStatus(StrEnum):
     failed_safely = "failed_safely"
 
 
+DEFAULT_DEVELOPMENT_ORGANIZATION_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+class OrganizationRole(StrEnum):
+    owner = "OWNER"
+    admin = "ADMIN"
+    reviewer = "REVIEWER"
+    viewer = "VIEWER"
+
+
+class AccountStatus(StrEnum):
+    active = "active"
+    disabled = "disabled"
+
+
+class OrganizationStatus(StrEnum):
+    active = "active"
+    disabled = "disabled"
+
+
+class MembershipStatus(StrEnum):
+    active = "active"
+    disabled = "disabled"
+
+
 class AppModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -89,6 +114,87 @@ class AppModel(BaseModel):
 class HealthResponse(AppModel):
     status: str
     service: str
+
+
+class Organization(AppModel):
+    id: UUID
+    name: str
+    slug: str
+    status: OrganizationStatus = OrganizationStatus.active
+    timezone: str = "UTC"
+    created_at: datetime
+    updated_at: datetime
+
+
+class User(AppModel):
+    id: UUID
+    email: str
+    display_name: str
+    status: AccountStatus = AccountStatus.active
+    created_at: datetime
+    updated_at: datetime
+    last_login_at: datetime | None = None
+
+
+class OrganizationMembership(AppModel):
+    id: UUID
+    organization_id: UUID
+    user_id: UUID
+    role: OrganizationRole
+    approval_permission_enabled: bool = False
+    status: MembershipStatus = MembershipStatus.active
+    invited_by_user_id: UUID | None = None
+    joined_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class Invitation(AppModel):
+    id: UUID
+    organization_id: UUID
+    email: str
+    role: OrganizationRole
+    approval_permission_enabled: bool = False
+    expires_at: datetime
+    accepted_at: datetime | None = None
+    invited_by_user_id: UUID
+    created_at: datetime
+
+
+class RegisterRequest(AppModel):
+    email: str
+    display_name: str
+    password: str = Field(min_length=8, max_length=256)
+    organization_name: str
+    organization_slug: str | None = None
+    timezone: str = "UTC"
+
+
+class LoginRequest(AppModel):
+    email: str
+    password: str = Field(min_length=1, max_length=256)
+
+
+class InviteMemberRequest(AppModel):
+    email: str
+    role: OrganizationRole
+    approval_permission_enabled: bool = False
+
+
+class ChangeMemberRoleRequest(AppModel):
+    role: OrganizationRole
+    approval_permission_enabled: bool | None = None
+
+
+class CurrentUserResponse(AppModel):
+    authenticated: bool
+    user: User | None = None
+    organization: Organization
+    membership: OrganizationMembership
+    role_label: str
+    permissions: list[str]
+    demo_mode: bool = False
+    csrf_token: str | None = None
 
 
 class TerraformResourceChange(AppModel):
@@ -401,7 +507,7 @@ class StartRunRequest(AppModel):
 
 class HumanReviewRequest(AppModel):
     action: HumanReviewAction
-    reviewer: str
+    reviewer: str = "demo-reviewer"
     comment: str | None = None
     requested_sources: list[str] = Field(default_factory=list)
     modified_action: AlternativeAction | None = None
@@ -410,6 +516,10 @@ class HumanReviewRequest(AppModel):
 
 class HumanReviewRecord(AppModel):
     reviewer: str
+    reviewer_user_id: UUID | None = None
+    reviewer_email: str | None = None
+    reviewer_role: OrganizationRole | None = None
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
     action: HumanReviewAction
     comment: str | None = None
     requested_sources: list[str] = Field(default_factory=list)
@@ -498,6 +608,7 @@ class RealPullRequest(AppModel):
 
 class WorkflowRun(AppModel):
     id: UUID
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
     goal: str
     scenario_name: str
     status: RunStatus
@@ -569,6 +680,7 @@ class CloudHuntSummary(AppModel):
 
 class CloudHuntRun(AppModel):
     id: UUID
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
     trigger_source: CloudHuntTrigger
     provider_scope: CloudProviderScope
     inventory_source: str = "fixtures"
@@ -589,6 +701,7 @@ class CloudHuntRun(AppModel):
 
 class ReviewCase(AppModel):
     id: UUID
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
     source_type: ReviewCaseSource
     source_reference: str
     repository: str | None = None

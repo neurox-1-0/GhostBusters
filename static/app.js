@@ -40,6 +40,9 @@ const state = {
     assistant: false,
   },
   activeMode: "overview",
+  currentUser: null,
+  authMode: "signin",
+  authRequired: false,
 };
 
 const stageDefinitions = [
@@ -68,9 +71,11 @@ const on = (id, eventName, handler) => {
   if (!node) return;
   node.addEventListener(eventName, handler);
 };
-const uiVersion = "judge-v7";
+const uiVersion = "auth-v1";
 const requiredElementIds = [
   "api-pill",
+  "auth-modal-backdrop",
+  "auth-message",
   "overview-view",
   "overview-view-button",
   "overview-summary",
@@ -525,8 +530,9 @@ function selectedAssistantCaseId(context = state.assistantContext) {
 }
 
 async function api(path, options = {}) {
+  const csrf = state.currentUser?.csrf_token;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...(csrf ? { "X-CSRF-Token": csrf } : {}), ...(options.headers || {}) },
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
@@ -537,10 +543,68 @@ async function api(path, options = {}) {
   return payload;
 }
 
+async function loadCurrentUser({ showAuthOnFailure = false } = {}) {
+  try {
+    state.currentUser = await api("/api/auth/me");
+    state.authRequired = false;
+    closeAuthModal();
+    renderIdentity();
+    return state.currentUser;
+  } catch (error) {
+    state.currentUser = null;
+    state.authRequired = true;
+    if (showAuthOnFailure) {
+      openAuthModal("signin");
+      setMessage("auth-message", "Sign in or create a workspace to continue.");
+    }
+    return null;
+  }
+}
+
 function setMessage(id, message, success = false) {
   const node = $(id);
   node.textContent = message || "";
   node.style.color = success ? "var(--green)" : "var(--red)";
+}
+
+function hasPermission(permission) {
+  if (!state.currentUser) return true;
+  return Boolean(state.currentUser?.permissions?.includes(permission));
+}
+
+function roleLabel() {
+  return state.currentUser?.role_label || "Reviewer";
+}
+
+function userDisplayName() {
+  return state.currentUser?.user?.display_name || "Demo Reviewer";
+}
+
+function userEmail() {
+  return state.currentUser?.user?.email || "demo@ghostbusters.local";
+}
+
+function organizationName() {
+  return state.currentUser?.organization?.name || "GhostBusters Development";
+}
+
+function renderIdentity() {
+  const initials = userDisplayName().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "GB";
+  const authenticated = Boolean(state.currentUser?.authenticated);
+  const appShell = document.querySelector(".app-shell");
+  if (appShell) appShell.hidden = !authenticated;
+  const authScreen = $("auth-modal-backdrop");
+  if (authScreen) authScreen.hidden = authenticated;
+  if ($("user-initials")) $("user-initials").textContent = initials;
+  if ($("user-display-name")) $("user-display-name").textContent = userDisplayName();
+  if ($("user-role-org")) $("user-role-org").textContent = `${roleLabel()} · ${organizationName()}`;
+  if ($("sign-out-button")) {
+    $("sign-out-button").hidden = !authenticated;
+    $("sign-out-button").disabled = !authenticated;
+  }
+  [["reviewer-identity-name", userDisplayName()], ["reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`], ["cloud-reviewer-identity-name", userDisplayName()], ["cloud-reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`]].forEach(([id, value]) => {
+    if ($(id)) $(id).textContent = value;
+  });
 }
 
 function showToast(title, detail = "", type = "success") {
@@ -931,6 +995,7 @@ async function loadInitial() {
     $("api-pill").textContent = `System Online: ${health.status === "ok" ? "Yes" : labelFor(health.status)}`;
     state.scenarios = scenarios.scenarios || [];
     state.demoScenarios = state.scenarios.filter((scenario) => demoScenarioLabels[scenario]);
+    await loadCurrentUser({ showAuthOnFailure: true });
     renderScenarioOptions();
     setMessage("ui-message", "Ready for incoming reviews.", true);
   } catch (error) {
@@ -944,6 +1009,80 @@ async function loadInitial() {
   loadPRReviews();
   loadReviewQueue();
   renderAll();
+}
+
+function openAuthModal(mode = "signin") {
+  const switching = state.authMode !== mode && !$("auth-modal-backdrop")?.hidden;
+  state.authMode = mode;
+  const appShell = document.querySelector(".app-shell");
+  if (appShell) appShell.hidden = true;
+  if ($("auth-modal-backdrop")) $("auth-modal-backdrop").hidden = false;
+  renderAuthModal(switching);
+}
+
+function closeAuthModal() {
+  const authenticated = Boolean(state.currentUser?.authenticated);
+  if ($("auth-modal-backdrop")) $("auth-modal-backdrop").hidden = authenticated;
+  const appShell = document.querySelector(".app-shell");
+  if (appShell) appShell.hidden = !authenticated;
+}
+
+function renderAuthModal(switching = false) {
+  const signin = state.authMode !== "register";
+  if ($("signin-form")) {
+    $("signin-form").hidden = !signin;
+    $("signin-form").classList.toggle("auth-form-active", signin);
+  }
+  if ($("register-form")) {
+    $("register-form").hidden = signin;
+    $("register-form").classList.toggle("auth-form-active", !signin);
+  }
+  if ($("auth-modal-title")) $("auth-modal-title").textContent = signin ? "Sign in to GhostBusters" : "Create a workspace";
+  if ($("auth-modal-kicker")) $("auth-modal-kicker").textContent = signin ? "Workspace access" : "New workspace";
+  if (switching) setMessage("auth-message", "");
+}
+
+async function submitSignin(event) {
+  event.preventDefault();
+  setMessage("auth-message", "Signing in...", true);
+  try {
+    state.currentUser = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: $("signin-email").value, password: $("signin-password").value }),
+    });
+    closeAuthModal();
+    renderAll();
+    await Promise.all([loadPRReviews(), loadReviewQueue()]);
+    showToast("Signed in", `Welcome back, ${userDisplayName()}.`, "success");
+  } catch (error) {
+    setMessage("auth-message", friendlyError(error, "Sign in failed."));
+  }
+}
+
+async function submitRegister(event) {
+  event.preventDefault();
+  setMessage("auth-message", "Creating workspace...", true);
+  try {
+    const registered = await api("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        display_name: $("register-name").value,
+        email: $("register-email").value,
+        password: $("register-password").value,
+        organization_name: $("register-organization").value,
+        timezone: $("register-timezone").value || "UTC",
+      }),
+    });
+    state.currentUser = registered;
+    await api("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => ({}));
+    state.currentUser = null;
+    if ($("signin-email")) $("signin-email").value = $("register-email").value;
+    openAuthModal("signin");
+    setMessage("auth-message", "Workspace created. Sign in with your credentials to enter.", true);
+    showToast("Workspace created", "Sign in to enter your workspace.", "success");
+  } catch (error) {
+    setMessage("auth-message", friendlyError(error, "Workspace creation failed."));
+  }
 }
 
 async function loadPRReviews({ preserveSelection = true, showNotice = false } = {}) {
@@ -1332,7 +1471,7 @@ function allowedReviewActions(status) {
 
 function renderHumanControls() {
   const status = state.run?.status;
-  const allowed = allowedReviewActions(status);
+  const allowed = hasPermission("approvals.decide") ? allowedReviewActions(status) : [];
   const human = humanDecision(state.run);
   setStatusBadge("human-decision", decisionStatusMeta(status, human.label));
   $("human-decision-technical").hidden = true;
@@ -1352,7 +1491,7 @@ function renderHumanControls() {
       : status === "needs_more_evidence"
         ? "The recommendation is not ready for approval. Add context or request missing evidence."
         : status === "pending_human_review"
-          ? "A human reviewer can decide whether GhostBusters should create a remediation pull request."
+          ? hasPermission("approvals.decide") ? "A human reviewer can decide whether GhostBusters should create a remediation pull request." : "You have read-only access. You do not have permission to approve this case."
         : allowed.length ? "Human input can refine the recorded decision." : "No further review action is available in this state.";
   if (state.selectedReviewAction && !allowed.includes(state.selectedReviewAction)) closeReviewForm();
 }
@@ -1395,7 +1534,7 @@ function closeReviewForm() {
 async function submitSelectedReview() {
   const action = state.selectedReviewAction;
   if (!action || !state.run) return;
-  const payload = { action, reviewer: $("reviewer-input").value || "judge", comment: $("comment-input").value || null };
+  const payload = { action, comment: $("comment-input").value || null };
   if (action === "request_evidence") payload.requested_sources = $("requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
   if (action === "add_context") payload.human_context = $("human-context").value || null;
   if (action === "modify") payload.modified_action = $("modified-action").value || null;
@@ -1867,6 +2006,7 @@ function renderOverview() {
 function renderAll() {
   $("pr-empty-state").hidden = hasSelectedCase();
   $("case-view").hidden = !hasSelectedCase();
+  renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
   renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview();
@@ -2171,7 +2311,7 @@ function renderCloudFindingDetail() {
 }
 
 function renderCloudHumanControls(caseItem, candidate) {
-  const allowed = cloudAllowedReviewActions(caseItem, candidate);
+  const allowed = hasPermission("approvals.decide") ? cloudAllowedReviewActions(caseItem, candidate) : [];
   document.querySelectorAll("[data-cloud-review-action]").forEach((button) => {
     const visible = allowed.includes(button.dataset.cloudReviewAction);
     button.hidden = !visible;
@@ -2200,7 +2340,7 @@ async function submitSelectedCloudReview() {
   const action = state.selectedCloudReviewAction;
   const caseItem = selectedCloudCase();
   if (!action || !caseItem) return;
-  const payload = { action, reviewer: $("cloud-reviewer-input").value || "judge", comment: $("cloud-comment-input").value || null };
+  const payload = { action, comment: $("cloud-comment-input").value || null };
   if (action === "request_evidence") payload.requested_sources = $("cloud-requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
   if (action === "add_context") payload.human_context = $("cloud-human-context").value || null;
   return withButtonState("cloud-submit-review-button", action === "approve" ? "Recording approval..." : "Saving decision...", async () => {
@@ -2447,6 +2587,10 @@ if (typeof window !== "undefined") {
 
 function bindEvents() {
   on("start-button", "click", startRun);
+  on("auth-register-link", "click", () => openAuthModal("register"));
+  on("auth-signin-link", "click", () => openAuthModal("signin"));
+  on("signin-form", "submit", submitSignin);
+  on("register-form", "submit", submitRegister);
   on("overview-view-button", "click", () => switchMode("overview"));
   on("overview-launch-demo-button", "click", openDemoModal);
   on("overview-refresh-button", "click", refreshRun);
@@ -2492,6 +2636,18 @@ function bindEvents() {
   on("ask-technical-button", "click", () => openAssistant("technical_audit"));
   on("ask-global-button", "click", () => openAssistant("product_help"));
   on("notification-button", "click", () => showToast("No new notifications", "This workspace has no notification feed configured.", "success"));
+  on("sign-out-button", "click", async () => {
+    await api("/api/auth/logout", { method: "POST", body: "{}" }).catch(() => ({}));
+    state.currentUser = null;
+    state.run = null;
+    state.reviews = [];
+    state.prReviews = [];
+    state.hunt = null;
+    localStorage.removeItem("ghostbusters:lastRunId");
+    openAuthModal("signin");
+    setMessage("auth-message", "Signed out.", true);
+    window.setTimeout(() => setMessage("auth-message", ""), 5000);
+  });
   on("assistant-close-button", "click", closeAssistant);
   on("assistant-clear-button", "click", () => { $("assistant-question-input").value = ""; clear($("assistant-answer")); setMessage("assistant-message", ""); });
   on("assistant-ask-button", "click", askAssistant);

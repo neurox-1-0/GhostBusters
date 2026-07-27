@@ -380,6 +380,93 @@ samp {
 
 .user-chip strong, .user-chip small { display: block; }
 .user-chip small { color: var(--muted); font-size: 12px; }
+.user-chip .sign-out-button { margin-left: 0.25rem; padding: 0.45rem 0.7rem; }
+.identity-block {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.identity-block span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.identity-block strong { font-size: var(--text-base); }
+.identity-block small { color: var(--muted); }
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483001;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background:
+    linear-gradient(135deg, rgba(8, 125, 122, 0.10), rgba(98, 84, 217, 0.08)),
+    var(--page-background);
+}
+.auth-screen[hidden] { display: none; }
+.auth-card {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 1rem;
+  padding: clamp(1.25rem, 3vw, 2rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-background);
+  box-shadow: var(--shadow-md);
+  animation: authCardIn 280ms ease both;
+  will-change: transform, opacity;
+}
+.auth-form {
+  display: grid;
+  gap: 0.65rem;
+  animation: authFormIn 240ms ease both;
+}
+.auth-form.auth-form-active {
+  animation: authFormIn 180ms ease both;
+}
+.auth-form input {
+  width: 100%;
+}
+.auth-form button {
+  margin-top: 0.35rem;
+}
+.auth-switch {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  text-align: center;
+}
+.auth-switch button {
+  display: inline;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--teal);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.auth-switch button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+@keyframes authCardIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes authFormIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .status-strip {
   display: flex;

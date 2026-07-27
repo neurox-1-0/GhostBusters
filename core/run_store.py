@@ -7,7 +7,7 @@ from threading import RLock
 from typing import Protocol
 from uuid import UUID
 
-from app.models import WorkflowRun
+from app.models import DEFAULT_DEVELOPMENT_ORGANIZATION_ID, WorkflowRun
 
 
 class RunStoreError(Exception):
@@ -29,10 +29,10 @@ class RunStore(Protocol):
     """Storage boundary used by the workflow service."""
 
     def create(self, run: WorkflowRun) -> WorkflowRun: ...
-    def get(self, run_id: UUID) -> WorkflowRun: ...
-    def list(self) -> list[WorkflowRun]: ...
-    def update(self, run_id: UUID, updater: RunUpdater) -> WorkflowRun: ...
-    def find_by_idempotency_key(self, key: str) -> WorkflowRun | None: ...
+    def get(self, run_id: UUID, organization_id: UUID | None = None) -> WorkflowRun: ...
+    def list(self, organization_id: UUID | None = None) -> list[WorkflowRun]: ...
+    def update(self, run_id: UUID, updater: RunUpdater, organization_id: UUID | None = None) -> WorkflowRun: ...
+    def find_by_idempotency_key(self, key: str, organization_id: UUID | None = None) -> WorkflowRun | None: ...
     def delete_all(self) -> None: ...
 
 
@@ -48,34 +48,38 @@ class InMemoryRunStore:
             self._runs[run.id] = run.model_copy(deep=True)
             return self._runs[run.id].model_copy(deep=True)
 
-    def get(self, run_id: UUID) -> WorkflowRun:
+    def get(self, run_id: UUID, organization_id: UUID | None = None) -> WorkflowRun:
         with self._lock:
             run = self._runs.get(run_id)
-            if run is None:
+            if run is None or (organization_id is not None and run.organization_id != organization_id):
                 raise RunNotFoundError(f"Unknown run: {run_id}")
             return run.model_copy(deep=True)
 
-    def list(self) -> list[WorkflowRun]:
+    def list(self, organization_id: UUID | None = None) -> list[WorkflowRun]:
         with self._lock:
-            return [run.model_copy(deep=True) for run in self._runs.values()]
+            scope = organization_id or DEFAULT_DEVELOPMENT_ORGANIZATION_ID
+            return [run.model_copy(deep=True) for run in self._runs.values() if run.organization_id == scope]
 
     def update(
         self,
         run_id: UUID,
         updater: RunUpdater,
+        organization_id: UUID | None = None,
     ) -> WorkflowRun:
         with self._lock:
             current = self._runs.get(run_id)
-            if current is None:
+            if current is None or (organization_id is not None and current.organization_id != organization_id):
                 raise RunNotFoundError(f"Unknown run: {run_id}")
             replacement = updater(current.model_copy(deep=True)) if callable(updater) else updater
             replacement.version = current.version + 1
             self._runs[run_id] = replacement.model_copy(deep=True)
             return self._runs[run_id].model_copy(deep=True)
 
-    def find_by_idempotency_key(self, key: str) -> WorkflowRun | None:
+    def find_by_idempotency_key(self, key: str, organization_id: UUID | None = None) -> WorkflowRun | None:
         with self._lock:
             run = self._find_by_key_unlocked(key)
+            if run is not None and organization_id is not None and run.organization_id != organization_id:
+                return None
             return run.model_copy(deep=True) if run is not None else None
 
     def delete_all(self) -> None:

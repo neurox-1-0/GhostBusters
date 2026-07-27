@@ -10,7 +10,7 @@ import psycopg
 from psycopg import errors
 from psycopg.rows import dict_row
 
-from app.models import WorkflowRun
+from app.models import DEFAULT_DEVELOPMENT_ORGANIZATION_ID, WorkflowRun
 from core.run_store import DuplicateIdempotencyKeyError, RunNotFoundError, RunUpdater
 
 
@@ -43,27 +43,31 @@ class PostgresRunStore:
             ) from exc
         return run.model_copy(deep=True)
 
-    def get(self, run_id: UUID) -> WorkflowRun:
+    def get(self, run_id: UUID, organization_id: UUID | None = None) -> WorkflowRun:
+        scope = organization_id or DEFAULT_DEVELOPMENT_ORGANIZATION_ID
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload FROM workflow_runs WHERE id = %s", (run_id,)
+                "SELECT payload FROM workflow_runs WHERE id = %s AND organization_id = %s", (run_id, scope)
             ).fetchone()
         if row is None:
             raise RunNotFoundError(f"Unknown run: {run_id}")
         return WorkflowRun.model_validate(row["payload"])
 
-    def list(self) -> list[WorkflowRun]:
+    def list(self, organization_id: UUID | None = None) -> list[WorkflowRun]:
+        scope = organization_id or DEFAULT_DEVELOPMENT_ORGANIZATION_ID
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT payload FROM workflow_runs ORDER BY created_at"
+                "SELECT payload FROM workflow_runs WHERE organization_id = %s ORDER BY created_at",
+                (scope,),
             ).fetchall()
         return [WorkflowRun.model_validate(row["payload"]) for row in rows]
 
-    def update(self, run_id: UUID, updater: RunUpdater) -> WorkflowRun:
+    def update(self, run_id: UUID, updater: RunUpdater, organization_id: UUID | None = None) -> WorkflowRun:
+        scope = organization_id or DEFAULT_DEVELOPMENT_ORGANIZATION_ID
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload, version FROM workflow_runs WHERE id = %s FOR UPDATE",
-                (run_id,),
+                "SELECT payload, version FROM workflow_runs WHERE id = %s AND organization_id = %s FOR UPDATE",
+                (run_id, scope),
             ).fetchone()
             if row is None:
                 raise RunNotFoundError(f"Unknown run: {run_id}")
@@ -74,10 +78,12 @@ class PostgresRunStore:
             self._replace_children(connection, replacement)
         return replacement.model_copy(deep=True)
 
-    def find_by_idempotency_key(self, key: str) -> WorkflowRun | None:
+    def find_by_idempotency_key(self, key: str, organization_id: UUID | None = None) -> WorkflowRun | None:
+        scope = organization_id or DEFAULT_DEVELOPMENT_ORGANIZATION_ID
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload FROM workflow_runs WHERE idempotency_key = %s", (key,)
+                "SELECT payload FROM workflow_runs WHERE idempotency_key = %s AND organization_id = %s",
+                (key, scope),
             ).fetchone()
         return WorkflowRun.model_validate(row["payload"]) if row else None
 
@@ -92,11 +98,11 @@ class PostgresRunStore:
                 """
                 INSERT INTO workflow_runs
                     (id, goal, scenario_name, status, created_at, updated_at,
-                     version, idempotency_key, error, payload)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                     version, idempotency_key, error, payload, organization_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                 """,
                 (run.id, run.goal, run.scenario_name, run.status, run.created_at,
-                 run.updated_at, run.version, run.idempotency_key, run.error, payload),
+                 run.updated_at, run.version, run.idempotency_key, run.error, payload, run.organization_id),
             )
             return
         connection.execute(
@@ -104,9 +110,9 @@ class PostgresRunStore:
             UPDATE workflow_runs
                SET status = %s, updated_at = %s, version = %s, error = %s,
                    payload = %s::jsonb
-             WHERE id = %s
+             WHERE id = %s AND organization_id = %s
             """,
-            (run.status, run.updated_at, run.version, run.error, payload, run.id),
+            (run.status, run.updated_at, run.version, run.error, payload, run.id, run.organization_id),
         )
 
     def _replace_children(self, connection: psycopg.Connection, run: WorkflowRun) -> None:
@@ -118,30 +124,30 @@ class PostgresRunStore:
                 connection.execute(
                     """
                     INSERT INTO evidence_records
-                        (run_id, resource_id, source, tool_name, claim, freshness_status,
+                        (run_id, organization_id, resource_id, source, tool_name, claim, freshness_status,
                          reliability, collected_at, payload)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                     """,
-                    (run.id, item.resource_id, item.source, item.tool_name, item.claim,
+                    (run.id, run.organization_id, item.resource_id, item.source, item.tool_name, item.claim,
                      item.freshness_status, item.reliability, item.collected_at,
                      json.dumps(item.model_dump(mode="json"))),
                 )
         for approval in run.human_reviews:
             connection.execute(
                 """
-                INSERT INTO approvals (run_id, reviewer, action, comment, created_at, payload)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                INSERT INTO approvals (run_id, organization_id, reviewer, action, comment, created_at, payload)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
-                (run.id, approval.reviewer, approval.action, approval.comment,
+                (run.id, run.organization_id, approval.reviewer, approval.action, approval.comment,
                  approval.created_at, json.dumps(approval.model_dump(mode="json"))),
             )
         for event in run.audit_events:
             connection.execute(
                 """
                 INSERT INTO audit_log
-                    (run_id, sequence_number, timestamp, event_type, actor, summary, details)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                    (run_id, organization_id, sequence_number, timestamp, event_type, actor, summary, details)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
-                (run.id, event.sequence_number, event.timestamp, event.event_type,
+                (run.id, run.organization_id, event.sequence_number, event.timestamp, event.event_type,
                  event.actor, event.summary, json.dumps(event.details)),
             )

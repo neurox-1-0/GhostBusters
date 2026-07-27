@@ -4,6 +4,36 @@ GhostBusters is a safety-focused FinOps agent for Terraform-driven cost-remediat
 
 This is a hackathon prototype. It does **not** apply real infrastructure changes, merge code, or create real GitHub pull requests.
 
+## Authentication and Workspaces
+
+GhostBusters now has an application auth boundary with organization workspaces, organization memberships, and membership-scoped roles: Owner, Admin, Reviewer, and Viewer. Role values are stable backend enum values (`OWNER`, `ADMIN`, `REVIEWER`, `VIEWER`), while the UI shows human-readable labels.
+
+Core auth endpoints:
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/logout
+GET  /api/auth/me
+GET  /api/members
+POST /api/invitations
+PATCH /api/members/{membership_id}
+```
+
+Browser sessions use opaque server-side session IDs, HttpOnly cookies, SameSite cookies, CSRF tokens for state-changing authenticated requests, generic login failures, and login-attempt throttling. Passwords are stored with a salted scrypt hash. Session records use Redis when `REDIS_URL` is configured and an in-memory store for local development.
+
+Every protected API route checks a centralized permission constant before executing. Organization-owned workflow runs, Cloud Hunt runs, review cases, human decisions, evidence projections, approvals, waivers, and audit rows carry `organization_id`; route queries are scoped to the authenticated membership's organization. Reviewer identity is derived from the authenticated session for real sessions. The old editable reviewer value is accepted only in local demo mode and is labeled as development behavior.
+
+Local development defaults:
+
+```dotenv
+AUTH_REQUIRED=false
+DEMO_MODE_ENABLED=true
+SESSION_TTL_SECONDS=28800
+```
+
+With these defaults, unauthenticated local demo requests run as the explicit development workspace `GhostBusters Development` (`00000000-0000-0000-0000-000000000001`) and demo reviewer identity. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace. The development invitation response includes a `development_invitation_link`; production email delivery and billing remain outside this milestone.
+
 ## Cloud Hunt Mode (Milestone 7A)
 
 Cloud Hunt is the second entry path alongside Terraform PR Review:
