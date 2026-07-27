@@ -37,12 +37,20 @@ CREATE TABLE IF NOT EXISTS invitations (
     id UUID PRIMARY KEY,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     email TEXT NOT NULL,
+    normalized_email TEXT NOT NULL,
     role TEXT NOT NULL,
     approval_permission_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'PENDING',
     token_hash TEXT,
     expires_at TIMESTAMPTZ NOT NULL,
     accepted_at TIMESTAMPTZ,
+    canceled_at TIMESTAMPTZ,
     invited_by_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    invited_by_membership_id UUID REFERENCES organization_memberships(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resend_count INTEGER NOT NULL DEFAULT 0,
+    last_sent_at TIMESTAMPTZ,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL
 );
 
@@ -56,6 +64,17 @@ CREATE TABLE IF NOT EXISTS activity_events (
 );
 
 CREATE INDEX IF NOT EXISTS organization_memberships_org_idx ON organization_memberships(organization_id);
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS normalized_email TEXT;
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING';
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ;
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS invited_by_membership_id UUID REFERENCES organization_memberships(id) ON DELETE SET NULL;
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS resend_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ;
+ALTER TABLE invitations ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+UPDATE invitations SET normalized_email = lower(email) WHERE normalized_email IS NULL;
+ALTER TABLE invitations ALTER COLUMN normalized_email SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS invitations_pending_email_idx ON invitations(organization_id, normalized_email) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS activity_events_org_idx ON activity_events(organization_id, created_at);
 
 INSERT INTO organizations (id, name, slug, status, timezone, created_at, updated_at)

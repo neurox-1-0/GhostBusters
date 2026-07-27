@@ -22,6 +22,7 @@ from app.models import (
     CurrentUserResponse,
     DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
     Invitation,
+    InvitationStatus,
     MembershipStatus,
     Organization,
     OrganizationMembership,
@@ -37,6 +38,9 @@ WORKSPACE_MANAGE = "workspace.manage"
 MEMBERS_READ = "members.read"
 MEMBERS_INVITE = "members.invite"
 MEMBERS_MANAGE_ROLES = "members.manage_roles"
+MEMBERS_CANCEL_INVITATION = "members.cancel_invitation"
+MEMBERS_DISABLE = "members.disable"
+OWNERSHIP_TRANSFER = "ownership.transfer"
 INTEGRATIONS_READ = "integrations.read"
 INTEGRATIONS_MANAGE = "integrations.manage"
 POLICIES_READ = "policies.read"
@@ -65,6 +69,9 @@ ROLE_PERMISSIONS = {
         MEMBERS_READ,
         MEMBERS_INVITE,
         MEMBERS_MANAGE_ROLES,
+        MEMBERS_CANCEL_INVITATION,
+        MEMBERS_DISABLE,
+        OWNERSHIP_TRANSFER,
         INTEGRATIONS_READ,
         INTEGRATIONS_MANAGE,
         POLICIES_READ,
@@ -82,6 +89,8 @@ ROLE_PERMISSIONS = {
         MEMBERS_READ,
         MEMBERS_INVITE,
         MEMBERS_MANAGE_ROLES,
+        MEMBERS_CANCEL_INVITATION,
+        MEMBERS_DISABLE,
         INTEGRATIONS_READ,
         INTEGRATIONS_MANAGE,
         POLICIES_READ,
@@ -294,28 +303,151 @@ class AuthStore:
             raise HTTPException(status_code=403, detail="Workspace membership is not active.")
         return membership
 
-    def invite(self, principal: Principal, email: str, role: OrganizationRole, approval_permission_enabled: bool) -> Invitation:
-        if role == OrganizationRole.owner and principal.membership.role != OrganizationRole.owner:
-            raise HTTPException(status_code=403, detail="Only an Owner can assign Owner role.")
+    def invite(self, principal: Principal, email: str, role: OrganizationRole, approval_permission_enabled: bool, note: str | None = None) -> tuple[Invitation, str]:
+        normalized = normalize_email(email)
+        if not is_valid_email(normalized):
+            raise HTTPException(status_code=422, detail="Enter a valid email address.")
+        self._ensure_invitable_role(principal, role)
+        if approval_permission_enabled and role == OrganizationRole.viewer:
+            raise HTTPException(status_code=422, detail="Approval permission is not available for Viewer.")
+        if self._active_membership_for_email(principal.organization_id, normalized):
+            raise HTTPException(status_code=409, detail="This email is already an active member.")
+        if self._pending_invitation_for_email(principal.organization_id, normalized):
+            raise HTTPException(status_code=409, detail="An invitation is already pending for this email.")
         now = utc_now()
+        token = new_invitation_token()
         invitation = Invitation(
             id=uuid4(),
             organization_id=principal.organization_id,
-            email=normalize_email(email),
+            email=normalized,
+            normalized_email=normalized,
             role=role,
             approval_permission_enabled=approval_permission_enabled,
-            expires_at=now + timedelta(days=7),
+            token_hash=hash_token(token),
+            status=InvitationStatus.pending,
+            expires_at=now + timedelta(hours=settings.invitation_expiry_hours),
+            last_sent_at=now,
             invited_by_user_id=principal.user.id if principal.user else principal.membership.user_id,
+            invited_by_membership_id=principal.membership.id,
             created_at=now,
+            updated_at=now,
+            metadata={"note": note} if note else {},
         )
         self.invitations[invitation.id] = invitation
-        self.record_activity(principal.organization_id, "user_invited", principal.user.id if principal.user else None, {"email": invitation.email, "role": role})
+        self.record_activity(principal.organization_id, "invitation_created", principal.user.id if principal.user else None, {"email": invitation.email, "role": ROLE_LABELS[role]})
+        self.record_activity(principal.organization_id, "invitation_link_generated_development", principal.user.id if principal.user else None, {"email": invitation.email})
+        return invitation, token
+
+    def list_invitations(self, principal: Principal) -> list[Invitation]:
+        now = utc_now()
+        output = []
+        for invitation in self.invitations.values():
+            if invitation.organization_id != principal.organization_id:
+                continue
+            if invitation.status == InvitationStatus.pending and invitation.expires_at <= now:
+                invitation = invitation.model_copy(update={"status": InvitationStatus.expired, "updated_at": now})
+                self.invitations[invitation.id] = invitation
+                self.record_activity(invitation.organization_id, "invitation_expired", None, {"email": invitation.email})
+            output.append(invitation)
+        return sorted(output, key=lambda item: item.created_at, reverse=True)
+
+    def validate_invitation_token(self, token: str) -> Invitation:
+        invitation = self._invitation_for_token(token)
+        if invitation is None:
+            raise HTTPException(status_code=404, detail="Invitation is invalid.")
+        invitation = self._refresh_invitation_status(invitation)
+        if invitation.status != InvitationStatus.pending:
+            raise HTTPException(status_code=409, detail=f"Invitation is {invitation.status.value.lower()}.")
         return invitation
+
+    def accept_invitation(
+        self,
+        token: str,
+        display_name: str | None = None,
+        password: str | None = None,
+        confirm_password: str | None = None,
+        principal: Principal | None = None,
+    ) -> tuple[User, Organization, OrganizationMembership]:
+        invitation = self.validate_invitation_token(token)
+        now = utc_now()
+        user = None
+        if principal and principal.authenticated and principal.user:
+            if normalize_email(principal.user.email) != invitation.normalized_email:
+                raise HTTPException(status_code=403, detail="This invitation was sent to another email address. Sign in with the invited account.")
+            user = principal.user
+        else:
+            user = self.users_by_email.get(invitation.normalized_email)
+            if user is None:
+                if not display_name:
+                    raise HTTPException(status_code=422, detail="Display name is required.")
+                if not password or password != confirm_password:
+                    raise HTTPException(status_code=422, detail="Passwords do not match.")
+                user = User(id=uuid4(), email=invitation.normalized_email, display_name=display_name.strip(), created_at=now, updated_at=now)
+                self.users_by_id[user.id] = user
+                self.users_by_email[user.email] = user
+                self.password_hashes[user.id] = hash_password(password)
+                self.record_activity(invitation.organization_id, "user_account_created_through_invitation", user.id, {"email": user.email})
+            elif password or display_name:
+                # Existing users sign in with their existing password instead of creating a new one.
+                raise HTTPException(status_code=409, detail="An account already exists. Sign in instead to accept this invitation.")
+        if self._membership_for_user_org(user.id, invitation.organization_id):
+            raise HTTPException(status_code=409, detail="This account is already a member of the organization.")
+        membership = OrganizationMembership(
+            id=uuid4(),
+            organization_id=invitation.organization_id,
+            user_id=user.id,
+            role=invitation.role,
+            approval_permission_enabled=invitation.approval_permission_enabled,
+            status=MembershipStatus.active,
+            invited_by_user_id=invitation.invited_by_user_id,
+            joined_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        self.memberships[membership.id] = membership
+        accepted = invitation.model_copy(update={"status": InvitationStatus.accepted, "accepted_at": now, "updated_at": now, "token_hash": ""})
+        self.invitations[accepted.id] = accepted
+        self.record_activity(invitation.organization_id, "invitation_accepted", user.id, {"email": user.email})
+        self.record_activity(invitation.organization_id, "membership_activated", user.id, {"role": ROLE_LABELS[membership.role]})
+        return user, self.organizations[invitation.organization_id], membership
+
+    def resend_invitation(self, principal: Principal, invitation_id: UUID) -> tuple[Invitation, str]:
+        invitation = self._scoped_invitation(principal, invitation_id)
+        if invitation.status not in {InvitationStatus.pending, InvitationStatus.expired}:
+            raise HTTPException(status_code=409, detail="Only pending or expired invitations can be resent.")
+        self._ensure_invitable_role(principal, invitation.role)
+        now = utc_now()
+        token = new_invitation_token()
+        updated = invitation.model_copy(update={
+            "status": InvitationStatus.pending,
+            "token_hash": hash_token(token),
+            "expires_at": now + timedelta(hours=settings.invitation_expiry_hours),
+            "updated_at": now,
+            "last_sent_at": now,
+            "resend_count": invitation.resend_count + 1,
+        })
+        self.invitations[updated.id] = updated
+        self.record_activity(principal.organization_id, "invitation_resent", principal.user.id if principal.user else None, {"email": updated.email})
+        return updated, token
+
+    def cancel_invitation(self, principal: Principal, invitation_id: UUID) -> Invitation:
+        invitation = self._scoped_invitation(principal, invitation_id)
+        if invitation.status != InvitationStatus.pending:
+            raise HTTPException(status_code=409, detail="Only pending invitations can be canceled.")
+        now = utc_now()
+        updated = invitation.model_copy(update={"status": InvitationStatus.canceled, "canceled_at": now, "updated_at": now, "token_hash": ""})
+        self.invitations[updated.id] = updated
+        self.record_activity(principal.organization_id, "invitation_canceled", principal.user.id if principal.user else None, {"email": updated.email})
+        return updated
 
     def change_role(self, principal: Principal, membership_id: UUID, role: OrganizationRole, approval_permission_enabled: bool | None) -> OrganizationMembership:
         membership = self.memberships.get(membership_id)
         if membership is None or membership.organization_id != principal.organization_id:
             raise HTTPException(status_code=404, detail="Membership not found.")
+        if membership.user_id == principal.membership.user_id and role == OrganizationRole.owner and principal.membership.role != OrganizationRole.owner:
+            raise HTTPException(status_code=403, detail="Self-elevation is not allowed.")
+        if membership.role == OrganizationRole.owner and role != OrganizationRole.owner and self._active_owner_count(principal.organization_id) <= 1:
+            raise HTTPException(status_code=409, detail="The last active Owner cannot be changed to another role.")
         if role == OrganizationRole.owner and principal.membership.role != OrganizationRole.owner:
             raise HTTPException(status_code=403, detail="Only an Owner can assign Owner role.")
         updated = membership.model_copy(
@@ -329,11 +461,31 @@ class AuthStore:
         self.record_activity(principal.organization_id, "member_role_changed", principal.user.id if principal.user else None, {"membership_id": str(updated.id), "role": role})
         return updated
 
-    def principal_for_user(self, user_id: UUID, csrf_token: str | None = None) -> Principal:
+    def disable_member(self, principal: Principal, membership_id: UUID) -> OrganizationMembership:
+        membership = self.memberships.get(membership_id)
+        if membership is None or membership.organization_id != principal.organization_id:
+            raise HTTPException(status_code=404, detail="Membership not found.")
+        if membership.role == OrganizationRole.owner and self._active_owner_count(principal.organization_id) <= 1:
+            raise HTTPException(status_code=409, detail="The last active Owner cannot be disabled.")
+        updated = membership.model_copy(update={"status": MembershipStatus.disabled, "updated_at": utc_now()})
+        self.memberships[updated.id] = updated
+        self.record_activity(principal.organization_id, "member_disabled", principal.user.id if principal.user else None, {"membership_id": str(updated.id)})
+        return updated
+
+    def reactivate_member(self, principal: Principal, membership_id: UUID) -> OrganizationMembership:
+        membership = self.memberships.get(membership_id)
+        if membership is None or membership.organization_id != principal.organization_id:
+            raise HTTPException(status_code=404, detail="Membership not found.")
+        updated = membership.model_copy(update={"status": MembershipStatus.active, "updated_at": utc_now()})
+        self.memberships[updated.id] = updated
+        self.record_activity(principal.organization_id, "member_reactivated", principal.user.id if principal.user else None, {"membership_id": str(updated.id)})
+        return updated
+
+    def principal_for_user(self, user_id: UUID, csrf_token: str | None = None, organization_id: UUID | None = None) -> Principal:
         user = self.users_by_id.get(user_id)
         if user is None or user.status != AccountStatus.active:
             raise HTTPException(status_code=401, detail="Authentication required.")
-        membership = self.membership_for_user(user.id)
+        membership = self.membership_for_user(user.id, organization_id)
         organization = self.organizations[membership.organization_id]
         return make_principal(user, organization, membership, csrf_token=csrf_token)
 
@@ -380,6 +532,47 @@ class AuthStore:
         self.password_hashes[user.id] = hash_password("development-only-password")
         self.memberships[membership.id] = membership
 
+    def _ensure_invitable_role(self, principal: Principal, role: OrganizationRole) -> None:
+        if role == OrganizationRole.owner:
+            raise HTTPException(status_code=403, detail="Owner invitations are not supported in this flow.")
+        if principal.membership.role == OrganizationRole.admin and role == OrganizationRole.admin:
+            raise HTTPException(status_code=403, detail="Admin invitation requires explicit Owner authority.")
+
+    def _active_membership_for_email(self, organization_id: UUID, email: str) -> OrganizationMembership | None:
+        user = self.users_by_email.get(email)
+        if user is None:
+            return None
+        membership = self._membership_for_user_org(user.id, organization_id)
+        return membership if membership and membership.status == MembershipStatus.active else None
+
+    def _membership_for_user_org(self, user_id: UUID, organization_id: UUID) -> OrganizationMembership | None:
+        return next((item for item in self.memberships.values() if item.user_id == user_id and item.organization_id == organization_id), None)
+
+    def _pending_invitation_for_email(self, organization_id: UUID, email: str) -> Invitation | None:
+        now = utc_now()
+        return next((item for item in self.invitations.values() if item.organization_id == organization_id and item.normalized_email == email and item.status == InvitationStatus.pending and item.expires_at > now), None)
+
+    def _scoped_invitation(self, principal: Principal, invitation_id: UUID) -> Invitation:
+        invitation = self.invitations.get(invitation_id)
+        if invitation is None or invitation.organization_id != principal.organization_id:
+            raise HTTPException(status_code=404, detail="Invitation not found.")
+        return self._refresh_invitation_status(invitation)
+
+    def _invitation_for_token(self, token: str) -> Invitation | None:
+        token_hash = hash_token(token)
+        return next((item for item in self.invitations.values() if item.token_hash and hmac.compare_digest(item.token_hash, token_hash)), None)
+
+    def _refresh_invitation_status(self, invitation: Invitation) -> Invitation:
+        if invitation.status == InvitationStatus.pending and invitation.expires_at <= utc_now():
+            updated = invitation.model_copy(update={"status": InvitationStatus.expired, "updated_at": utc_now()})
+            self.invitations[updated.id] = updated
+            self.record_activity(updated.organization_id, "invitation_expired", None, {"email": updated.email})
+            return updated
+        return invitation
+
+    def _active_owner_count(self, organization_id: UUID) -> int:
+        return sum(1 for item in self.memberships.values() if item.organization_id == organization_id and item.role == OrganizationRole.owner and item.status == MembershipStatus.active)
+
 
 DEMO_USER_ID = UUID("00000000-0000-0000-0000-000000000002")
 DEMO_MEMBERSHIP_ID = UUID("00000000-0000-0000-0000-000000000003")
@@ -393,9 +586,21 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def is_valid_email(email: str) -> bool:
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or f"workspace-{secrets.token_hex(3)}"
+
+
+def new_invitation_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:

@@ -43,6 +43,10 @@ const state = {
   currentUser: null,
   authMode: "signin",
   authRequired: false,
+  invitationToken: null,
+  invitationPreview: null,
+  members: [],
+  invitations: [],
 };
 
 const stageDefinitions = [
@@ -76,6 +80,11 @@ const requiredElementIds = [
   "api-pill",
   "auth-modal-backdrop",
   "auth-message",
+  "settings-view",
+  "settings-view-button",
+  "active-members-table",
+  "pending-invitations-table",
+  "invite-modal-backdrop",
   "overview-view",
   "overview-view-button",
   "overview-summary",
@@ -602,6 +611,7 @@ function renderIdentity() {
     $("sign-out-button").hidden = !authenticated;
     $("sign-out-button").disabled = !authenticated;
   }
+  if ($("settings-view-button")) $("settings-view-button").hidden = authenticated && !hasPermission("members.read");
   [["reviewer-identity-name", userDisplayName()], ["reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`], ["cloud-reviewer-identity-name", userDisplayName()], ["cloud-reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`]].forEach(([id, value]) => {
     if ($(id)) $(id).textContent = value;
   });
@@ -995,7 +1005,13 @@ async function loadInitial() {
     $("api-pill").textContent = `System Online: ${health.status === "ok" ? "Yes" : labelFor(health.status)}`;
     state.scenarios = scenarios.scenarios || [];
     state.demoScenarios = state.scenarios.filter((scenario) => demoScenarioLabels[scenario]);
-    await loadCurrentUser({ showAuthOnFailure: true });
+    const url = new URL(window.location.href);
+    const invitationToken = url.searchParams.get("token");
+    if (window.location.pathname.includes("/invitations/accept") && invitationToken) {
+      await loadInvitationPreview(invitationToken);
+    } else {
+      await loadCurrentUser({ showAuthOnFailure: true });
+    }
     renderScenarioOptions();
     setMessage("ui-message", "Ready for incoming reviews.", true);
   } catch (error) {
@@ -1008,7 +1024,21 @@ async function loadInitial() {
   }
   loadPRReviews();
   loadReviewQueue();
+  loadMembers();
   renderAll();
+}
+
+async function loadInvitationPreview(token) {
+  state.invitationToken = token;
+  try {
+    state.invitationPreview = await api(`/api/invitations/validate?token=${encodeURIComponent(token)}`);
+    openAuthModal("accept");
+    renderInvitationPreview();
+  } catch (error) {
+    state.invitationPreview = { valid: false, message: friendlyError(error, "Invitation is invalid.") };
+    openAuthModal("accept");
+    renderInvitationPreview();
+  }
 }
 
 function openAuthModal(mode = "signin") {
@@ -1028,18 +1058,47 @@ function closeAuthModal() {
 }
 
 function renderAuthModal(switching = false) {
-  const signin = state.authMode !== "register";
+  const accepting = state.authMode === "accept";
+  const signin = state.authMode !== "register" && !accepting;
   if ($("signin-form")) {
     $("signin-form").hidden = !signin;
     $("signin-form").classList.toggle("auth-form-active", signin);
   }
   if ($("register-form")) {
-    $("register-form").hidden = signin;
-    $("register-form").classList.toggle("auth-form-active", !signin);
+    $("register-form").hidden = signin || accepting;
+    $("register-form").classList.toggle("auth-form-active", !signin && !accepting);
   }
-  if ($("auth-modal-title")) $("auth-modal-title").textContent = signin ? "Sign in to GhostBusters" : "Create a workspace";
-  if ($("auth-modal-kicker")) $("auth-modal-kicker").textContent = signin ? "Workspace access" : "New workspace";
+  if ($("accept-invitation-form")) {
+    $("accept-invitation-form").hidden = !accepting;
+    $("accept-invitation-form").classList.toggle("auth-form-active", accepting);
+  }
+  if ($("auth-modal-title")) $("auth-modal-title").textContent = accepting ? "Accept invitation" : signin ? "Sign in to GhostBusters" : "Create a workspace";
+  if ($("auth-modal-kicker")) $("auth-modal-kicker").textContent = accepting ? "Invitation" : signin ? "Workspace access" : "New workspace";
   if (switching) setMessage("auth-message", "");
+}
+
+function renderInvitationPreview() {
+  const node = $("invite-accept-summary");
+  if (!node) return;
+  clear(node);
+  const preview = state.invitationPreview;
+  if (!preview?.valid) {
+    append(node, el("strong", null, "Invitation unavailable"), el("span", "muted", preview?.message || "This invitation cannot be accepted."));
+    $("accept-submit-button").disabled = true;
+    return;
+  }
+  $("accept-submit-button").disabled = false;
+  append(
+    node,
+    el("span", "muted", "You've been invited to join"),
+    el("strong", null, preview.organization_name),
+    dataList([
+      ["Assigned role", preview.role_label],
+      ["Invited email", preview.email],
+      ["Approval permission", preview.approval_permission_enabled ? "Enabled" : "Disabled"],
+      ["Expires", exactTimestamp(preview.expires_at)],
+    ])
+  );
 }
 
 async function submitSignin(event) {
@@ -1050,6 +1109,14 @@ async function submitSignin(event) {
       method: "POST",
       body: JSON.stringify({ email: $("signin-email").value, password: $("signin-password").value }),
     });
+    if (state.invitationToken) {
+      state.currentUser = await api("/api/invitations/accept", {
+        method: "POST",
+        body: JSON.stringify({ token: state.invitationToken }),
+      });
+      state.invitationToken = null;
+      state.invitationPreview = null;
+    }
     closeAuthModal();
     renderAll();
     await Promise.all([loadPRReviews(), loadReviewQueue()]);
@@ -1082,6 +1149,54 @@ async function submitRegister(event) {
     showToast("Workspace created", "Sign in to enter your workspace.", "success");
   } catch (error) {
     setMessage("auth-message", friendlyError(error, "Workspace creation failed."));
+  }
+}
+
+async function submitAcceptInvitation(event) {
+  event.preventDefault();
+  if (!state.invitationToken) return setMessage("auth-message", "Invitation token is missing.");
+  setMessage("auth-message", "Accepting invitation...", true);
+  try {
+    state.currentUser = await api("/api/invitations/accept", {
+      method: "POST",
+      body: JSON.stringify({
+        token: state.invitationToken,
+        display_name: $("accept-display-name").value || null,
+        password: $("accept-password").value || null,
+        confirm_password: $("accept-confirm-password").value || null,
+      }),
+    });
+    closeAuthModal();
+    renderAll();
+    await Promise.all([loadPRReviews(), loadReviewQueue(), loadMembers()]);
+    showToast("Invitation accepted", `Welcome to ${organizationName()}.`, "success");
+  } catch (error) {
+    setMessage("auth-message", friendlyError(error, "Invitation could not be accepted."));
+  }
+}
+
+function invitationStatusLabel(status) {
+  return labelFor(status || "pending");
+}
+
+function roleValueLabel(role) {
+  return {
+    OWNER: "Owner",
+    ADMIN: "Admin",
+    REVIEWER: "Reviewer",
+    VIEWER: "Viewer",
+  }[role] || labelFor(role);
+}
+
+async function loadMembers() {
+  if (!state.currentUser?.authenticated || !hasPermission("members.read")) return;
+  try {
+    const [members, invitations] = await Promise.all([api("/api/members"), api("/api/invitations")]);
+    state.members = members;
+    state.invitations = invitations;
+    renderMembers();
+  } catch (error) {
+    setMessage("ui-message", friendlyError(error, "Failed to load members."));
   }
 }
 
@@ -2003,13 +2118,148 @@ function renderOverview() {
   renderOverviewActivity();
 }
 
+function renderMembers() {
+  const summary = $("members-summary");
+  const activeNode = $("active-members-table");
+  const inviteNode = $("pending-invitations-table");
+  if (!summary || !activeNode || !inviteNode) return;
+  clear(summary);
+  clear(activeNode);
+  clear(inviteNode);
+  const activeMembers = state.members.filter((item) => item.membership?.status === "active");
+  const pending = state.invitations.filter((item) => item.status === "PENDING");
+  const reviewers = activeMembers.filter((item) => item.membership?.role === "REVIEWER").length;
+  [
+    ["Active Members", activeMembers.length, "Can access this workspace"],
+    ["Pending Invitations", pending.length, "Awaiting acceptance"],
+    ["Reviewers", reviewers, "Reviewer role members"],
+  ].forEach(([label, value, helper]) => {
+    summary.appendChild(append(el("article", "panel summary-card"), el("span", null, label), el("strong", "metric-value", value), el("small", null, helper)));
+  });
+  const memberColumns = [
+    { label: "Member", render: (item) => append(el("div"), el("strong", "row-title", `${item.user?.display_name || "Unknown"}${item.user?.id === state.currentUser?.user?.id ? " (You)" : ""}`), el("span", "row-meta", item.user?.email || "No email")) },
+    { label: "Role", priority: "tablet", render: (item) => roleValueLabel(item.membership?.role) },
+    { label: "Approval Permission", priority: "tablet", render: (item) => item.membership?.approval_permission_enabled ? "Enabled" : "Disabled" },
+    { label: "Status", render: (item) => statusBadge({ label: labelFor(item.membership?.status), className: item.membership?.status === "active" ? "status-approved" : "status-neutral" }) },
+    { label: "Joined", priority: "mobile", render: (item) => item.membership?.joined_at ? exactTimestamp(item.membership.joined_at) : "Not recorded" },
+    { label: "Last Active", priority: "mobile", render: (item) => item.user?.last_login_at ? exactTimestamp(item.user.last_login_at) : "Not recorded" },
+    { label: "Action", render: () => el("span", "muted", "Manage") },
+  ];
+  activeNode.appendChild(responsiveTable(memberColumns, state.members, "No members found."));
+  const invitationColumns = [
+    { label: "Email", render: (item) => item.email },
+    { label: "Assigned Role", priority: "tablet", render: (item) => item.role_label || roleValueLabel(item.assigned_role) },
+    { label: "Approval Permission", priority: "tablet", render: (item) => item.approval_permission_enabled ? "Enabled" : "Disabled" },
+    { label: "Invited By", priority: "mobile", render: (item) => item.invited_by || "Unknown" },
+    { label: "Created", priority: "mobile", render: (item) => exactTimestamp(item.created_at) },
+    { label: "Expires", priority: "mobile", render: (item) => exactTimestamp(item.expires_at) },
+    { label: "Status", render: (item) => statusBadge({ label: invitationStatusLabel(item.status), className: item.status === "PENDING" ? "status-awaiting-review" : item.status === "ACCEPTED" ? "status-approved" : "status-neutral" }) },
+    { label: "Action", render: (item) => invitationActions(item) },
+  ];
+  inviteNode.appendChild(responsiveTable(invitationColumns, state.invitations, "No invitations found."));
+}
+
+function invitationActions(item) {
+  const wrap = el("div", "queue-actions");
+  if (item.development_invitation_link) {
+    const copy = el("button", "secondary compact", "Copy Link");
+    copy.type = "button";
+    copy.addEventListener("click", () => copyInvitationLink(item.development_invitation_link));
+    wrap.appendChild(copy);
+  }
+  if (item.status === "PENDING" || item.status === "EXPIRED") {
+    const resend = el("button", "secondary compact", "Resend");
+    resend.type = "button";
+    resend.addEventListener("click", () => resendInvitation(item.id));
+    wrap.appendChild(resend);
+  }
+  if (item.status === "PENDING") {
+    const cancel = el("button", "secondary compact", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => cancelInvitation(item.id));
+    wrap.appendChild(cancel);
+  }
+  return wrap;
+}
+
+function openInviteModal() {
+  $("invite-modal-backdrop").hidden = false;
+  $("invite-development-link").hidden = true;
+  clear($("invite-development-link"));
+  setMessage("invite-message", "");
+}
+
+function closeInviteModal() {
+  $("invite-modal-backdrop").hidden = true;
+}
+
+async function submitInvite() {
+  setMessage("invite-message", "Creating invitation...", true);
+  try {
+    const response = await api("/api/invitations", {
+      method: "POST",
+      body: JSON.stringify({
+        email: $("invite-email-input").value,
+        role: $("invite-role-select").value,
+        approval_permission_enabled: $("invite-approval-checkbox").checked,
+        note: $("invite-note-input").value || null,
+      }),
+    });
+    showDevelopmentLink(response.development_invitation_link);
+    setMessage("invite-message", "Development invitation link created.", true);
+    await loadMembers();
+  } catch (error) {
+    setMessage("invite-message", friendlyError(error, "Failed to create invitation."));
+  }
+}
+
+function showDevelopmentLink(link) {
+  const node = $("invite-development-link");
+  clear(node);
+  node.hidden = !link;
+  if (!link) return;
+  const input = el("input");
+  input.value = link;
+  input.readOnly = true;
+  const copy = el("button", "secondary compact", "Copy Link");
+  copy.type = "button";
+  copy.addEventListener("click", () => copyInvitationLink(link));
+  append(node, el("strong", null, "Development invitation link"), input, copy);
+}
+
+async function copyInvitationLink(link) {
+  if (navigator.clipboard) await navigator.clipboard.writeText(link);
+  showToast("Invitation link copied", "Share it with the invited employee.", "success");
+}
+
+async function resendInvitation(id) {
+  try {
+    const response = await api(`/api/invitations/${id}/resend`, { method: "POST", body: "{}" });
+    if (response.development_invitation_link) showDevelopmentLink(response.development_invitation_link);
+    await loadMembers();
+    showToast("Invitation resent", "A new secure invitation link was generated.", "success");
+  } catch (error) {
+    showToast("Resend failed", friendlyError(error), "error");
+  }
+}
+
+async function cancelInvitation(id) {
+  try {
+    await api(`/api/invitations/${id}/cancel`, { method: "POST", body: "{}" });
+    await loadMembers();
+    showToast("Invitation canceled", "The invitation link is no longer valid.", "success");
+  } catch (error) {
+    showToast("Cancel failed", friendlyError(error), "error");
+  }
+}
+
 function renderAll() {
   $("pr-empty-state").hidden = hasSelectedCase();
   $("case-view").hidden = !hasSelectedCase();
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview();
+  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers();
 }
 
 function renderAssistantTriggers() {
@@ -2027,8 +2277,9 @@ function switchMode(mode) {
     "cloud-hunt": ["Discovery", "Cloud Hunt"],
     "review-queue": ["Human control", "Approvals"],
     technical: ["Audit", "Technical Audit"],
+    settings: ["Settings", "Members"],
   };
-  ["overview", "simple", "cloud-hunt", "review-queue", "technical"].forEach((item) => {
+  ["overview", "simple", "cloud-hunt", "review-queue", "technical", "settings"].forEach((item) => {
     const view = item === "simple" ? "simple-view" : `${item}-view`;
     const button = item === "simple" ? "simple-view-button" : `${item}-view-button`;
     $(view).hidden = item !== mode;
@@ -2036,6 +2287,7 @@ function switchMode(mode) {
     $(button).setAttribute("aria-pressed", String(item === mode));
   });
   state.activeMode = mode;
+  if (mode === "settings") loadMembers();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2589,9 +2841,12 @@ function bindEvents() {
   on("start-button", "click", startRun);
   on("auth-register-link", "click", () => openAuthModal("register"));
   on("auth-signin-link", "click", () => openAuthModal("signin"));
+  on("accept-signin-link", "click", () => openAuthModal("signin"));
   on("signin-form", "submit", submitSignin);
   on("register-form", "submit", submitRegister);
+  on("accept-invitation-form", "submit", submitAcceptInvitation);
   on("overview-view-button", "click", () => switchMode("overview"));
+  on("settings-view-button", "click", () => switchMode("settings"));
   on("overview-launch-demo-button", "click", openDemoModal);
   on("overview-refresh-button", "click", refreshRun);
   on("overview-open-prs-button", "click", () => switchMode("simple"));
@@ -2618,6 +2873,11 @@ function bindEvents() {
   on("cancel-review-button", "click", closeReviewForm);
   on("start-cloud-hunt-button", "click", startCloudHunt);
   on("refresh-review-queue-button", "click", loadReviewQueue);
+  on("refresh-members-button", "click", loadMembers);
+  on("invite-member-button", "click", openInviteModal);
+  on("invite-close-button", "click", closeInviteModal);
+  on("invite-cancel-button", "click", closeInviteModal);
+  on("send-invite-button", "click", submitInvite);
   on("cloud-back-button", "click", backFromCloudFinding);
   on("cloud-finding-detail", "click", (event) => {
     if (event.target.id === "cloud-finding-detail") backFromCloudFinding();

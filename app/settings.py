@@ -25,6 +25,10 @@ class Settings:
     session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
     login_rate_limit_attempts: int = int(os.getenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
     login_rate_limit_window_seconds: int = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "300"))
+    invitation_expiry_hours: int = int(os.getenv("INVITATION_EXPIRY_HOURS", "24"))
+    invitation_email_enabled: bool = os.getenv("INVITATION_EMAIL_ENABLED", "false").lower() in {"1", "true", "yes"}
+    invitation_from_email: str | None = os.getenv("INVITATION_FROM_EMAIL") or None
+    app_base_url: str = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
     auto_create_schema: bool = os.getenv("AUTO_CREATE_SCHEMA", "true").lower() in {"1", "true", "yes"}
     conftest_enabled: bool = os.getenv("CONFTEST_ENABLED", "true").lower() in {"1", "true", "yes"}
     conftest_executable: str = os.getenv("CONFTEST_EXECUTABLE", "conftest")

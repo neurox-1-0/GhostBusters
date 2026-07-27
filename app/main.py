@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from app.models import (
     AskGhostBustersRequest, AskGhostBustersResponse,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
-    HumanReviewRequest, InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
+    HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
+    InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
 )
 from app.settings import settings
@@ -27,10 +28,13 @@ from app.auth import (
     CLOUD_HUNTS_RUN,
     MEMBERS_INVITE,
     MEMBERS_READ,
+    MEMBERS_CANCEL_INVITATION,
+    MEMBERS_DISABLE,
     MEMBERS_MANAGE_ROLES,
     PR_REVIEWS_READ,
     WORKSPACE_READ,
     Principal,
+    ROLE_LABELS,
     auth_store,
     clear_session_cookies,
     csrf_protect,
@@ -71,6 +75,12 @@ def health() -> HealthResponse:
 
 @app.get("/")
 def home() -> FileResponse:
+    index_path = static_path / "index.html"
+    return FileResponse(index_path)
+
+
+@app.get("/invitations/accept")
+def invitation_accept_page() -> FileResponse:
     index_path = static_path / "index.html"
     return FileResponse(index_path)
 
@@ -144,17 +154,120 @@ def list_members(principal: Principal = Depends(principal_dependency)):
     ]
 
 
+def invitation_link(token: str) -> str:
+    return f"{settings.app_base_url.rstrip('/')}/invitations/accept?token={token}"
+
+
+def public_invitation(invitation, token: str | None = None) -> dict[str, object]:
+    inviter = auth_store.users_by_id.get(invitation.invited_by_user_id)
+    payload: dict[str, object] = {
+        "id": str(invitation.id),
+        "organization_id": str(invitation.organization_id),
+        "email": invitation.email,
+        "assigned_role": invitation.role,
+        "role_label": ROLE_LABELS[invitation.role],
+        "approval_permission_enabled": invitation.approval_permission_enabled,
+        "status": invitation.status,
+        "status_label": invitation.status.value.title(),
+        "invited_by": inviter.display_name if inviter else "Unknown",
+        "invited_by_user_id": str(invitation.invited_by_user_id),
+        "created_at": invitation.created_at,
+        "updated_at": invitation.updated_at,
+        "expires_at": invitation.expires_at,
+        "accepted_at": invitation.accepted_at,
+        "canceled_at": invitation.canceled_at,
+        "last_sent_at": invitation.last_sent_at,
+        "resend_count": invitation.resend_count,
+    }
+    if token and not settings.invitation_email_enabled:
+        payload["development_invitation_link"] = invitation_link(token)
+    return payload
+
+
+@app.get("/api/invitations")
+def list_invitations(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_READ)
+    return [public_invitation(invitation) for invitation in auth_store.list_invitations(principal)]
+
+
 @app.post("/api/invitations", status_code=201)
 def invite_member(request: InviteMemberRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, MEMBERS_INVITE)
-    invitation = auth_store.invite(principal, request.email, request.role, request.approval_permission_enabled)
-    return {"invitation": invitation, "development_invitation_link": f"/api/invitations/{invitation.id}/accept?token=development-only"}
+    invitation, token = auth_store.invite(principal, request.email, request.role, request.approval_permission_enabled, request.note)
+    return {"invitation": public_invitation(invitation), "development_invitation_link": invitation_link(token), "email_sent": settings.invitation_email_enabled}
+
+
+@app.get("/api/invitations/validate", response_model=InvitationValidateResponse)
+def validate_invitation(token: str) -> InvitationValidateResponse:
+    try:
+        invitation = auth_store.validate_invitation_token(token)
+    except HTTPException as exc:
+        return InvitationValidateResponse(valid=False, status="invalid", message=str(exc.detail))
+    organization = auth_store.organizations[invitation.organization_id]
+    return InvitationValidateResponse(
+        valid=True,
+        status=invitation.status,
+        organization_name=organization.name,
+        email=invitation.email,
+        role_label=ROLE_LABELS[invitation.role],
+        approval_permission_enabled=invitation.approval_permission_enabled,
+        expires_at=invitation.expires_at,
+    )
+
+
+@app.post("/api/invitations/accept", response_model=CurrentUserResponse)
+def accept_invitation(request: InvitationAcceptRequest, fastapi_request: Request, response: Response) -> CurrentUserResponse:
+    principal = None
+    try:
+        principal = current_principal(fastapi_request)
+        if principal.authenticated:
+            csrf_protect(fastapi_request, principal)
+        else:
+            principal = None
+    except HTTPException:
+        principal = None
+    user, organization, _ = auth_store.accept_invitation(
+        request.token,
+        request.display_name,
+        request.password,
+        request.confirm_password,
+        principal,
+    )
+    csrf_token = secrets.token_urlsafe(32)
+    session_id = session_store.create(user.id, csrf_token, utc_now() + timedelta(seconds=settings.session_ttl_seconds))
+    set_session_cookies(response, session_id, csrf_token)
+    return auth_store.principal_for_user(user.id, csrf_token, organization.id).response()
+
+
+@app.post("/api/invitations/{invitation_id}/resend")
+def resend_invitation(invitation_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_INVITE)
+    invitation, token = auth_store.resend_invitation(principal, invitation_id)
+    return {"invitation": public_invitation(invitation), "development_invitation_link": invitation_link(token), "email_sent": settings.invitation_email_enabled}
+
+
+@app.post("/api/invitations/{invitation_id}/cancel")
+def cancel_invitation(invitation_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_CANCEL_INVITATION)
+    return public_invitation(auth_store.cancel_invitation(principal, invitation_id))
 
 
 @app.patch("/api/members/{membership_id}")
 def change_member_role(membership_id: UUID, request: ChangeMemberRoleRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, MEMBERS_MANAGE_ROLES)
     return auth_store.change_role(principal, membership_id, request.role, request.approval_permission_enabled)
+
+
+@app.post("/api/members/{membership_id}/disable")
+def disable_member(membership_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_DISABLE)
+    return auth_store.disable_member(principal, membership_id)
+
+
+@app.post("/api/members/{membership_id}/reactivate")
+def reactivate_member(membership_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, MEMBERS_DISABLE)
+    return auth_store.reactivate_member(principal, membership_id)
 
 
 @app.post("/api/runs", response_model=WorkflowRun, status_code=201)

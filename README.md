@@ -17,7 +17,14 @@ POST /api/auth/logout
 GET  /api/auth/me
 GET  /api/members
 POST /api/invitations
+GET  /api/invitations
+GET  /api/invitations/validate?token=...
+POST /api/invitations/accept
+POST /api/invitations/{invitation_id}/resend
+POST /api/invitations/{invitation_id}/cancel
 PATCH /api/members/{membership_id}
+POST /api/members/{membership_id}/disable
+POST /api/members/{membership_id}/reactivate
 ```
 
 Browser sessions use opaque server-side session IDs, HttpOnly cookies, SameSite cookies, CSRF tokens for state-changing authenticated requests, generic login failures, and login-attempt throttling. Passwords are stored with a salted scrypt hash. Session records use Redis when `REDIS_URL` is configured and an in-memory store for local development.
@@ -32,7 +39,9 @@ DEMO_MODE_ENABLED=true
 SESSION_TTL_SECONDS=28800
 ```
 
-With these defaults, unauthenticated local demo requests run as the explicit development workspace `GhostBusters Development` (`00000000-0000-0000-0000-000000000001`) and demo reviewer identity. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace. The development invitation response includes a `development_invitation_link`; production email delivery and billing remain outside this milestone.
+With these defaults, unauthenticated local demo requests run as the explicit development workspace `GhostBusters Development` (`00000000-0000-0000-0000-000000000001`) and demo reviewer identity. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace.
+
+Invitation onboarding is available from **Settings -> Members**. Owners can invite Admins, Reviewers, and Viewers; Admins can invite Reviewers and Viewers. Employees create their own passwords from secure single-use invitation links. Invitation tokens are shown only in the development invitation URL and only a SHA-256 token hash is stored. Ordinary invitation list responses do not expose tokens or token hashes. In local development, `INVITATION_EMAIL_ENABLED=false` returns a clearly labeled development link. Production email delivery and billing remain outside this milestone.
 
 ## Cloud Hunt Mode (Milestone 7A)
 

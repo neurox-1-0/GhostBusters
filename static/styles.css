@@ -457,6 +457,27 @@ samp {
   outline-offset: 4px;
   border-radius: 4px;
 }
+.invite-accept-summary {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+.copy-link-box {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+.copy-link-box input {
+  width: 100%;
+  font-family: var(--font-family-mono);
+  font-size: var(--text-xs);
+}
 
 @keyframes authCardIn {
   from { opacity: 0; transform: translateY(14px) scale(0.985); }

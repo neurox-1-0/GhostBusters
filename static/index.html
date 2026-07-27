@@ -26,6 +26,7 @@
           <button id="cloud-hunt-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">⌕</span>Cloud Hunt</button>
           <button id="review-queue-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">✓</span>Approvals</button>
           <button id="technical-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">⚙</span>Technical Audit</button>
+          <button id="settings-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">S</span>Settings</button>
         </nav>
 
         <div class="sidebar-card">
@@ -524,6 +525,15 @@
             <div class="mode-header panel"><div><p class="kicker">Human control</p><h2 id="review-queue-title" class="section-title">Approvals</h2><p>Each item highlights the case, recommendation, savings, policy state, and current status without exposing backend labels.</p></div><div class="toolbar-actions"><button id="ask-approvals-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><button id="refresh-review-queue-button" class="secondary" type="button">Refresh Queue</button></div></div>
             <section class="panel"><div class="queue-grid" id="review-queue-list"><p class="muted">No review cases loaded.</p></div></section>
           </section>
+          <section id="settings-view" class="mode-view page-enter" hidden aria-labelledby="settings-title">
+            <div class="mode-header panel">
+              <div><p class="kicker">Settings</p><h2 id="settings-title" class="section-title">Members</h2><p>Manage who can access this workspace and what they are allowed to do.</p></div>
+              <div class="toolbar-actions"><button id="invite-member-button" type="button">Invite Member</button><button id="refresh-members-button" class="secondary" type="button">Refresh</button></div>
+            </div>
+            <section class="summary-grid" id="members-summary" aria-label="Members summary"></section>
+            <section class="panel" aria-labelledby="active-members-title"><div class="section-heading"><div><p class="kicker">Active Members</p><h2 id="active-members-title" class="section-title">Workspace Access</h2></div></div><div id="active-members-table"></div></section>
+            <section class="panel" aria-labelledby="pending-invitations-title"><div class="section-heading"><div><p class="kicker">Pending Invitations</p><h2 id="pending-invitations-title" class="section-title">Invitations</h2></div></div><div id="pending-invitations-table"></div></section>
+          </section>
         </main>
       </div>
     </div>
@@ -560,7 +570,33 @@
           <button id="register-submit-button" type="submit">Create Workspace</button>
           <p class="auth-switch">Already have a workspace? <button id="auth-signin-link" type="button">Sign In</button></p>
         </form>
+        <form id="accept-invitation-form" class="auth-form" hidden>
+          <div class="invite-accept-summary" id="invite-accept-summary"></div>
+          <label for="accept-display-name">Display name</label>
+          <input id="accept-display-name" autocomplete="name" placeholder="Priya Perera" />
+          <label for="accept-password">Password</label>
+          <input id="accept-password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" />
+          <label for="accept-confirm-password">Confirm password</label>
+          <input id="accept-confirm-password" type="password" autocomplete="new-password" minlength="8" placeholder="Repeat password" />
+          <button id="accept-submit-button" type="submit">Accept Invitation</button>
+          <p class="auth-switch">Already have an account? <button id="accept-signin-link" type="button">Sign In instead</button></p>
+        </form>
         <p class="message" id="auth-message" role="status"></p>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="invite-modal-backdrop" hidden>
+      <section class="demo-modal" role="dialog" aria-modal="true" aria-labelledby="invite-modal-title">
+        <div class="section-heading"><div><p class="kicker">Members</p><h2 id="invite-modal-title" class="section-title">Invite Member</h2></div><button id="invite-close-button" class="icon-button" type="button" aria-label="Close invitation">X</button></div>
+        <div class="demo-form">
+          <div><label for="invite-email-input">Email address</label><input id="invite-email-input" type="email" placeholder="priya@company.com" /></div>
+          <div><label for="invite-role-select">Role</label><select id="invite-role-select"><option value="ADMIN">Admin</option><option value="REVIEWER">Reviewer</option><option value="VIEWER">Viewer</option></select></div>
+          <label class="checkbox-row"><input id="invite-approval-checkbox" type="checkbox" />Allow this member to approve or reject recommendations</label>
+          <div><label for="invite-note-input">Message or note</label><textarea id="invite-note-input" rows="2" placeholder="Optional context for this invite"></textarea></div>
+        </div>
+        <p class="message" id="invite-message" role="status"></p>
+        <div id="invite-development-link" class="copy-link-box" hidden></div>
+        <div class="start-actions"><button id="send-invite-button" type="button">Create Invitation</button><button id="invite-cancel-button" class="secondary" type="button">Cancel</button></div>
       </section>
     </div>
 

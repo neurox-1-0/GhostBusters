@@ -107,6 +107,13 @@ class MembershipStatus(StrEnum):
     disabled = "disabled"
 
 
+class InvitationStatus(StrEnum):
+    pending = "PENDING"
+    accepted = "ACCEPTED"
+    expired = "EXPIRED"
+    canceled = "CANCELED"
+
+
 class AppModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -153,12 +160,21 @@ class Invitation(AppModel):
     id: UUID
     organization_id: UUID
     email: str
+    normalized_email: str
     role: OrganizationRole
     approval_permission_enabled: bool = False
+    status: InvitationStatus = InvitationStatus.pending
+    token_hash: str
     expires_at: datetime
     accepted_at: datetime | None = None
+    canceled_at: datetime | None = None
     invited_by_user_id: UUID
+    invited_by_membership_id: UUID | None = None
     created_at: datetime
+    updated_at: datetime
+    resend_count: int = 0
+    last_sent_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RegisterRequest(AppModel):
@@ -179,6 +195,25 @@ class InviteMemberRequest(AppModel):
     email: str
     role: OrganizationRole
     approval_permission_enabled: bool = False
+    note: str | None = None
+
+
+class InvitationAcceptRequest(AppModel):
+    token: str
+    display_name: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=256)
+    confirm_password: str | None = Field(default=None, min_length=8, max_length=256)
+
+
+class InvitationValidateResponse(AppModel):
+    valid: bool
+    status: InvitationStatus | str
+    organization_name: str | None = None
+    email: str | None = None
+    role_label: str | None = None
+    approval_permission_enabled: bool = False
+    expires_at: datetime | None = None
+    message: str | None = None
 
 
 class ChangeMemberRoleRequest(AppModel):
