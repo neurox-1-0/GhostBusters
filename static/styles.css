@@ -438,6 +438,87 @@ samp {
 .empty-copy { max-width: 720px; margin: 0.2rem 0 0.8rem; color: var(--muted); font-size: 15px; }
 .empty-actions, .toolbar-actions { display: flex; flex-wrap: wrap; gap: 0.55rem; }
 
+.pr-review-list-panel { display: grid; gap: 1rem; }
+.notice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #cde7e3;
+  border-radius: var(--radius-sm);
+  background: #f0faf8;
+  color: var(--navy);
+  font-weight: 600;
+}
+.pr-filter-row { margin-top: 0; }
+.pr-review-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.8fr) repeat(4, minmax(140px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+.pr-review-controls > div:nth-child(n+6) {
+  min-width: 0;
+}
+.timezone-note {
+  margin: -0.25rem 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.error-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.68rem 0.75rem;
+  border: 1px solid #efb4ad;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-weight: 600;
+}
+.pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.empty-state-inline {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--card-radius);
+  background: var(--panel-soft);
+}
+.empty-state-inline h3,
+.empty-state-inline p { margin: 0; }
+.timestamp-value {
+  display: inline-flex;
+  color: var(--ink);
+  font-weight: 700;
+}
+.case-timestamp-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.75rem;
+  margin-top: 0.8rem;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.case-timestamp-row span {
+  padding: 0.24rem 0.48rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: #fff;
+}
+
 .overview-heading {
   display: flex;
   align-items: flex-start;
@@ -971,6 +1052,7 @@ samp {
 }
 .status-high-confidence,
 .status-pr-created { border-color: #b7dfc5; background: #dff3e8; color: #0d5637; }
+.status-in-progress { border-color: #bfd2ea; background: #e7f0fb; color: #173f70; }
 .status-protected { border-color: #bfd2ea; background: #e7f0fb; color: #173f70; }
 .status-needs-context { border-color: #e6ca7a; background: #fff0bd; color: #6c4800; }
 .status-awaiting-review { border-color: #c8c4ee; background: #eceafd; color: #3d347f; }
@@ -1060,6 +1142,7 @@ samp {
   .topbar { grid-template-columns: minmax(150px, 0.3fr) minmax(220px, 1fr); }
   .topbar-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pr-review-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-grid, .overview-grid.lower { grid-template-columns: 1fr; }
   .progress-checklist.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .data-table .priority-tablet { display: none; }
@@ -1092,6 +1175,7 @@ samp {
   .topbar-actions, .overview-heading, .mode-header, .technical-header { align-items: flex-start; flex-direction: column; }
   .user-chip { padding-left: 0; border-left: 0; }
   .summary-grid, .hunt-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pr-review-controls { grid-template-columns: 1fr; }
   .data-table .priority-mobile { display: none; }
   .compact-row { grid-template-columns: 1fr; align-items: start; }
   .hunt-controls label, .hunt-controls select, .hunt-controls button { grid-column: auto; grid-row: auto; }
@@ -1158,6 +1242,8 @@ samp {
   .data-table .priority-tablet,
   .data-table .priority-mobile { display: grid; }
   .story-list div { grid-template-columns: 1fr; gap: 0.2rem; }
+  .pagination-row,
+  .notice-row { align-items: flex-start; flex-direction: column; }
   .important-alternatives { flex-direction: column; }
   .review-control input,
   .review-actions button { width: 100%; max-width: none; flex-basis: 100%; }

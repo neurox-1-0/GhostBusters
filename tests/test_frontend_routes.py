@@ -26,8 +26,8 @@ def test_root_serves_agent_console() -> None:
     assert 'id="overview-repositories-list"' in response.text
     assert 'id="cloud-journey-list"' in response.text
     assert 'id="overview-view-button"' in response.text
-    assert "/static/app.js?v=judge-v6" in response.text
-    assert "/static/styles.css?v=judge-v6" in response.text
+    assert "/static/app.js?v=judge-v7" in response.text
+    assert "/static/styles.css?v=judge-v7" in response.text
     assert "Open Source PR" in response.text
     assert "Launch Demo" in response.text
     assert "Why GhostBusters recommends this" in response.text
@@ -45,8 +45,8 @@ def test_root_serves_agent_console() -> None:
 def test_root_explains_objective_and_entry_modes_accurately() -> None:
     response = client.get("/")
 
-    assert "No review selected." in response.text
-    assert "Open a case from Approvals" in response.text
+    assert "PR review history" in response.text
+    assert "Search, filter, and reopen Terraform pull-request reviews" in response.text
     assert "Demo Mode uses prepared fixture data" in response.text
     assert "Demo scenario" in response.text
     assert "Demo objective" in response.text

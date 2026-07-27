@@ -8,6 +8,23 @@ const state = {
   skipAnimation: false,
   selectedReviewAction: null,
   selectedCloudReviewAction: null,
+  prReviews: [],
+  prReviewFilters: {
+    group: "needs-attention",
+    search: "",
+    repository: "",
+    status: "",
+    recommendation: "",
+    reviewer: "",
+    dateRange: "all",
+    sort: "updated_desc",
+    page: 1,
+    pageSize: 20,
+  },
+  prReviewListScrollTop: 0,
+  knownPrReviewIds: new Set(),
+  newPrReviewCount: 0,
+  prReviewError: "",
   hunt: null,
   reviews: [],
   selectedReviewContext: null,
@@ -16,6 +33,7 @@ const state = {
   loading: {
     initial: true,
     reviews: false,
+    prReviews: false,
     cloudHunt: false,
     run: false,
     review: false,
@@ -45,7 +63,12 @@ const cloudJourneyDefinitions = [
 
 const toolNames = ["pricing", "utilization", "jira", "git_activity", "dependencies"];
 const $ = (id) => document.getElementById(id);
-const uiVersion = "judge-v6";
+const on = (id, eventName, handler) => {
+  const node = $(id);
+  if (!node) return;
+  node.addEventListener(eventName, handler);
+};
+const uiVersion = "judge-v7";
 const requiredElementIds = [
   "api-pill",
   "overview-view",
@@ -64,6 +87,30 @@ const requiredElementIds = [
   "simple-view",
   "technical-view",
   "pr-empty-state",
+  "pr-review-list",
+  "pr-search-input",
+  "pr-repository-filter",
+  "pr-status-filter",
+  "pr-recommendation-filter",
+  "pr-reviewer-filter",
+  "pr-date-filter",
+  "pr-sort-select",
+  "pr-page-size-select",
+  "pr-pagination-summary",
+  "pr-new-review-notice",
+  "pr-new-review-text",
+  "pr-notice-refresh-button",
+  "pr-review-error",
+  "pr-retry-button",
+  "pr-prev-page-button",
+  "pr-next-page-button",
+  "pr-filter-count-all",
+  "pr-filter-count-needs-attention",
+  "pr-filter-count-in-progress",
+  "pr-filter-count-completed",
+  "pr-filter-count-blocked",
+  "pr-timezone-note",
+  "back-pr-list-button",
   "case-view",
   "stage-list",
   "recommendation-title",
@@ -81,6 +128,11 @@ const requiredElementIds = [
   "demo-modal-backdrop",
   "demo-scenario-select",
   "case-status",
+  "case-received-time",
+  "case-updated-time",
+  "case-recommendation-time",
+  "case-decision-time",
+  "case-result-time",
   "human-decision-summary",
   "recommendation-summary",
   "technical-content",
@@ -536,6 +588,341 @@ function renderSkeletonList(node, count = 3) {
   for (let index = 0; index < count; index += 1) node.appendChild(el("div", "skeleton"));
 }
 
+function userTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "browser timezone";
+}
+
+function parseTime(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function exactTimestamp(value) {
+  const date = parseTime(value);
+  if (!date) return "Not recorded";
+  return `${date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" })} ${userTimezone()}`;
+}
+
+function relativeTime(value) {
+  const date = parseTime(value);
+  if (!date) return "Not recorded";
+  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const units = [
+    ["year", 31536000],
+    ["month", 2592000],
+    ["day", 86400],
+    ["hour", 3600],
+    ["minute", 60],
+  ];
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, amount] of units) {
+    if (Math.abs(seconds) >= amount) return formatter.format(Math.round(seconds / amount), unit);
+  }
+  return formatter.format(seconds, "second");
+}
+
+function timestampNode(value, label = "Updated") {
+  const node = el("span", "timestamp-value", relativeTime(value));
+  node.title = exactTimestamp(value);
+  node.setAttribute("aria-label", `${label}: ${exactTimestamp(value)}`);
+  return node;
+}
+
+function latestReviewer(run) {
+  const latest = run?.human_reviews?.[run.human_reviews.length - 1];
+  return latest?.reviewer || "Unassigned";
+}
+
+function latestDecisionTime(run) {
+  return run?.human_reviews?.[run.human_reviews.length - 1]?.created_at || null;
+}
+
+function recommendationCompletedTime(run) {
+  return (run?.audit_events || []).find((event) => event.event_type === "recommendation_produced")?.timestamp || run?.updated_at || null;
+}
+
+function resultTime(run) {
+  if (!run) return null;
+  if (run.real_pr?.created_at) return run.real_pr.created_at;
+  if (run.mock_pr?.created_at) return run.mock_pr.created_at;
+  if (["rejected", "approved", "needs_more_evidence"].includes(run.status)) return latestDecisionTime(run);
+  return null;
+}
+
+function prChangeSummary(run) {
+  const change = currentResourceChange(run);
+  const before = change?.before?.instance_type || change?.before?.machine_type || change?.before?.size || run?.mock_pr?.current_instance_type || "Current";
+  const after = change?.after?.instance_type || change?.after?.machine_type || change?.after?.size || run?.mock_pr?.proposed_instance_type || "Proposed";
+  if (before !== "Current" || after !== "Proposed") return `${before} -> ${after}`;
+  return change?.address || run?.decision_record?.resource_id || "Terraform change";
+}
+
+function prReviewSummary(run) {
+  const decision = run?.decision_record;
+  const preferred = (decision?.alternatives || []).find((item) => item.action === decision.preferred_action);
+  const change = currentResourceChange(run);
+  const source = run?.github_source;
+  const latestReview = run?.human_reviews?.[run.human_reviews.length - 1];
+  return {
+    id: run.id,
+    source_type: run.source_type,
+    repository: source?.repository || run?.mock_pr?.repository || "Demo review",
+    pull_request_number: source?.pull_request_number || run?.mock_pr?.pr_number || null,
+    title: source?.pull_request_title || run?.mock_pr?.title || selectedCaseTitle(run),
+    branch: source?.head_branch || run?.mock_pr?.branch || "Not recorded",
+    base_branch: source?.base_branch || run?.mock_pr?.base_branch || "Not recorded",
+    terraform_resource: change?.address || decision?.resource_id || run?.mock_pr?.resource_id || "Not recorded",
+    change_summary: prChangeSummary(run),
+    recommendation: plainRecommendationTitle(run),
+    recommendation_key: decision?.preferred_action || run?.mock_pr?.chosen_action || "not_recorded",
+    estimated_monthly_savings: Number(preferred?.estimated_monthly_savings || run?.mock_pr?.monthly_savings || 0),
+    confidence: Number(decision?.confidence?.final_confidence || run?.mock_pr?.confidence || 0),
+    risk: riskLevel(decision, preferred),
+    policy_status: decision?.policy_result?.status || "not_recorded",
+    case_status: run.status,
+    reviewer: latestReviewer(run),
+    created_at: run.created_at,
+    updated_at: run.updated_at,
+    received_at: run.created_at,
+    recommendation_completed_at: recommendationCompletedTime(run),
+    entered_review_queue_at: run.status === "pending_human_review" ? run.updated_at : null,
+    decided_at: latestReview?.created_at || null,
+    remediation_pr_created_at: run.real_pr?.created_at || run.mock_pr?.created_at || null,
+    run,
+  };
+}
+
+function prReviewRows() {
+  const rows = state.prReviews
+    .filter((run) => ["terraform_pr", "manual_demo"].includes(run.source_type))
+    .map(prReviewSummary);
+  if (state.run?.id && ["terraform_pr", "manual_demo"].includes(state.run.source_type) && !rows.some((item) => item.id === state.run.id)) {
+    rows.unshift(prReviewSummary(state.run));
+  }
+  return rows;
+}
+
+function prStatusMeta(status) {
+  return {
+    created: { label: "Investigating", className: "status-in-progress" },
+    planning: { label: "Investigating", className: "status-in-progress" },
+    investigating: { label: "Investigating", className: "status-in-progress" },
+    verifying: { label: "Recommendation Processing", className: "status-in-progress" },
+    pending_human_review: { label: "Awaiting Human Review", className: "status-awaiting-review" },
+    needs_more_evidence: { label: "More Evidence Required", className: "status-needs-context" },
+    abstained: { label: "Recommendation Ready", className: "status-allowed" },
+    keep: { label: "Recommendation Ready", className: "status-allowed" },
+    approved: { label: "Approved", className: "status-approved" },
+    rejected: { label: "Rejected", className: "status-blocked" },
+    blocked: { label: "Policy Blocked", className: "status-blocked" },
+    pr_created: { label: "Remediation PR Created", className: "status-pr-created" },
+    failed_safely: { label: "Failed Safely", className: "status-neutral" },
+  }[status] || { label: runStatusLabel(status), className: "status-neutral" };
+}
+
+function prStatusBadge(status) {
+  const meta = prStatusMeta(status);
+  return statusBadge({ key: status, label: meta.label, className: meta.className });
+}
+
+function prReviewGroup(row) {
+  if (["pending_human_review", "needs_more_evidence", "abstained", "keep"].includes(row.case_status)) return "needs-attention";
+  if (["created", "planning", "investigating", "verifying"].includes(row.case_status)) return "in-progress";
+  if (["approved", "rejected", "pr_created"].includes(row.case_status)) return "completed";
+  if (["blocked", "failed_safely"].includes(row.case_status)) return "blocked";
+  return "all";
+}
+
+function riskRank(risk) {
+  return { Critical: 5, High: 4, Medium: 3, Low: 2, Info: 1 }[labelFor(risk)] || 0;
+}
+
+function rowMatchesDateFilter(row) {
+  const filter = state.prReviewFilters.dateRange;
+  if (filter === "all") return true;
+  if (filter === "completed") return prReviewGroup(row) === "completed";
+  if (filter === "approved") return row.case_status === "approved";
+  if (filter === "rejected") return row.case_status === "rejected";
+  if (filter === "pr_created") return row.case_status === "pr_created";
+  const created = parseTime(row.created_at);
+  if (!created) return false;
+  const ageMs = Date.now() - created.getTime();
+  if (filter === "today") return new Date().toDateString() === created.toDateString();
+  if (filter === "7d") return ageMs <= 7 * 86400000;
+  if (filter === "30d") return ageMs <= 30 * 86400000;
+  return true;
+}
+
+function filteredPrReviewRows() {
+  const filters = state.prReviewFilters;
+  const search = filters.search.trim().toLowerCase();
+  return prReviewRows().filter((row) => {
+    const groupMatch = filters.group === "all" || prReviewGroup(row) === filters.group;
+    const haystack = [row.repository, row.pull_request_number ? `#${row.pull_request_number}` : "", row.title, row.branch, row.base_branch, row.terraform_resource, row.recommendation, row.reviewer].join(" ").toLowerCase();
+    return groupMatch &&
+      (!search || haystack.includes(search)) &&
+      (!filters.repository || row.repository === filters.repository) &&
+      (!filters.status || row.case_status === filters.status) &&
+      (!filters.recommendation || row.recommendation_key === filters.recommendation) &&
+      (!filters.reviewer || row.reviewer === filters.reviewer) &&
+      rowMatchesDateFilter(row);
+  }).sort((a, b) => {
+    if (filters.sort === "newest") return (parseTime(b.created_at)?.getTime() || 0) - (parseTime(a.created_at)?.getTime() || 0);
+    if (filters.sort === "oldest") return (parseTime(a.created_at)?.getTime() || 0) - (parseTime(b.created_at)?.getTime() || 0);
+    if (filters.sort === "savings_desc") return b.estimated_monthly_savings - a.estimated_monthly_savings;
+    if (filters.sort === "risk_desc") return riskRank(b.risk) - riskRank(a.risk);
+    if (filters.sort === "confidence_desc") return b.confidence - a.confidence;
+    return (parseTime(b.updated_at)?.getTime() || 0) - (parseTime(a.updated_at)?.getTime() || 0);
+  });
+}
+
+function updateSelectOptions(selectId, values, current, allLabel, format = (value) => value) {
+  const select = $(selectId);
+  if (!select) return;
+  const nextValues = [...new Set(values.filter(Boolean))].sort();
+  const previous = select.value || current || "";
+  clear(select);
+  const all = el("option", null, allLabel);
+  all.value = "";
+  select.appendChild(all);
+  nextValues.forEach((value) => {
+    const option = el("option", null, format(value));
+    option.value = value;
+    select.appendChild(option);
+  });
+  select.value = nextValues.includes(previous) ? previous : "";
+}
+
+function renderPrFilterCounts(rows) {
+  const counts = { all: rows.length, "needs-attention": 0, "in-progress": 0, completed: 0, blocked: 0 };
+  rows.forEach((row) => {
+    const group = prReviewGroup(row);
+    if (counts[group] !== undefined) counts[group] += 1;
+  });
+  Object.entries(counts).forEach(([key, count]) => {
+    const node = $(`pr-filter-count-${key}`);
+    if (node) node.textContent = String(count);
+  });
+  document.querySelectorAll("[data-pr-filter]").forEach((chip) => {
+    const active = chip.dataset.prFilter === state.prReviewFilters.group;
+    chip.classList.toggle("filter-chip-active", active);
+    chip.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function clearPrFilters() {
+  state.prReviewFilters = { ...state.prReviewFilters, group: "needs-attention", search: "", repository: "", status: "", recommendation: "", reviewer: "", dateRange: "all", sort: "updated_desc", page: 1 };
+  ["pr-search-input", "pr-repository-filter", "pr-status-filter", "pr-recommendation-filter", "pr-reviewer-filter"].forEach((id) => { if ($(id)) $(id).value = ""; });
+  $("pr-date-filter").value = "all";
+  $("pr-sort-select").value = "updated_desc";
+  renderPRReviewList();
+}
+
+function openPrReviewDetail(runOrRow) {
+  const run = runOrRow.run || runOrRow;
+  state.prReviewListScrollTop = window.scrollY || 0;
+  state.run = run;
+  state.selectedReviewContext = { source: "pr-reviews", type: "terraform_pr", runId: run.id };
+  localStorage.setItem("ghostbusters:lastRunId", run.id);
+  state.visibleEvents = run.audit_events || [];
+  startAnimation(true);
+  switchMode("simple");
+  showToast("Review loaded", "Opened PR review details.", "success");
+}
+
+async function openPrReviewById(runId) {
+  const cached = state.prReviews.find((run) => run.id === runId);
+  if (cached) return openPrReviewDetail(cached);
+  const run = await api(`/api/runs/${runId}`);
+  openPrReviewDetail(run);
+}
+
+function backToPrReviewList() {
+  state.run = null;
+  state.selectedReviewContext = null;
+  closeReviewForm();
+  renderAll();
+  switchMode("simple");
+  window.scrollTo({ top: state.prReviewListScrollTop || 0, behavior: "smooth" });
+}
+
+function renderPRReviewList() {
+  const node = $("pr-review-list");
+  if (!node) return;
+  $("pr-timezone-note").textContent = `Times shown in ${userTimezone()}`;
+  $("pr-review-error").hidden = !state.prReviewError;
+  const notice = $("pr-new-review-notice");
+  notice.hidden = state.newPrReviewCount < 1;
+  $("pr-new-review-text").textContent = `${state.newPrReviewCount} new PR review${state.newPrReviewCount === 1 ? "" : "s"} available`;
+  const allRows = prReviewRows();
+  renderPrFilterCounts(allRows);
+  updateSelectOptions("pr-repository-filter", allRows.map((row) => row.repository), state.prReviewFilters.repository, "All repositories");
+  updateSelectOptions("pr-status-filter", allRows.map((row) => row.case_status), state.prReviewFilters.status, "All statuses", (value) => prStatusMeta(value).label);
+  updateSelectOptions("pr-recommendation-filter", allRows.map((row) => row.recommendation_key), state.prReviewFilters.recommendation, "All recommendations", recommendationLabel);
+  updateSelectOptions("pr-reviewer-filter", allRows.map((row) => row.reviewer), state.prReviewFilters.reviewer, "All reviewers");
+  if (state.loading.prReviews) {
+    renderSkeletonList(node, 5);
+    $("pr-pagination-summary").textContent = "Loading reviews";
+    return;
+  }
+  clear(node);
+  const rows = filteredPrReviewRows();
+  const pageSize = Number(state.prReviewFilters.pageSize || 20);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  state.prReviewFilters.page = Math.min(Math.max(1, state.prReviewFilters.page), totalPages);
+  const start = (state.prReviewFilters.page - 1) * pageSize;
+  const pageRows = rows.slice(start, start + pageSize);
+  const columns = [
+    { label: "Repository", render: (row) => append(el("div"), el("strong", "row-title", row.repository), el("span", "row-meta", row.branch)) },
+    { label: "Pull Request", render: (row) => append(el("div"), el("strong", "row-title", row.pull_request_number ? `#${row.pull_request_number}` : "Prepared demo"), el("span", "row-meta", row.title)) },
+    { label: "Change Summary", priority: "tablet", render: (row) => append(el("div"), el("span", null, row.change_summary), el("span", "row-meta", row.terraform_resource)) },
+    { label: "Recommendation", priority: "tablet", render: (row) => row.recommendation },
+    { label: "Potential Savings", priority: "mobile", render: (row) => `${money(row.estimated_monthly_savings)}/month` },
+    { label: "Risk", priority: "mobile", render: (row) => row.risk },
+    { label: "Status", render: (row) => prStatusBadge(row.case_status) },
+    { label: "Reviewer", priority: "tablet", render: (row) => row.reviewer },
+    { label: "Updated", render: (row) => append(el("div"), timestampNode(row.updated_at, "Updated"), el("span", "row-meta", `Received ${relativeTime(row.received_at)}`)) },
+    { label: "Action", render: (row) => {
+      const button = el("button", "secondary compact", "View Review");
+      button.type = "button";
+      button.setAttribute("aria-label", `View review for ${row.repository} ${row.pull_request_number ? `PR #${row.pull_request_number}` : row.title}`);
+      button.addEventListener("click", () => openPrReviewById(row.id));
+      return button;
+    } },
+  ];
+  if (!allRows.length) {
+    const empty = el("div", "empty-state-inline");
+    append(empty, el("h3", null, "No PR reviews yet"), el("p", "muted", "Terraform pull-request reviews will appear here after GitHub sends a supported webhook or after a demo case is started."));
+    const actions = el("div", "empty-actions");
+    const launch = el("button", null, "Launch Demo");
+    launch.type = "button";
+    launch.addEventListener("click", openDemoModal);
+    const refresh = el("button", "secondary", "Refresh Reviews");
+    refresh.type = "button";
+    refresh.addEventListener("click", () => loadPRReviews({ preserveSelection: true }));
+    const setup = el("button", "secondary", "View Integration Setup");
+    setup.type = "button";
+    setup.addEventListener("click", () => switchMode("overview"));
+    append(actions, launch, refresh, setup);
+    append(empty, actions);
+    node.appendChild(empty);
+  } else if (!pageRows.length) {
+    const empty = el("div", "empty-state-inline");
+    const clearButton = el("button", "secondary", "Clear Filters");
+    clearButton.type = "button";
+    clearButton.addEventListener("click", clearPrFilters);
+    append(empty, el("h3", null, "No reviews match these filters"), clearButton);
+    node.appendChild(empty);
+  } else {
+    node.appendChild(responsiveTable(columns, pageRows, "No reviews match these filters."));
+  }
+  $("pr-pagination-summary").textContent = rows.length
+    ? `Showing ${start + 1}-${Math.min(start + pageSize, rows.length)} of ${rows.length} reviews`
+    : "0 reviews";
+  $("pr-prev-page-button").disabled = state.prReviewFilters.page <= 1;
+  $("pr-next-page-button").disabled = state.prReviewFilters.page >= totalPages;
+}
+
 async function loadInitial() {
   state.loading.initial = true;
   renderAll();
@@ -554,8 +941,44 @@ async function loadInitial() {
   } finally {
     state.loading.initial = false;
   }
+  loadPRReviews();
   loadReviewQueue();
   renderAll();
+}
+
+async function loadPRReviews({ preserveSelection = true, showNotice = false } = {}) {
+  state.loading.prReviews = true;
+  renderPRReviewList();
+  try {
+    const runs = await api("/api/runs");
+    state.prReviewError = "";
+    const previousIds = state.knownPrReviewIds;
+    const nextIds = new Set((runs || []).filter((run) => ["terraform_pr", "manual_demo"].includes(run.source_type)).map((run) => run.id));
+    const newIds = [...nextIds].filter((id) => previousIds.size && !previousIds.has(id) && id !== state.run?.id);
+    state.prReviews = runs || [];
+    state.knownPrReviewIds = nextIds;
+    state.newPrReviewCount = showNotice && preserveSelection && state.run ? newIds.length : 0;
+    if (preserveSelection && state.run?.id) {
+      const updatedSelected = state.prReviews.find((run) => run.id === state.run.id);
+      if (updatedSelected) state.run = updatedSelected;
+    }
+    renderPRReviewList();
+  } catch (error) {
+    const message = friendlyError(error, "Failed to load PR reviews.");
+    state.prReviewError = message;
+    setMessage("ui-message", message);
+    const errorNode = $("pr-review-error");
+    if (errorNode) errorNode.hidden = false;
+    showToast("PR review load failed", message, "error");
+  } finally {
+    state.loading.prReviews = false;
+    renderPRReviewList();
+    renderOverview();
+  }
+}
+
+async function refreshPRReviews() {
+  return withButtonState("refresh-button", "Refreshing...", () => loadPRReviews({ preserveSelection: true, showNotice: true }), "Updated");
 }
 
 async function loadReviewQueue() {
@@ -638,6 +1061,7 @@ async function startRun() {
 }
 
 async function refreshRun() {
+  await loadPRReviews({ preserveSelection: true, showNotice: true });
   const runId = state.run?.id || localStorage.getItem("ghostbusters:lastRunId");
   if (!runId) {
     loadReviewQueue();
@@ -1072,6 +1496,14 @@ function renderStatus() {
   $("human-decision-summary").textContent = humanDecision(run).label;
   $("recommendation-summary").textContent = plainRecommendationTitle(run);
   $("evidence-source-card").hidden = !isDemoRun(run);
+  $("case-received-time").textContent = `Received: ${run ? exactTimestamp(run.created_at) : "Not recorded"}`;
+  $("case-updated-time").textContent = `Last updated: ${run ? relativeTime(run.updated_at) : "Not recorded"}`;
+  $("case-updated-time").title = run ? exactTimestamp(run.updated_at) : "";
+  $("case-recommendation-time").textContent = `Recommendation completed: ${run ? exactTimestamp(recommendationCompletedTime(run)) : "Not recorded"}`;
+  const decisionAt = latestDecisionTime(run);
+  $("case-decision-time").textContent = `Decision: ${decisionAt ? exactTimestamp(decisionAt) : "Not recorded"}`;
+  const finalAt = resultTime(run);
+  $("case-result-time").textContent = `Result: ${finalAt ? exactTimestamp(finalAt) : "Not recorded"}`;
 }
 
 function renderAudit() {
@@ -1437,7 +1869,7 @@ function renderAll() {
   $("case-view").hidden = !hasSelectedCase();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderCloudHunt(); renderReviewQueue(); renderOverview();
+  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview();
 }
 
 function renderAssistantTriggers() {
@@ -1988,6 +2420,9 @@ if (typeof window !== "undefined") {
     renderCloudHunt,
     renderReviewQueue,
     loadReviewQueue,
+    loadPRReviews,
+    openPrReviewById,
+    backToPrReviewList,
     selectCloudFinding,
     selectedCloudCandidate,
     selectedCloudCase,
@@ -2011,64 +2446,102 @@ if (typeof window !== "undefined") {
 }
 
 function bindEvents() {
-  $("start-button").addEventListener("click", startRun);
-  $("overview-view-button").addEventListener("click", () => switchMode("overview"));
-  $("overview-launch-demo-button").addEventListener("click", openDemoModal);
-  $("overview-refresh-button").addEventListener("click", refreshRun);
-  $("overview-open-prs-button").addEventListener("click", () => switchMode("simple"));
-  $("overview-open-approvals-button").addEventListener("click", () => { switchMode("review-queue"); loadReviewQueue(); });
-  $("overview-open-cloud-button").addEventListener("click", () => switchMode("cloud-hunt"));
-  $("refresh-button").addEventListener("click", refreshRun);
-  $("case-refresh-button").addEventListener("click", refreshRun);
-  $("launch-demo-button").addEventListener("click", openDemoModal);
-  $("case-launch-demo-button").addEventListener("click", openDemoModal);
-  $("cancel-demo-button").addEventListener("click", closeDemoModal);
-  $("close-demo-button").addEventListener("click", closeDemoModal);
-  $("open-approvals-button").addEventListener("click", () => switchMode("review-queue"));
-  $("technical-open-approvals-button").addEventListener("click", () => switchMode("review-queue"));
-  $("pause-button").addEventListener("click", () => { state.paused = !state.paused; $("pause-button").textContent = state.paused ? "Resume" : "Pause"; });
-  $("skip-animation").addEventListener("change", (event) => { state.skipAnimation = event.target.checked; if (state.run && state.skipAnimation) startAnimation(true); });
-  $("simple-view-button").addEventListener("click", () => switchView(false));
-  $("cloud-hunt-view-button").addEventListener("click", () => switchMode("cloud-hunt"));
-  $("review-queue-view-button").addEventListener("click", () => { switchMode("review-queue"); loadReviewQueue(); });
-  $("technical-view-button").addEventListener("click", () => switchView(true));
-  $("open-technical-button").addEventListener("click", () => switchView(true));
+  on("start-button", "click", startRun);
+  on("overview-view-button", "click", () => switchMode("overview"));
+  on("overview-launch-demo-button", "click", openDemoModal);
+  on("overview-refresh-button", "click", refreshRun);
+  on("overview-open-prs-button", "click", () => switchMode("simple"));
+  on("back-pr-list-button", "click", backToPrReviewList);
+  on("overview-open-approvals-button", "click", () => { switchMode("review-queue"); loadReviewQueue(); });
+  on("overview-open-cloud-button", "click", () => switchMode("cloud-hunt"));
+  on("refresh-button", "click", refreshPRReviews);
+  on("case-refresh-button", "click", refreshRun);
+  on("launch-demo-button", "click", openDemoModal);
+  on("case-launch-demo-button", "click", openDemoModal);
+  on("cancel-demo-button", "click", closeDemoModal);
+  on("close-demo-button", "click", closeDemoModal);
+  on("open-approvals-button", "click", () => switchMode("review-queue"));
+  on("technical-open-approvals-button", "click", () => switchMode("review-queue"));
+  on("pause-button", "click", () => { state.paused = !state.paused; $("pause-button").textContent = state.paused ? "Resume" : "Pause"; });
+  on("skip-animation", "change", (event) => { state.skipAnimation = event.target.checked; if (state.run && state.skipAnimation) startAnimation(true); });
+  on("simple-view-button", "click", () => switchView(false));
+  on("cloud-hunt-view-button", "click", () => switchMode("cloud-hunt"));
+  on("review-queue-view-button", "click", () => { switchMode("review-queue"); loadReviewQueue(); });
+  on("technical-view-button", "click", () => switchView(true));
+  on("open-technical-button", "click", () => switchView(true));
   document.querySelectorAll("[data-review-action]").forEach((button) => button.addEventListener("click", () => selectReviewAction(button.dataset.reviewAction)));
-  $("submit-review-button").addEventListener("click", submitSelectedReview);
-  $("cancel-review-button").addEventListener("click", closeReviewForm);
-  $("start-cloud-hunt-button").addEventListener("click", startCloudHunt);
-  $("refresh-review-queue-button").addEventListener("click", loadReviewQueue);
-  $("cloud-back-button").addEventListener("click", backFromCloudFinding);
-  $("cloud-finding-detail").addEventListener("click", (event) => {
+  on("submit-review-button", "click", submitSelectedReview);
+  on("cancel-review-button", "click", closeReviewForm);
+  on("start-cloud-hunt-button", "click", startCloudHunt);
+  on("refresh-review-queue-button", "click", loadReviewQueue);
+  on("cloud-back-button", "click", backFromCloudFinding);
+  on("cloud-finding-detail", "click", (event) => {
     if (event.target.id === "cloud-finding-detail") backFromCloudFinding();
   });
-  $("cloud-open-approval-button").addEventListener("click", () => {
+  on("cloud-open-approval-button", "click", () => {
     state.selectedReviewContext = { ...state.selectedReviewContext, source: "approvals" };
     renderCloudHunt();
     $("cloud-human-decision").scrollIntoView({ block: "start" });
   });
   document.querySelectorAll("[data-cloud-review-action]").forEach((button) => button.addEventListener("click", () => selectCloudReviewAction(button.dataset.cloudReviewAction)));
-  $("cloud-submit-review-button").addEventListener("click", submitSelectedCloudReview);
-  $("cloud-cancel-review-button").addEventListener("click", closeCloudReviewForm);
-  $("ask-case-button").addEventListener("click", () => openAssistant("pr_review"));
-  $("ask-cloud-button").addEventListener("click", () => openAssistant("cloud_hunt"));
-  $("ask-approvals-button").addEventListener("click", () => openAssistant("approvals"));
-  $("ask-technical-button").addEventListener("click", () => openAssistant("technical_audit"));
-  $("ask-global-button").addEventListener("click", () => openAssistant("product_help"));
-  $("notification-button").addEventListener("click", () => showToast("No new notifications", "This workspace has no notification feed configured.", "success"));
-  $("assistant-close-button").addEventListener("click", closeAssistant);
-  $("assistant-clear-button").addEventListener("click", () => { $("assistant-question-input").value = ""; clear($("assistant-answer")); setMessage("assistant-message", ""); });
-  $("assistant-ask-button").addEventListener("click", askAssistant);
-  $("assistant-question-input").addEventListener("keydown", (event) => {
+  on("cloud-submit-review-button", "click", submitSelectedCloudReview);
+  on("cloud-cancel-review-button", "click", closeCloudReviewForm);
+  on("ask-case-button", "click", () => openAssistant("pr_review"));
+  on("ask-cloud-button", "click", () => openAssistant("cloud_hunt"));
+  on("ask-approvals-button", "click", () => openAssistant("approvals"));
+  on("ask-technical-button", "click", () => openAssistant("technical_audit"));
+  on("ask-global-button", "click", () => openAssistant("product_help"));
+  on("notification-button", "click", () => showToast("No new notifications", "This workspace has no notification feed configured.", "success"));
+  on("assistant-close-button", "click", closeAssistant);
+  on("assistant-clear-button", "click", () => { $("assistant-question-input").value = ""; clear($("assistant-answer")); setMessage("assistant-message", ""); });
+  on("assistant-ask-button", "click", askAssistant);
+  on("assistant-question-input", "keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) askAssistant();
     if (event.key === "Escape") closeAssistant();
   });
   if (typeof document.addEventListener === "function") {
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !$("cloud-finding-detail").hidden) backFromCloudFinding();
+      const cloudFindingDetail = $("cloud-finding-detail");
+      if (event.key === "Escape" && cloudFindingDetail && !cloudFindingDetail.hidden) backFromCloudFinding();
     });
   }
-  $("assistant-backdrop").addEventListener("click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
+  on("assistant-backdrop", "click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
+  on("pr-notice-refresh-button", "click", () => { state.newPrReviewCount = 0; loadPRReviews({ preserveSelection: true }); });
+  on("pr-retry-button", "click", () => loadPRReviews({ preserveSelection: true }));
+  on("pr-search-input", "input", (event) => {
+    state.prReviewFilters.search = event.target.value;
+    state.prReviewFilters.page = 1;
+    window.clearTimeout(state.prSearchTimer);
+    state.prSearchTimer = window.setTimeout(renderPRReviewList, 180);
+  });
+  [
+    ["pr-repository-filter", "repository"],
+    ["pr-status-filter", "status"],
+    ["pr-recommendation-filter", "recommendation"],
+    ["pr-reviewer-filter", "reviewer"],
+    ["pr-date-filter", "dateRange"],
+    ["pr-sort-select", "sort"],
+    ["pr-page-size-select", "pageSize"],
+  ].forEach(([id, key]) => {
+    on(id, "change", (event) => {
+      state.prReviewFilters[key] = event.target.value;
+      state.prReviewFilters.page = 1;
+      renderPRReviewList();
+    });
+  });
+  on("pr-prev-page-button", "click", () => {
+    state.prReviewFilters.page = Math.max(1, state.prReviewFilters.page - 1);
+    renderPRReviewList();
+  });
+  on("pr-next-page-button", "click", () => {
+    state.prReviewFilters.page += 1;
+    renderPRReviewList();
+  });
+  document.querySelectorAll("[data-pr-filter]").forEach((filter) => filter.addEventListener("click", () => {
+    state.prReviewFilters.group = filter.dataset.prFilter || "needs-attention";
+    state.prReviewFilters.page = 1;
+    renderPRReviewList();
+  }));
   document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("click", () => {
     state.cloudHuntFilter = filter.dataset.huntFilter || "all";
     renderCloudHunt();

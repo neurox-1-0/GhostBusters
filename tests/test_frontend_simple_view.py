@@ -95,6 +95,13 @@ const filterButtons = ["all", "high-confidence", "protected", "needs-context", "
   button.setAttribute("aria-pressed", String(filter === "all"));
   return button;
 }});
+const prFilterButtons = ["needs-attention", "all", "in-progress", "completed", "blocked"].map((filter) => {{
+  const button = createNode("button");
+  button.dataset.prFilter = filter;
+  button.className = filter === "needs-attention" ? "filter-chip filter-chip-active" : "filter-chip";
+  button.setAttribute("aria-pressed", String(filter === "needs-attention"));
+  return button;
+}});
 
 const document = {{
   getElementById(id) {{
@@ -108,6 +115,7 @@ const document = {{
     if (selector === "[data-review-action]") return reviewButtons;
     if (selector === "[data-cloud-review-action]") return cloudReviewButtons;
     if (selector === "[data-hunt-filter]") return filterButtons;
+    if (selector === "[data-pr-filter]") return prFilterButtons;
     return [];
   }},
 }};
@@ -124,6 +132,7 @@ const fetch = async (path) => {{
     "/health": {{ status: "ok" }},
     "/api/scenarios": {{ scenarios: ["safe"] }},
     "/api/reviews": {json.dumps(payload.get("api_reviews", []))},
+    "/api/runs": {json.dumps(payload.get("api_runs", []))},
   }};
   return {{
     ok: true,
@@ -146,6 +155,7 @@ const context = {{
     clearInterval() {{}},
     setTimeout(callback) {{ callback(); return 1; }},
     scrollTo() {{}},
+    scrollY: 0,
   }},
 }};
 context.window.document = document;
@@ -176,6 +186,8 @@ function collectNodes(node, predicate, output = []) {{
   hooks.state.run = {json.dumps(payload["run"])};
   hooks.state.visibleEvents = hooks.state.run ? (hooks.state.run.audit_events || []) : [];
   hooks.state.reviews = {json.dumps(payload.get("reviews", []))};
+  hooks.state.prReviews = {json.dumps(payload.get("pr_reviews", []))};
+  hooks.state.knownPrReviewIds = new Set({json.dumps(payload.get("known_pr_review_ids", []))});
   hooks.state.hunt = {json.dumps(payload.get("hunt"))};
   hooks.state.loading = {json.dumps(payload.get("loading", {
       "initial": False,
@@ -184,7 +196,10 @@ function collectNodes(node, predicate, output = []) {{
       "run": False,
       "review": False,
       "assistant": False,
+      "prReviews": False,
   }))};
+  hooks.state.prReviewFilters = {{ ...hooks.state.prReviewFilters, ...{json.dumps(payload.get("pr_filters", {}))} }};
+  hooks.state.prReviewError = {json.dumps(payload.get("pr_review_error", ""))};
   hooks.state.cloudHuntFilter = {json.dumps(payload.get("cloud_filter", "all"))};
   if ({json.dumps(payload.get("open_demo", False))}) hooks.openDemoModal();
   if ({json.dumps(payload.get("mode"))}) hooks.switchMode({json.dumps(payload.get("mode"))});
@@ -200,6 +215,15 @@ function collectNodes(node, predicate, output = []) {{
   if ({json.dumps(payload.get("call_load_review_queue", False))}) {{
     await hooks.loadReviewQueue();
   }}
+  if ({json.dumps(payload.get("call_load_pr_reviews", False))}) {{
+    await hooks.loadPRReviews({{ preserveSelection: true, showNotice: {json.dumps(payload.get("show_pr_notice", False))} }});
+  }}
+  if ({json.dumps(payload.get("select_pr_run_id"))}) {{
+    await hooks.openPrReviewById({json.dumps(payload.get("select_pr_run_id"))});
+  }}
+  if ({json.dumps(payload.get("back_to_pr_list", False))}) {{
+    hooks.backToPrReviewList();
+  }}
 
   const ids = [
     "source-kind", "source-repository", "source-pr", "source-title", "source-head", "source-base",
@@ -208,7 +232,11 @@ function collectNodes(node, predicate, output = []) {{
     "recommendation-annual-savings", "result-title", "result-view", "safety-summary",
     "trigger-source", "run-pill", "approval-pill", "evidence-count", "candidate-count",
     "pr-empty-state", "case-view", "demo-modal-backdrop", "technical-content", "technical-empty-state",
+    "pr-review-list", "pr-pagination-summary", "pr-new-review-notice", "pr-new-review-text",
+    "pr-timezone-note", "pr-review-error", "pr-filter-count-all", "pr-filter-count-needs-attention",
+    "pr-filter-count-in-progress", "pr-filter-count-completed", "pr-filter-count-blocked",
     "case-status", "human-decision", "human-decision-technical", "human-decision-summary", "recommendation-summary", "evidence-source-card",
+    "case-received-time", "case-updated-time", "case-recommendation-time", "case-decision-time", "case-result-time",
     "page-title", "overview-summary", "overview-pr-list", "overview-savings-list",
     "overview-repositories-list", "overview-repository-count", "setup-progress-list",
     "setup-progress-percent", "setup-progress-bar", "overview-approval-alerts",
@@ -263,6 +291,14 @@ function collectNodes(node, predicate, output = []) {{
       className: button.className,
       ariaPressed: button["aria-pressed"],
     }}));
+    output.prFilterChips = prFilterButtons.map((button) => ({{
+      filter: button.dataset.prFilter,
+      tagName: button.tagName,
+      className: button.className,
+      ariaPressed: button["aria-pressed"],
+    }}));
+    output.prTables = collectNodes(elements.get("pr-review-list"), (child) => child.tagName === "TABLE").map((child) => nodeText(child));
+    output.prRows = (elements.get("pr-review-list")?.children || []).map((child) => nodeText(child));
     output.summaryCards = (elements.get("overview-summary")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewRows = (elements.get("overview-pr-list")?.children || []).map((child) => nodeText(child) || child.className);
     output.overviewSavings = (elements.get("overview-savings-list")?.children || []).map((child) => nodeText(child) || child.className);
@@ -585,6 +621,35 @@ def sample_cloud_review(
     }
 
 
+def pr_run(
+    run_id: str,
+    repository: str,
+    pr_number: int,
+    status: str = "pending_human_review",
+    title: str = "Resize app",
+    reviewer: str | None = None,
+    savings: float = 70.0,
+    updated_at: str = "2026-07-26T00:05:00Z",
+) -> dict[str, object]:
+    run = json.loads(json.dumps(sample_run()))
+    run["id"] = run_id
+    run["status"] = status
+    run["created_at"] = "2026-07-26T00:00:00Z"
+    run["updated_at"] = updated_at
+    run["source_type"] = "terraform_pr"
+    run["github_source"]["repository"] = repository
+    run["github_source"]["pull_request_number"] = pr_number
+    run["github_source"]["pull_request_title"] = title
+    run["github_source"]["head_branch"] = f"feature/pr-{pr_number}"
+    run["decision_record"]["alternatives"][0]["estimated_monthly_savings"] = savings
+    run["decision_record"]["confidence"]["final_confidence"] = 0.7 + (min(savings, 100) / 500)
+    run["mock_pr"]["monthly_savings"] = savings
+    run["mock_pr"]["annual_savings"] = savings * 12
+    if reviewer:
+      run["human_reviews"] = [{"reviewer": reviewer, "action": "approve" if status in {"approved", "pr_created"} else "reject", "comment": None, "requested_sources": [], "modified_action": None, "human_context": None, "created_at": "2026-07-26T00:08:00Z"}]
+    return run
+
+
 def test_simple_view_renders_real_github_case_story_and_hides_invalid_actions() -> None:
     rendered = render_frontend({"run": sample_run(), "reviews": []})
 
@@ -642,11 +707,128 @@ def test_no_case_empty_states_and_demo_modal_are_separated_from_normal_review_fl
     assert "Prepared case" not in root
     assert rendered["pr-empty-state"]["hidden"] is False
     assert rendered["case-view"]["hidden"] is True
+    assert "PR review history" in root
+    assert "Needs Attention" in root
+    assert any("No PR reviews yet" in row for row in rendered["prRows"])
+    assert "Times shown in" in rendered["pr-timezone-note"]["text"]
     assert rendered["demo-modal-backdrop"]["hidden"] is False
     assert rendered["technical-content"]["hidden"] is True
     assert rendered["technical-empty-state"]["hidden"] is False
     assert "Demo scenario" in root
     assert "Demo objective" in root
+
+
+def test_pr_reviews_list_shows_multiple_cases_with_readable_statuses_and_timestamps() -> None:
+    runs = [
+        pr_run("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "demo/api", 42, status="pending_human_review", savings=70),
+        pr_run("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "demo/worker", 43, status="needs_more_evidence", title="Collect owner context", savings=25),
+        pr_run("cccccccc-cccc-cccc-cccc-cccccccccccc", "demo/archive", 44, status="pr_created", reviewer="judge", savings=120),
+    ]
+
+    rendered = render_frontend({"run": None, "reviews": [], "pr_reviews": runs, "mode": "simple"})
+    table_text = " ".join(rendered["prTables"])
+
+    assert rendered["pr-empty-state"]["hidden"] is False
+    assert rendered["case-view"]["hidden"] is True
+    assert "demo/api" in table_text
+    assert "demo/worker" in table_text
+    assert "demo/archive" not in table_text
+    assert "Awaiting Human Review" in table_text
+    assert "More Evidence Required" in table_text
+    assert "pending_human_review" not in table_text
+    assert "needs_more_evidence" not in table_text
+    assert "View Review" in table_text
+    assert rendered["pr-filter-count-all"]["text"] == "3"
+    assert rendered["pr-filter-count-needs-attention"]["text"] == "2"
+    assert rendered["pr-filter-count-completed"]["text"] == "1"
+    assert rendered["pr-pagination-summary"]["text"] == "Showing 1-2 of 2 reviews"
+
+
+def test_pr_reviews_filters_search_sort_pagination_and_history_work() -> None:
+    runs = [
+        pr_run("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "demo/api", 42, status="pending_human_review", title="Resize api", savings=70, updated_at="2026-07-26T00:05:00Z"),
+        pr_run("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "demo/worker", 43, status="blocked", title="Delete worker", savings=10, updated_at="2026-07-26T00:08:00Z"),
+        pr_run("cccccccc-cccc-cccc-cccc-cccccccccccc", "demo/archive", 44, status="pr_created", reviewer="judge", title="Archive cleanup", savings=120, updated_at="2026-07-26T00:12:00Z"),
+    ]
+
+    all_rows = render_frontend({"run": None, "reviews": [], "pr_reviews": runs, "mode": "simple", "pr_filters": {"group": "all", "sort": "savings_desc", "pageSize": 2}})
+    assert "demo/archive" in " ".join(all_rows["prTables"])
+    assert all_rows["pr-pagination-summary"]["text"] == "Showing 1-2 of 3 reviews"
+
+    searched = render_frontend({"run": None, "reviews": [], "pr_reviews": runs, "mode": "simple", "pr_filters": {"group": "all", "search": "worker"}})
+    searched_text = " ".join(searched["prTables"])
+    assert "demo/worker" in searched_text
+    assert "demo/api" not in searched_text
+
+    blocked = render_frontend({"run": None, "reviews": [], "pr_reviews": runs, "mode": "simple", "pr_filters": {"group": "blocked"}})
+    assert "Policy Blocked" in " ".join(blocked["prTables"])
+    assert blocked["pr-pagination-summary"]["text"] == "Showing 1-1 of 1 reviews"
+
+    completed = render_frontend({"run": None, "reviews": [], "pr_reviews": runs, "mode": "simple", "pr_filters": {"group": "completed"}})
+    assert "Remediation PR Created" in " ".join(completed["prTables"])
+    assert "judge" in " ".join(completed["prTables"])
+
+
+def test_pr_reviews_list_to_detail_back_and_new_review_notice_preserve_selection() -> None:
+    first = pr_run("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "demo/api", 42)
+    second = pr_run("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "demo/new", 45)
+
+    selected = render_frontend({
+        "run": None,
+        "reviews": [],
+        "pr_reviews": [first],
+        "mode": "simple",
+        "select_pr_run_id": first["id"],
+    })
+
+    assert selected["case-view"]["hidden"] is False
+    assert selected["pr-empty-state"]["hidden"] is True
+    assert selected["source-repository"]["text"] == "demo/api"
+    assert selected["selectedReviewContext"]["source"] == "pr-reviews"
+    assert "Received:" in selected["case-received-time"]["text"]
+    assert "Last updated:" in selected["case-updated-time"]["text"]
+
+    back = render_frontend({
+        "run": first,
+        "reviews": [],
+        "pr_reviews": [first],
+        "mode": "simple",
+        "back_to_pr_list": True,
+    })
+    assert back["pr-empty-state"]["hidden"] is False
+    assert back["case-view"]["hidden"] is True
+
+    notice = render_frontend({
+        "run": first,
+        "reviews": [],
+        "api_runs": [first, second],
+        "known_pr_review_ids": [first["id"]],
+        "mode": "simple",
+        "call_load_pr_reviews": True,
+        "show_pr_notice": True,
+    })
+    assert notice["case-view"]["hidden"] is False
+    assert notice["source-repository"]["text"] == "demo/api"
+    assert notice["pr-new-review-notice"]["hidden"] is False
+    assert notice["pr-new-review-text"]["text"] == "1 new PR review available"
+
+
+def test_pr_reviews_loading_and_error_states_render() -> None:
+    loading = {
+        "initial": False,
+        "reviews": False,
+        "prReviews": True,
+        "cloudHunt": False,
+        "run": False,
+        "review": False,
+        "assistant": False,
+    }
+    loading_view = render_frontend({"run": None, "reviews": [], "pr_reviews": [], "mode": "simple", "loading": loading})
+    assert loading_view["prRows"]
+    assert loading_view["pr-pagination-summary"]["text"] == "Loading reviews"
+
+    error_view = render_frontend({"run": None, "reviews": [], "pr_reviews": [], "mode": "simple", "pr_review_error": "Failed to load PR reviews."})
+    assert error_view["pr-review-error"]["hidden"] is False
 
 
 def test_review_queue_and_cloud_hunt_views_remain_functional() -> None:

@@ -6,7 +6,7 @@
     <title>GhostBusters</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="/static/styles.css?v=judge-v6" />
+    <link rel="stylesheet" href="/static/styles.css?v=judge-v7" />
   </head>
   <body>
     <div class="app-shell">
@@ -128,14 +128,48 @@
           </section>
 
           <div id="simple-view" class="page-enter" hidden>
-            <section class="panel empty-state-panel" id="pr-empty-state" aria-labelledby="empty-state-title">
-              <p class="kicker">Terraform PR Reviews</p>
-              <h2 id="empty-state-title" class="section-title">No review selected.</h2>
-              <p class="empty-copy">Open a case from Approvals or wait for a GitHub pull request to create a new review automatically.</p>
-              <div class="empty-actions">
-                <button id="open-approvals-button" type="button">Open Approvals</button>
-                <button id="refresh-button" class="secondary" type="button">Refresh Reviews</button>
-                <button id="launch-demo-button" class="secondary" type="button">Launch Demo</button>
+            <section class="panel pr-review-list-panel" id="pr-empty-state" aria-labelledby="pr-review-list-title">
+              <div class="section-heading">
+                <div>
+                  <p class="kicker">Terraform PR Reviews</p>
+                  <h2 id="pr-review-list-title" class="section-title">PR review history</h2>
+                  <p class="empty-copy">Search, filter, and reopen Terraform pull-request reviews without interrupting the selected case.</p>
+                </div>
+                <div class="toolbar-actions">
+                  <button id="launch-demo-button" type="button">Launch Demo</button>
+                  <button id="refresh-button" class="secondary" type="button">Refresh Reviews</button>
+                </div>
+              </div>
+              <div id="pr-new-review-notice" class="notice-row" hidden>
+                <span id="pr-new-review-text">1 new PR review available</span>
+                <button id="pr-notice-refresh-button" class="secondary compact" type="button">Refresh List</button>
+              </div>
+              <div class="filter-row pr-filter-row" aria-label="PR review status filters">
+                <button class="filter-chip filter-chip-active" type="button" data-pr-filter="needs-attention" aria-pressed="true">Needs Attention <span id="pr-filter-count-needs-attention">0</span></button>
+                <button class="filter-chip" type="button" data-pr-filter="all" aria-pressed="false">All <span id="pr-filter-count-all">0</span></button>
+                <button class="filter-chip" type="button" data-pr-filter="in-progress" aria-pressed="false">In Progress <span id="pr-filter-count-in-progress">0</span></button>
+                <button class="filter-chip" type="button" data-pr-filter="completed" aria-pressed="false">Completed <span id="pr-filter-count-completed">0</span></button>
+                <button class="filter-chip" type="button" data-pr-filter="blocked" aria-pressed="false">Blocked <span id="pr-filter-count-blocked">0</span></button>
+              </div>
+              <div class="pr-review-controls" aria-label="PR review search and sort">
+                <div><label for="pr-search-input">Search</label><input id="pr-search-input" placeholder="Repository, PR number, title, branch, resource, recommendation, reviewer" /></div>
+                <div><label for="pr-repository-filter">Repository</label><select id="pr-repository-filter"><option value="">All repositories</option></select></div>
+                <div><label for="pr-status-filter">Status</label><select id="pr-status-filter"><option value="">All statuses</option></select></div>
+                <div><label for="pr-recommendation-filter">Recommendation</label><select id="pr-recommendation-filter"><option value="">All recommendations</option></select></div>
+                <div><label for="pr-reviewer-filter">Reviewer</label><select id="pr-reviewer-filter"><option value="">All reviewers</option></select></div>
+                <div><label for="pr-date-filter">Date range</label><select id="pr-date-filter"><option value="all">All time</option><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="completed">Completed</option><option value="approved">Approved</option><option value="rejected">Rejected</option><option value="pr_created">Remediation PR Created</option></select></div>
+                <div><label for="pr-sort-select">Sort</label><select id="pr-sort-select"><option value="updated_desc">Last updated</option><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="savings_desc">Highest savings</option><option value="risk_desc">Highest risk</option><option value="confidence_desc">Highest confidence</option></select></div>
+                <div><label for="pr-page-size-select">Rows</label><select id="pr-page-size-select"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></div>
+              </div>
+              <p class="timezone-note" id="pr-timezone-note">Times shown in browser timezone</p>
+              <div id="pr-review-error" class="error-callout" hidden><span>Could not load PR reviews.</span><button id="pr-retry-button" class="secondary compact" type="button">Retry</button></div>
+              <div id="pr-review-list" class="responsive-table pr-review-table"></div>
+              <div class="pagination-row">
+                <span id="pr-pagination-summary">0 reviews</span>
+                <div class="toolbar-actions">
+                  <button id="pr-prev-page-button" class="secondary compact" type="button">Previous</button>
+                  <button id="pr-next-page-button" class="secondary compact" type="button">Next</button>
+                </div>
               </div>
               <p class="message" id="ui-message" role="status"></p>
             </section>
@@ -149,6 +183,7 @@
                   <h2 id="start-title" class="section-title">Terraform PR Review</h2>
                 </div>
                 <div class="toolbar-actions">
+                  <button id="back-pr-list-button" class="secondary compact" type="button">Back to PR Reviews</button>
                   <button id="case-refresh-button" class="icon-button" type="button" title="Refresh current run" aria-label="Refresh current run">↻</button>
                   <button id="ask-case-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button>
                   <button id="case-launch-demo-button" class="secondary compact" type="button">Launch Demo</button>
@@ -160,6 +195,13 @@
                 <div class="case-status-card"><span>Human decision</span><strong id="human-decision-summary">Awaiting a reviewer</strong></div>
                 <div class="case-status-card"><span>Current recommendation</span><strong id="recommendation-summary">Waiting for review</strong></div>
                 <div class="case-status-card" id="evidence-source-card" hidden><span>Evidence source</span><strong id="evidence-source-label">Prepared fixtures</strong></div>
+              </div>
+              <div class="case-timestamp-row" aria-label="PR review timestamps">
+                <span id="case-received-time">Received: Not recorded</span>
+                <span id="case-updated-time">Last updated: Not recorded</span>
+                <span id="case-recommendation-time">Recommendation completed: Not recorded</span>
+                <span id="case-decision-time">Decision: Not recorded</span>
+                <span id="case-result-time">Result: Not recorded</span>
               </div>
               <p class="planning-note" id="planning-note"></p>
             </section>
@@ -529,6 +571,6 @@
       </aside>
     </div>
 
-    <script src="/static/app.js?v=judge-v6" defer></script>
+    <script src="/static/app.js?v=judge-v7" defer></script>
   </body>
 </html>

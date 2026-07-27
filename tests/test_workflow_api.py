@@ -40,6 +40,20 @@ def test_workflow_api_start_get_approve_and_reset() -> None:
     assert client.get("/api/runs").json() == []
 
 
+def test_workflow_api_lists_multiple_runs_without_creating_new_records() -> None:
+    first = client.post("/api/runs", json={"goal": "reduce cost", "scenario_name": "safe", "idempotency_key": "case-1"}).json()
+    second = client.post("/api/runs", json={"goal": "need context", "scenario_name": "missing_evidence", "idempotency_key": "case-2"}).json()
+
+    listed = client.get("/api/runs")
+    listed_again = client.get("/api/runs")
+
+    assert listed.status_code == 200
+    assert {item["id"] for item in listed.json()} == {first["id"], second["id"]}
+    assert len(listed_again.json()) == 2
+    assert all(item["created_at"] for item in listed.json())
+    assert all(item["updated_at"] for item in listed.json())
+
+
 def test_workflow_api_invalid_states_and_missing_resources() -> None:
     blocked = client.post("/api/runs", json={"goal": "check", "scenario_name": "destructive"}).json()
     approval = client.post(
