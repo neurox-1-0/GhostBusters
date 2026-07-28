@@ -314,6 +314,8 @@ class EvidenceItem(AppModel):
     pull_request_number: int | None = None
     source_mode: str | None = None
     correlation_id: str | None = None
+    project_key: str | None = None
+    issue_key: str | None = None
 
 
 class ExternalCallEvent(AppModel):
@@ -734,6 +736,7 @@ class WorkflowRun(AppModel):
     stop_reason: str | None = None
     final_outcome: str | None = None
     github_context: dict[str, Any] | None = None
+    jira_context: dict[str, Any] | None = None
 
 
 class CloudResource(AppModel):
@@ -894,6 +897,31 @@ class GitHubIntegrationConfigRequest(AppModel):
     installation_identity: str | None = None
     allowed_repositories: list[str] | None = None
     source_mode: str | None = None
+
+
+class JiraIntegrationConfig(AppModel):
+    organization_id: UUID
+    enabled: bool = False
+    base_url: str | None = None
+    allowed_projects: list[str] = Field(default_factory=list)
+    source_mode: str = "real_jira"
+    created_at: datetime
+    updated_at: datetime
+    last_validated: datetime | None = None
+    last_successful_collection: datetime | None = None
+    last_failure_summary: str | None = None
+
+
+class JiraIntegrationConfigRequest(AppModel):
+    enabled: bool | None = None
+    base_url: str | None = None
+    allowed_projects: list[str] | None = None
+    source_mode: str | None = None
+
+
+class JiraContextRequest(AppModel):
+    issue_key: str | None = None
+    project_key: str | None = None
 
 
 class WaiverRequest(AppModel):

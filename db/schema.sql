@@ -244,6 +244,21 @@ CREATE TABLE IF NOT EXISTS github_integration_configs (
     last_failure_summary TEXT
 );
 
+-- Jira credentials remain in external secrets. Production deployments need versioned migrations.
+CREATE TABLE IF NOT EXISTS jira_integration_configs (
+    organization_id UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    base_url TEXT,
+    allowed_projects JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_mode TEXT NOT NULL DEFAULT 'real_jira',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    last_validated TIMESTAMPTZ,
+    last_successful_collection TIMESTAMPTZ,
+    last_failure_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS jira_integration_configs_updated_idx ON jira_integration_configs(organization_id, updated_at);
+
 -- Milestone 2 additive schema. Production deployments should replace this
 -- bootstrap file with ordered, versioned migrations before rollout.
 CREATE TABLE IF NOT EXISTS human_decision_events (

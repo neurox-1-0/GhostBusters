@@ -110,6 +110,18 @@ def create_investigation_plan(
                 select(tool_name, reason)
                 _add_question(questions, question_id, reason, [tool_name])
 
+    jira_requested = any(term in goal.lower() for term in ("jira", "business context", "issue", "decommission", "migration"))
+    if jira_requested:
+        for tool_name, reason, question_id in (
+            ("jira_project_context", "Jira project context is relevant to this investigation.", "jira_project_context"),
+            ("jira_issue_context", "Jira issue status and ownership should be checked.", "jira_issue_context"),
+            ("jira_activity", "Recent Jira activity helps establish freshness.", "jira_activity"),
+            ("jira_ownership", "Jira ownership is needed before routing business decisions.", "jira_ownership"),
+        ):
+            if tool_name in available_tools:
+                select(tool_name, reason)
+                _add_question(questions, question_id, reason, [tool_name])
+
     instance_type_changed = resource.current_instance_type != resource.proposed_instance_type
     dependency_known = bool(scenario.dependencies.get("active_downstream_dependencies")) or bool(
         scenario.dependencies.get("blocking_services")

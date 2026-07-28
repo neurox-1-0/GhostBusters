@@ -19,6 +19,7 @@ from app.models import (
     GoalContextRequest, GoalCreateRequest,
     AWSIntegrationConfigRequest,
     GitHubIntegrationConfigRequest,
+    JiraIntegrationConfigRequest, JiraContextRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -50,6 +51,9 @@ from app.auth import (
     INTEGRATIONS_AWS_MANAGE,
     INTEGRATIONS_GITHUB_READ,
     INTEGRATIONS_GITHUB_MANAGE,
+    INTEGRATIONS_JIRA_READ,
+    INTEGRATIONS_JIRA_MANAGE,
+    BUSINESS_CONTEXT_READ,
     REPOSITORY_CONTEXT_READ,
     WORKSPACE_READ,
     Principal,
@@ -76,6 +80,7 @@ from core.workflow_service import (
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntNotFoundError, cloud_hunt_service
 from core.aws_integration import aws_integration_store
 from core.github_integration import github_integration_store
+from core.jira_integration import jira_integration_store
 from core.assistant_service import AssistantValidationError, assistant_service
 from integrations.github_client import GitHubAPIError
 from integrations.github_webhook import repository_allowed, verify_signature
@@ -83,6 +88,8 @@ from integrations.terraform_runner import TerraformAnalysisError, parse_github_t
 from integrations.cloud_adapters import RealAWSCloudAdapter
 from integrations.cloud_registry import CloudProviderRegistry
 from integrations.github_context import GitHubContextAdapter
+from integrations.jira_client import JiraAPIError, JiraClient
+from integrations.jira_context import JiraContextAdapter, detect_jira_github_conflict
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
@@ -789,6 +796,7 @@ def reset_runs() -> dict[str, str]:
     decision_event_store.reset()
     aws_integration_store.reset()
     github_integration_store.reset()
+    jira_integration_store.reset()
     return result
 
 
@@ -825,6 +833,60 @@ def get_github_config(principal: Principal = Depends(principal_dependency)):
 def update_github_config(request: GitHubIntegrationConfigRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, INTEGRATIONS_GITHUB_MANAGE)
     return github_integration_store.update(principal.organization_id, request)
+
+
+@app.get("/api/integrations/jira/config")
+def get_jira_config(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_JIRA_READ)
+    return jira_integration_store.get(principal.organization_id)
+
+
+@app.patch("/api/integrations/jira/config")
+def update_jira_config(request: JiraIntegrationConfigRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_JIRA_MANAGE)
+    return jira_integration_store.update(principal.organization_id, request)
+
+
+@app.post("/api/integrations/jira/validate")
+def validate_jira_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, INTEGRATIONS_JIRA_READ)
+    config = jira_integration_store.get(principal.organization_id)
+    base_url = config.base_url or settings.jira_base_url
+    if not base_url or not settings.jira_api_token:
+        result = {"connected": False, "account_identity": None, "accessible_projects": [], "permission_warnings": [], "missing_permissions": ["Jira credentials or base URL are unavailable."], "checked_at": utc_now()}
+    else:
+        result = JiraContextAdapter(JiraClient(base_url, settings.jira_email, settings.jira_api_token, settings.jira_request_timeout_seconds), config.allowed_projects, config.source_mode).validate()
+    jira_integration_store.mark_validation(principal.organization_id, bool(result["connected"]), "; ".join(result["missing_permissions"]))
+    auth_store.record_activity(principal.organization_id, "jira_validation_succeeded" if result["connected"] else "jira_validation_failed", principal.user.id if principal.user else None, {"account_identity": result["account_identity"], "missing_permissions": result["missing_permissions"]}, actor_type="Integration", category="Integrations", result="success" if result["connected"] else "failure")
+    return result
+
+
+@app.post("/api/runs/{run_id}/jira-context", response_model=WorkflowRun)
+def collect_jira_context(run_id: UUID, request: JiraContextRequest, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, BUSINESS_CONTEXT_READ)
+    try:
+        run = workflow_service.get_run(run_id)
+        if run.organization_id != principal.organization_id: raise RunNotFoundError(str(run_id))
+        config = jira_integration_store.get(principal.organization_id)
+        base_url = config.base_url or settings.jira_base_url
+        if not base_url or not settings.jira_api_token: raise HTTPException(status_code=503, detail="Jira credentials are unavailable.")
+        adapter = JiraContextAdapter(JiraClient(base_url, settings.jira_email, settings.jira_api_token, settings.jira_request_timeout_seconds), config.allowed_projects, config.source_mode)
+        if not request.issue_key and not request.project_key: raise HTTPException(status_code=422, detail="An issue key or project key is required.")
+        context = adapter.collect_issue_context(request.issue_key, run.correlation_id) if request.issue_key else adapter.collect_project_context(request.project_key, run.correlation_id)
+        run.jira_context = context
+        conflict = detect_jira_github_conflict(context, run.github_context)
+        if conflict:
+            context["conflict"] = conflict
+            append_audit_event(run, event_type="jira_github_conflict", actor="tool", summary=conflict["summary"], details=conflict)
+        append_audit_event(run, event_type="jira_context_collected", actor="tool", summary="Read-only Jira business context collected.", details={"project_key": context.get("project_key"), "issue_key": context.get("issue_key")})
+        run = workflow_service.store.update(run_id, run, principal.organization_id)
+        jira_integration_store.mark_collection(principal.organization_id, True)
+        auth_store.record_activity(principal.organization_id, "jira_context_collected", principal.user.id if principal.user else None, {"run_id": str(run_id), "project_key": context.get("project_key"), "issue_key": context.get("issue_key"), "correlation_id": run.correlation_id}, actor_type="Integration", category="Integrations", related_run_id=run_id)
+        return run
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail="Run not found.") from exc
+    except JiraAPIError as exc:
+        jira_integration_store.mark_collection(principal.organization_id, False, str(exc))
+        raise HTTPException(status_code=403 if exc.category == "authorization" else 409, detail=str(exc)) from exc
 
 
 @app.post("/api/integrations/github/validate")

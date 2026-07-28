@@ -78,6 +78,11 @@ class Settings:
     github_api_base_url: str = os.getenv("GITHUB_API_BASE_URL", "https://api.github.com")
     github_request_timeout_seconds: float = float(os.getenv("GITHUB_REQUEST_TIMEOUT_SECONDS", "10"))
     github_integration_config_path: Path = Path(os.getenv("GITHUB_INTEGRATION_CONFIG_PATH", ".runtime/github_integrations.json"))
+    jira_base_url: str | None = os.getenv("JIRA_BASE_URL") or None
+    jira_email: str | None = os.getenv("JIRA_EMAIL") or None
+    jira_api_token: str | None = os.getenv("JIRA_API_TOKEN") or os.getenv("JIRA_TOKEN") or None
+    jira_request_timeout_seconds: float = float(os.getenv("JIRA_REQUEST_TIMEOUT_SECONDS", "10"))
+    jira_integration_config_path: Path = Path(os.getenv("JIRA_INTEGRATION_CONFIG_PATH", ".runtime/jira_integrations.json"))
     github_demo_repository: str | None = os.getenv("GITHUB_DEMO_REPOSITORY") or None
     github_remediation_branch_prefix: str = os.getenv("GITHUB_REMEDIATION_BRANCH_PREFIX", "ghostbusters/remediation")
     github_create_real_pr: bool = os.getenv("GITHUB_CREATE_REAL_PR", "false").lower() in {"1", "true", "yes"}

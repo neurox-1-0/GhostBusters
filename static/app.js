@@ -47,6 +47,8 @@ const state = {
   awsValidation: null,
   githubConfig: null,
   githubValidation: null,
+  jiraConfig: null,
+  jiraValidation: null,
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -1364,6 +1366,29 @@ async function validateGitHubConnection() {
     $("github-permission-warnings").textContent = [...(result.permission_warnings || []), ...(result.missing_permissions || [])].join("; ") || "None recorded";
     setMessage("github-message", result.connected ? "GitHub identity validated for read-only context." : "GitHub validation failed safely.", result.connected);
   }, "Validated").catch((error) => setMessage("github-message", friendlyError(error, "GitHub validation failed.")));
+}
+
+async function loadJiraConfig() {
+  try { state.jiraConfig = await api("/api/integrations/jira/config"); renderJiraConfig(); } catch (error) { setMessage("jira-message", friendlyError(error, "Jira settings unavailable.")); }
+}
+function renderJiraConfig() {
+  const config = state.jiraConfig || {}; const validation = state.jiraValidation || {};
+  if ($("jira-enabled-select")) $("jira-enabled-select").value = String(Boolean(config.enabled));
+  if ($("jira-base-url-input")) $("jira-base-url-input").value = config.base_url || "";
+  if ($("jira-projects-input")) $("jira-projects-input").value = (config.allowed_projects || []).join(", ");
+  if ($("jira-connection-status")) { $("jira-connection-status").textContent = validation.connected ? "Connected" : config.last_validated ? "Unavailable" : "Not checked"; }
+  if ($("jira-account-id")) $("jira-account-id").textContent = validation.account_identity || "Not checked";
+  if ($("jira-project-list")) $("jira-project-list").textContent = (validation.accessible_projects || []).join(", ") || "Not checked";
+  if ($("jira-last-checked")) $("jira-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
+  if ($("jira-permission-warnings")) $("jira-permission-warnings").textContent = (validation.permission_warnings || []).join("; ") || "None recorded";
+}
+async function saveJiraConfig() {
+  try { state.jiraConfig = await api("/api/integrations/jira/config", { method: "PATCH", body: JSON.stringify({ enabled: $("jira-enabled-select").value === "true", base_url: $("jira-base-url-input").value.trim() || null, allowed_projects: $("jira-projects-input").value.split(",").map((item) => item.trim()).filter(Boolean) }) }); renderJiraConfig(); setMessage("jira-message", "Jira settings saved. Token material remains server-side.", true); } catch (error) { setMessage("jira-message", friendlyError(error, "Jira settings could not be saved.")); }
+}
+async function validateJiraConnection() {
+  return withButtonState("jira-validate-button", "Validating...", async () => {
+    const result = await api("/api/integrations/jira/validate", { method: "POST", body: "{}" }); state.jiraValidation = result; state.jiraConfig = await api("/api/integrations/jira/config"); renderJiraConfig(); setMessage("jira-message", result.connected ? "Jira identity validated for read-only context." : "Jira validation failed safely.", result.connected);
+  }, "Validated").catch((error) => setMessage("jira-message", friendlyError(error, "Jira validation failed.")));
 }
 
 async function collectGitHubContext() {
@@ -2694,7 +2719,7 @@ function renderAll() {
   $("case-view").hidden = !hasSelectedCase();
   renderIdentity();
   renderAssistantTriggers();
-  renderStatus(); renderSource(); renderGitHubContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
+  renderStatus(); renderSource(); renderGitHubContext(); renderJiraContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
   renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
@@ -2711,6 +2736,20 @@ function renderGitHubContext() {
   $("github-context-summary").textContent = context ? `${context.pr?.title || "Pull request context"} · ${context.repository_default_branch || "default branch not recorded"} · Source mode: ${context.source_mode || "real_github"}` : "Context is collected read-only from the configured GitHub source.";
   const ownership = $("github-context-ownership"); clear(ownership);
   (context?.ownership || []).forEach((item) => ownership.appendChild(el("p", "muted", `${item.path}: ${item.owners?.join(", ") || "Unknown owner"} (${item.matched_pattern || "no matching pattern"})`)));
+}
+
+function renderJiraContext() {
+  const panel = $("jira-context-panel"); if (!panel) return;
+  const context = state.run?.jira_context;
+  panel.hidden = !context;
+  if (!context) return;
+  $("jira-context-project").textContent = context.project_key || "Not recorded";
+  $("jira-context-issue").textContent = context.issue_key || "Not recorded";
+  $("jira-context-status").textContent = context.issue?.status || "Not recorded";
+  $("jira-context-owner").textContent = context.ownership?.owner || "Unknown";
+  $("jira-context-summary").textContent = `Source mode: ${context.source_mode || "Real Jira"}. Activity reliability: ${Math.round(Number(context.activity?.reliability || 0) * 100)}%.`;
+  const signals = $("jira-context-signals"); clear(signals);
+  (context.signals || []).forEach((signal) => signals.appendChild(el("span", "status-badge status-warning", labelFor(signal.type || "signal"))));
 }
 
 function renderAssistantTriggers() {
@@ -2744,7 +2783,7 @@ function switchMode(mode) {
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
   if (mode === "settings") loadAWSConfig();
-  if (mode === "settings") loadGitHubConfig();
+  if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); }
   if (mode === "activity") loadActivity();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
@@ -3385,6 +3424,8 @@ function bindEvents() {
   on("aws-validate-button", "click", validateAWSConnection);
   on("github-save-button", "click", saveGitHubConfig);
   on("github-validate-button", "click", validateGitHubConnection);
+  on("jira-save-button", "click", saveJiraConfig);
+  on("jira-validate-button", "click", validateJiraConnection);
   on("collect-github-context-button", "click", collectGitHubContext);
   on("invite-member-button", "click", openInviteModal);
   on("invite-close-button", "click", closeInviteModal);
