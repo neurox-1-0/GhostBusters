@@ -5,7 +5,7 @@ from app.main import app
 
 def test_goals_expose_structured_journey_and_retain_state() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     first = client.post("/api/goals", json={"goal": "Reduce cost", "scenario_name": "safe", "scope": "AWS production"})
     assert first.status_code == 201
     run = first.json()
@@ -24,7 +24,7 @@ def test_goals_expose_structured_journey_and_retain_state() -> None:
 
 def test_different_goal_paths_and_safe_cancel() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     cost = client.post("/api/goals", json={"goal": "Optimize monthly cost", "scenario_name": "safe"}).json()
     dependency = client.post("/api/goals", json={"goal": "Explain dependency risk", "scenario_name": "dependency"}).json()
     assert cost["id"] != dependency["id"]

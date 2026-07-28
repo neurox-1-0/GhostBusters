@@ -34,7 +34,7 @@ def test_valid_signature_allowlist_and_duplicate(monkeypatch) -> None:
     monkeypatch.setattr(main_module.workflow_service, "github_client", FakeGitHub())
     monkeypatch.setattr(main_module, "webhook_deduplicator", NoopWebhookDeduplicator())
     client = TestClient(main_module.app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     payload = {"action": "opened", "number": 42, "repository": {"full_name": "demo/infra"}, "pull_request": {"number": 42}}
     first = signed_request(client, payload, secret)
     duplicate = signed_request(client, payload, secret)
@@ -117,7 +117,7 @@ def test_authenticated_redelivery_repairs_legacy_review_in_place(monkeypatch) ->
     cached_delivery = CachedLegacyDelivery()
     monkeypatch.setattr(main_module, "webhook_deduplicator", cached_delivery)
     client = TestClient(main_module.app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     legacy, _ = main_module.workflow_service.start_run(
         StartRunRequest(
             goal="Analyze a Terraform pull request for safe FinOps remediation.",

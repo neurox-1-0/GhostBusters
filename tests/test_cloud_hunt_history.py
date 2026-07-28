@@ -5,7 +5,7 @@ from app.main import app
 
 def test_cloud_hunt_history_retains_runs_and_links_findings() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     first = client.post("/api/cloud/hunts", json={"provider_scope": "aws", "inventory_source": "fixtures"}).json()
     second = client.post("/api/cloud/hunts", json={"provider_scope": "gcp", "inventory_source": "fixtures"}).json()
 
@@ -31,7 +31,7 @@ def test_cloud_hunt_history_retains_runs_and_links_findings() -> None:
 
 def test_cloud_hunt_history_filters_and_refresh_are_read_only() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     client.post("/api/cloud/hunts", json={"provider_scope": "aws"})
     client.post("/api/cloud/hunts", json={"provider_scope": "azure"})
     before = client.get("/api/cloud/hunts?page=1&page_size=100").json()
@@ -45,7 +45,7 @@ def test_cloud_hunt_history_filters_and_refresh_are_read_only() -> None:
 
 def test_cloud_hunt_fixture_mode_is_explicit() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     response = client.post("/api/cloud/hunts", json={"provider_scope": "multi_cloud", "inventory_source": "fixtures"})
     assert response.status_code == 200
     assert response.json()["data_source_mode"] == "Fixture-backed"

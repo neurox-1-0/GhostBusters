@@ -14,7 +14,7 @@ client = TestClient(app)
 def setup_function() -> None:
     # API unit tests must not depend on a live Redis service.
     main_module.webhook_deduplicator = NoopWebhookDeduplicator()
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
 
 
 def test_workflow_api_start_get_approve_and_reset() -> None:
@@ -35,7 +35,7 @@ def test_workflow_api_start_get_approve_and_reset() -> None:
     assert approved.json()["status"] == "pr_created"
     assert approved.json()["mock_pr"]["monthly_savings"] == 70
 
-    reset = client.post("/api/reset")
+    reset = client.post("/api/demo/reset", json={"confirm": True})
     assert reset.status_code == 200
     assert client.get("/api/runs").json() == []
 

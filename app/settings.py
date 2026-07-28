@@ -15,17 +15,24 @@ load_dotenv()
 @dataclass(frozen=True, slots=True)
 class Settings:
     service_name: str = os.getenv("SERVICE_NAME", "ghostbusters")
+    app_env: str = os.getenv("APP_ENV", "development").lower()
     static_dir: Path = Path(os.getenv("STATIC_DIR", "static"))
     database_url: str | None = os.getenv("DATABASE_URL")
     auth_persistence_path: Path = Path(os.getenv("AUTH_PERSISTENCE_PATH", ".runtime/auth_store.json"))
     redis_url: str | None = os.getenv("REDIS_URL")
     auth_required: bool = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes"}
     demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "true").lower() in {"1", "true", "yes"}
+    allow_production_demo_mode: bool = os.getenv("ALLOW_PRODUCTION_DEMO_MODE", "false").lower() in {"1", "true", "yes"}
+    secret_key: str | None = os.getenv("SECRET_KEY") or os.getenv("SESSION_SECRET") or None
+    trust_proxy_headers: bool = os.getenv("TRUST_PROXY_HEADERS", "false").lower() in {"1", "true", "yes"}
     session_cookie_name: str = os.getenv("SESSION_COOKIE_NAME", "ghostbusters_session")
     csrf_cookie_name: str = os.getenv("CSRF_COOKIE_NAME", "ghostbusters_csrf")
     session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
     login_rate_limit_attempts: int = int(os.getenv("LOGIN_RATE_LIMIT_ATTEMPTS", "5"))
     login_rate_limit_window_seconds: int = int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "300"))
+    auth_endpoint_rate_limit_attempts: int = int(os.getenv("AUTH_ENDPOINT_RATE_LIMIT_ATTEMPTS", "60"))
+    expensive_rate_limit_attempts: int = int(os.getenv("EXPENSIVE_RATE_LIMIT_ATTEMPTS", "30"))
+    expensive_rate_limit_window_seconds: int = int(os.getenv("EXPENSIVE_RATE_LIMIT_WINDOW_SECONDS", "60"))
     invitation_expiry_hours: int = int(os.getenv("INVITATION_EXPIRY_HOURS", "24"))
     invitation_email_enabled: bool = os.getenv("INVITATION_EMAIL_ENABLED", "false").lower() in {"1", "true", "yes"}
     invitation_from_email: str | None = os.getenv("INVITATION_FROM_EMAIL") or None
@@ -72,6 +79,7 @@ class Settings:
     cloud_hunt_schedule_config_path: Path = Path(os.getenv("CLOUD_HUNT_SCHEDULE_CONFIG_PATH", ".runtime/cloud_hunt_schedules.json"))
     cloud_hunt_schedule_interval_seconds: int = int(os.getenv("CLOUD_HUNT_SCHEDULE_INTERVAL_SECONDS", "60"))
     cloud_hunt_schedule_retry_attempts: int = int(os.getenv("CLOUD_HUNT_SCHEDULE_RETRY_ATTEMPTS", "2"))
+    scheduler_lock_ttl_seconds: int = int(os.getenv("SCHEDULER_LOCK_TTL_SECONDS", "120"))
     outcome_verification_config_path: Path = Path(os.getenv("OUTCOME_VERIFICATION_CONFIG_PATH", ".runtime/outcome_verifications.json"))
     aws_profile: str | None = os.getenv("AWS_PROFILE") or None
     aws_region: str | None = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None
@@ -102,4 +110,31 @@ class Settings:
 
 
 settings = Settings()
+
+
+def validate_startup_settings(config: Settings = settings) -> None:
+    """Fail closed for deployment settings while preserving local/demo defaults."""
+    if config.app_env != "production":
+        return
+    errors: list[str] = []
+    if not config.auth_required:
+        errors.append("AUTH_REQUIRED=true is required in production.")
+    if not config.secret_key or len(config.secret_key) < 32 or config.secret_key.lower() in {"change-me", "development", "dev-secret"}:
+        errors.append("SECRET_KEY (or SESSION_SECRET) must be a non-default value of at least 32 characters.")
+    if not config.database_url:
+        errors.append("DATABASE_URL is required in production.")
+    if not config.redis_url:
+        errors.append("REDIS_URL is required in production.")
+    if not config.cors_allowed_origins:
+        errors.append("CORS_ALLOWED_ORIGINS must be explicitly configured in production.")
+    if not config.trust_proxy_headers:
+        errors.append("TRUST_PROXY_HEADERS=true is required behind an HTTPS-aware proxy.")
+    if config.demo_mode_enabled and not config.allow_production_demo_mode:
+        errors.append("DEMO_MODE_ENABLED must be false unless ALLOW_PRODUCTION_DEMO_MODE=true.")
+    if config.github_integration_enabled and not config.github_webhook_secret:
+        errors.append("GITHUB_WEBHOOK_SECRET is required when GitHub webhooks are enabled.")
+    if config.auto_create_schema:
+        errors.append("AUTO_CREATE_SCHEMA=false is required; use the versioned migration command.")
+    if errors:
+        raise RuntimeError("Production configuration validation failed: " + " ".join(errors))
 

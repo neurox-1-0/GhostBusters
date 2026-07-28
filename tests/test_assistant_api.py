@@ -12,7 +12,7 @@ client = TestClient(app)
 
 def setup_function() -> None:
     main_module.webhook_deduplicator = NoopWebhookDeduplicator()
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
 
 
 def test_product_help_question_works_without_case_id() -> None:

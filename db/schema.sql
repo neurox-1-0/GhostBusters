@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS invitations (
 
 CREATE TABLE IF NOT EXISTS activity_events (
     id BIGSERIAL PRIMARY KEY,
+    event_id UUID UNIQUE,
     organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     event_type TEXT NOT NULL,
@@ -76,6 +77,7 @@ UPDATE invitations SET normalized_email = lower(email) WHERE normalized_email IS
 ALTER TABLE invitations ALTER COLUMN normalized_email SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS invitations_pending_email_idx ON invitations(organization_id, normalized_email) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS activity_events_org_idx ON activity_events(organization_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS activity_events_event_id_idx ON activity_events(event_id) WHERE event_id IS NOT NULL;
 
 -- Activity Log uses append-only rows. Production deployments should replace these
 -- additive statements with versioned migrations before changing this schema.

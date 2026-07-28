@@ -28,7 +28,7 @@ def register() -> tuple[TestClient, dict]:
             "timezone": "UTC",
         },
     ).json()
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     return client, profile
 
 

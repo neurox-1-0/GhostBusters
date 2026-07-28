@@ -1,0 +1,3 @@
+-- Baseline marker for the schema represented by db/schema.sql.
+-- Fresh local/demo databases may use db/schema.sql directly.
+-- Existing production databases must be stamped at this version only after review.

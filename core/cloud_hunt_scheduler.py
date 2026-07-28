@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import RLock
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from redis import Redis
+from redis.exceptions import RedisError
 
 from app.models import CloudHuntRequest, CloudHuntSchedule, CloudHuntScheduleRequest
 from app.settings import Settings, settings
@@ -44,6 +46,8 @@ def next_occurrence(schedule: CloudHuntSchedule, after: datetime) -> datetime:
 class ScheduleStore:
     def __init__(self, configuration: Settings = settings) -> None:
         self.path = Path(configuration.cloud_hunt_schedule_config_path)
+        self.redis = Redis.from_url(configuration.redis_url, decode_responses=True) if configuration.redis_url else None
+        self.redis_key = "ghostbusters:cloud-hunt-schedules"
         self._items: dict[UUID, CloudHuntSchedule] = {}
         self._lock = RLock()
         self._load()
@@ -77,10 +81,10 @@ class ScheduleStore:
             if expected_version is not None and expected_version != current.version: raise ValueError("Schedule version is stale. Refresh and try again.")
             updated = current.model_copy(update={"enabled": enabled, "updated_at": utc_now(), "version": current.version + 1})
             self._items[schedule_id] = updated; self._persist(); return updated.model_copy(deep=True)
-    def claim(self, schedule_id: UUID, trigger_key: str, now: datetime, organization_id: UUID) -> CloudHuntSchedule | None:
+    def claim(self, schedule_id: UUID, trigger_key: str, now: datetime, organization_id: UUID, force: bool = False) -> CloudHuntSchedule | None:
         with self._lock:
             current = self.get(schedule_id, organization_id)
-            if not current.enabled or current.active_run_id or current.last_trigger_key == trigger_key or current.next_run > now: return None
+            if not current.enabled or current.active_run_id or current.last_trigger_key == trigger_key or (current.next_run > now and not force): return None
             claimed = current.model_copy(update={"active_run_id": uuid4(), "last_trigger_key": trigger_key, "last_run": now, "updated_at": now, "version": current.version + 1})
             self._items[schedule_id] = claimed; self._persist(); return claimed.model_copy(deep=True)
     def finish(self, schedule_id: UUID, organization_id: UUID, success: bool, message: str | None, now: datetime) -> CloudHuntSchedule:
@@ -98,14 +102,29 @@ class ScheduleStore:
             self._items.clear()
             try: self.path.unlink(missing_ok=True)
             except OSError: pass
+            if self.redis is not None:
+                try: self.redis.delete(self.redis_key)
+                except RedisError: pass
     def _load(self) -> None:
-        try: payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError): return
+        try:
+            if self.redis is not None:
+                payload = self.redis.hgetall(self.redis_key)
+                for key, value in payload.items():
+                    try: self._items[UUID(key)] = CloudHuntSchedule.model_validate(json.loads(value))
+                    except Exception: continue
+                return
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RedisError): return
         for key, value in payload.items():
             try: self._items[UUID(key)] = CloudHuntSchedule.model_validate(value)
             except Exception: continue
     def _persist(self) -> None:
         try:
+            if self.redis is not None:
+                self.redis.delete(self.redis_key)
+                if self._items:
+                    self.redis.hset(self.redis_key, mapping={str(k): json.dumps(v.model_dump(mode="json")) for k, v in self._items.items()})
+                return
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_suffix(self.path.suffix + ".tmp")
             temp.write_text(json.dumps({str(k): v.model_dump(mode="json") for k, v in self._items.items()}), encoding="utf-8"); temp.replace(self.path)
@@ -114,10 +133,14 @@ class ScheduleStore:
 class CloudHuntScheduler:
     def __init__(self, service: CloudHuntService, store: ScheduleStore = None) -> None:
         self.service, self.store, self._lock = service, store or ScheduleStore(), RLock()
-    def trigger(self, schedule: CloudHuntSchedule, now: datetime | None = None):
-        now = now or utc_now(); key = f"schedule:{schedule.id}:{schedule.next_run.isoformat()}"
-        claimed = self.store.claim(schedule.id, key, now, schedule.organization_id)
-        if claimed is None: return None
+    def trigger(self, schedule: CloudHuntSchedule, now: datetime | None = None, force: bool = False):
+        now = now or utc_now(); key = f"schedule:{schedule.id}:{schedule.next_run.isoformat()}" if not force else f"manual:{schedule.id}:{uuid4()}"
+        lease = DistributedScheduleLease(self.store.redis, schedule, settings.scheduler_lock_ttl_seconds)
+        if not lease.acquire(): return None
+        claimed = self.store.claim(schedule.id, key, now, schedule.organization_id, force=force)
+        if claimed is None:
+            lease.release()
+            return None
         try:
             request = CloudHuntRequest(provider_scope=claimed.provider_scope, inventory_source=claimed.inventory_source, trigger_source="scheduled_cloud_hunt")
             registry_override = None
@@ -134,6 +157,8 @@ class CloudHuntScheduler:
         except Exception as exc:
             self.store.finish(claimed.id, claimed.organization_id, False, "Scheduled Cloud Hunt failed safely.", utc_now())
             return None
+        finally:
+            lease.release()
     def run_due(self, organization_id: UUID, now: datetime | None = None) -> list:
         now = now or utc_now(); results = []
         for schedule in self.store.list(organization_id):
@@ -141,5 +166,26 @@ class CloudHuntScheduler:
                 hunt = self.trigger(schedule, now)
                 if hunt is not None: results.append(hunt)
         return results
+
+
+class DistributedScheduleLease:
+    """Redis lease guarding one organization/schedule across workers."""
+    def __init__(self, redis: Redis | None, schedule: CloudHuntSchedule, ttl_seconds: int) -> None:
+        self.redis = redis
+        self.key = f"ghostbusters:cloud-hunt-lock:{schedule.organization_id}:{schedule.id}"
+        self.token = str(uuid4())
+        self.ttl_seconds = ttl_seconds
+
+    def acquire(self) -> bool:
+        if self.redis is None:
+            return True
+        try: return bool(self.redis.set(self.key, self.token, nx=True, ex=self.ttl_seconds))
+        except RedisError: return False
+
+    def release(self) -> None:
+        if self.redis is None: return
+        try:
+            self.redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, self.key, self.token)
+        except RedisError: return
 
 schedule_store = ScheduleStore()

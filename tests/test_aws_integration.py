@@ -89,7 +89,7 @@ def test_aws_partial_region_failure_is_recorded() -> None:
 
 def test_real_aws_mode_never_silently_falls_back_to_fixtures() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     assert client.patch("/api/integrations/aws/config", json={"enabled": True, "regions": ["us-east-1"]}).status_code == 200
     response = client.post("/api/cloud/hunts", json={"provider_scope": "aws", "inventory_source": "real_aws"})
     assert response.status_code == 409

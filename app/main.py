@@ -29,7 +29,7 @@ from app.models import (
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
 )
-from app.settings import settings
+from app.settings import settings, validate_startup_settings
 from app.auth import (
     APPROVALS_DECIDE,
     APPROVALS_REJECT,
@@ -102,9 +102,11 @@ from integrations.jira_client import JiraAPIError, JiraClient
 from integrations.jira_context import JiraContextAdapter, detect_jira_github_conflict
 from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
+from core.rate_limit import rate_limiter
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
+validate_startup_settings()
 if settings.cors_allowed_origins:
     app.add_middleware(
         CORSMiddleware,
@@ -133,7 +135,24 @@ def liveness() -> dict[str, str]:
 
 @app.get("/ready")
 def readiness() -> dict[str, object]:
-    return {"status": "ready", "database": "configured" if settings.database_url else "in_memory", "redis": "configured" if settings.redis_url else "not_configured"}
+    database = "in_memory"; redis = "not_configured"; errors: list[str] = []
+    if settings.database_url:
+        try:
+            import psycopg
+            with psycopg.connect(settings.database_url) as connection:
+                connection.execute("SELECT 1")
+            database = "ready"
+        except Exception:
+            database = "unavailable"; errors.append("database")
+    if settings.redis_url:
+        try:
+            from redis import Redis
+            Redis.from_url(settings.redis_url).ping()
+            redis = "ready"
+        except Exception:
+            redis = "unavailable"; errors.append("redis")
+    status = "ready" if not errors else "not_ready"
+    return {"status": status, "database": database, "redis": redis, "errors": errors}
 
 
 @app.get("/")
@@ -160,7 +179,8 @@ def principal_dependency(request: Request) -> Principal:
 
 
 @app.post("/api/auth/register", response_model=CurrentUserResponse, status_code=201)
-def register(request: RegisterRequest, response: Response) -> CurrentUserResponse:
+def register(request: RegisterRequest, fastapi_request: Request, response: Response) -> CurrentUserResponse:
+    rate_limiter.check(fastapi_request, "authentication", limit=settings.auth_endpoint_rate_limit_attempts, window_seconds=settings.login_rate_limit_window_seconds)
     user, organization, membership = auth_store.register_owner(
         request.email,
         request.display_name,
@@ -177,6 +197,7 @@ def register(request: RegisterRequest, response: Response) -> CurrentUserRespons
 
 @app.post("/api/auth/login", response_model=CurrentUserResponse)
 def login(request: LoginRequest, fastapi_request: Request, response: Response) -> CurrentUserResponse:
+    rate_limiter.check(fastapi_request, "authentication", limit=settings.auth_endpoint_rate_limit_attempts, window_seconds=settings.login_rate_limit_window_seconds)
     user, _, _ = auth_store.authenticate(request.email, request.password, fastapi_request.client.host if fastapi_request.client else "")
     csrf_token = secrets.token_urlsafe(32)
     session_id = session_store.create(user.id, csrf_token, utc_now() + timedelta(seconds=settings.session_ttl_seconds))
@@ -264,9 +285,7 @@ def list_activity(
     start, end = aware(created_from), aware(created_to)
     needle = (search or "").strip().lower()
     events = []
-    for event in auth_store.activity_events:
-        if event.get("organization_id") != principal.organization_id:
-            continue
+    for event in auth_store.list_activity_events(principal.organization_id):
         created_at = event.get("created_at")
         if not isinstance(created_at, datetime):
             continue
@@ -298,7 +317,7 @@ def list_activity(
 @app.get("/api/activity/{event_id}")
 def get_activity(event_id: UUID, principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
     require_permission(principal, ACTIVITY_READ)
-    event = next((item for item in auth_store.activity_events if item.get("id") == event_id and item.get("organization_id") == principal.organization_id), None)
+    event = auth_store.get_activity_event(principal.organization_id, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Activity event not found.")
     return _public_activity_event(event)
@@ -770,7 +789,8 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
 
 
 @app.post("/api/goals", response_model=WorkflowRun, status_code=201)
-def create_goal(request: GoalCreateRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    rate_limiter.check(fastapi_request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     require_permission(principal, GOALS_RUN)
     try:
         run, created = workflow_service.start_run(StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode), principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
@@ -795,14 +815,16 @@ def get_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)
 
 
 @app.post("/api/goals/{goal_id}/start", response_model=WorkflowRun)
-def start_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+def start_goal(goal_id: UUID, request: Request, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    rate_limiter.check(request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     require_permission(principal, GOALS_RUN)
     try: return workflow_service.get_run(goal_id, principal.organization_id)
     except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/goals/{goal_id}/continue", response_model=WorkflowRun)
-def continue_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+def continue_goal(goal_id: UUID, request: Request, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    rate_limiter.check(request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     require_permission(principal, GOALS_RUN)
     try: return workflow_service.get_run(goal_id, principal.organization_id)
     except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -835,19 +857,6 @@ def goal_events(goal_id: UUID, since_sequence: int = Query(0, ge=0), principal: 
     return [event for event in run.audit_events if event.sequence_number > since_sequence]
 
 
-@app.post("/api/reset")
-def reset_runs() -> dict[str, str]:
-    result = workflow_service.reset()
-    cloud_hunt_service.reset()
-    decision_event_store.reset()
-    aws_integration_store.reset()
-    github_integration_store.reset()
-    jira_integration_store.reset()
-    schedule_store.reset()
-    outcome_store.reset()
-    return result
-
-
 @app.get("/api/demo/readiness")
 def demo_readiness(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
     require_permission(principal, OVERVIEW_READ)
@@ -871,8 +880,9 @@ def demo_readiness(principal: Principal = Depends(principal_dependency)) -> dict
 
 
 @app.post("/api/demo/reset")
-def reset_demo_fixtures(request: DemoResetRequest, principal: Principal = Depends(principal_dependency)) -> dict[str, str]:
+def reset_demo_fixtures(request: DemoResetRequest, fastapi_request: Request, principal: Principal = Depends(principal_dependency)) -> dict[str, str]:
     require_permission(principal, WORKSPACE_MANAGE)
+    rate_limiter.check(fastapi_request, "demo_reset", principal.user.id if principal.user else None, 5, 300, principal.organization_id)
     if not request.confirm: raise HTTPException(status_code=422, detail="Explicit demo reset confirmation is required.")
     if not settings.demo_mode_enabled: raise HTTPException(status_code=403, detail="Demo reset is disabled in this environment.")
     workflow_service.reset_demo(principal.organization_id)
@@ -936,7 +946,7 @@ def overview_dashboard(
         unavailable.append("goals"); warnings.append("Goal metrics are temporarily unavailable.")
     if principal.permissions.intersection({ACTIVITY_READ}):
         try:
-            events = [event for event in auth_store.activity_events if event.get("organization_id") == principal.organization_id and in_range(event.get("created_at"))]
+            events = [event for event in auth_store.list_activity_events(principal.organization_id) if in_range(event.get("created_at"))]
             sections["recent_activity"] = [{"actor": event.get("actor_display_name"), "actor_type": event.get("actor_type"), "action": event.get("action"), "target": event.get("target_display_name"), "result": event.get("result"), "created_at": event.get("created_at"), "summary": event.get("summary"), "related_case_id": event.get("related_case_id"), "related_run_id": event.get("related_run_id")} for event in sorted(events, key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:8]]
         except Exception:
             unavailable.append("recent_activity"); warnings.append("Recent activity is temporarily unavailable.")
@@ -1094,12 +1104,13 @@ def delete_cloud_hunt_schedule(schedule_id: UUID, principal: Principal = Depends
 
 
 @app.post("/api/cloud/schedules/{schedule_id}/run-now")
-def run_cloud_hunt_schedule_now(schedule_id: UUID, principal: Principal = Depends(principal_dependency)):
+def run_cloud_hunt_schedule_now(schedule_id: UUID, request: Request, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
     require_permission(principal, CLOUD_HUNTS_RUN)
+    rate_limiter.check(request, "cloud_hunt_run_now", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     try:
         schedule = schedule_store.get(schedule_id, principal.organization_id)
-        hunt = CloudHuntScheduler(cloud_hunt_service, schedule_store).trigger(schedule)
+        hunt = CloudHuntScheduler(cloud_hunt_service, schedule_store).trigger(schedule, force=True)
         if hunt is None: raise HTTPException(status_code=409, detail="Schedule is disabled, already running, or already triggered.")
         auth_store.record_activity(principal.organization_id, "cloud_hunt_schedule_run_triggered", principal.user.id if principal.user else None, {"schedule_id": str(schedule_id), "hunt_id": str(hunt.id), "correlation_id": str(schedule_id)}, actor_type="User", category="Cloud Hunt", target_type="schedule", target_id=schedule_id, target_display_name=schedule.name, related_run_id=hunt.id)
         return hunt
@@ -1152,8 +1163,9 @@ def update_jira_config(request: JiraIntegrationConfigRequest, principal: Princip
 
 
 @app.post("/api/integrations/jira/validate")
-def validate_jira_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+def validate_jira_connection(request: Request, principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
     require_permission(principal, INTEGRATIONS_JIRA_READ)
+    rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = jira_integration_store.get(principal.organization_id)
     base_url = config.base_url or settings.jira_base_url
     if not base_url or not settings.jira_api_token:
@@ -1194,8 +1206,9 @@ def collect_jira_context(run_id: UUID, request: JiraContextRequest, principal: P
 
 
 @app.post("/api/integrations/github/validate")
-def validate_github_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+def validate_github_connection(request: Request, principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
     require_permission(principal, INTEGRATIONS_GITHUB_READ)
+    rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = github_integration_store.get(principal.organization_id)
     if workflow_service.github_client is None:
         result = {"connected": False, "account_identity": None, "accessible_repositories": [], "permission_warnings": [], "missing_permissions": ["GitHub credentials are unavailable."], "checked_at": utc_now()}
@@ -1216,8 +1229,9 @@ def update_aws_config(request: AWSIntegrationConfigRequest, principal: Principal
 
 
 @app.post("/api/integrations/aws/validate")
-def validate_aws_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+def validate_aws_connection(request: Request, principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
     require_permission(principal, INTEGRATIONS_AWS_READ)
+    rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = aws_integration_store.get(principal.organization_id)
     regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
     adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
@@ -1236,8 +1250,9 @@ def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: P
 
 
 @app.post("/api/cloud/hunts")
-def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(principal_dependency)):
+def start_cloud_hunt(request: CloudHuntRequest, fastapi_request: Request, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_RUN)
+    rate_limiter.check(fastapi_request, "cloud_hunt_run", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds)
     try:
         registry_override = None
         if request.inventory_source == "real_aws":
@@ -1474,6 +1489,7 @@ async def github_webhook(
     x_github_delivery: str | None = Header(default=None, alias="X-GitHub-Delivery"),
     x_hub_signature_256: str | None = Header(default=None, alias="X-Hub-Signature-256"),
 ) -> dict[str, object]:
+    rate_limiter.check(request, "github_webhook", limit=settings.expensive_rate_limit_attempts, window_seconds=settings.expensive_rate_limit_window_seconds)
     if not x_github_delivery:
         raise HTTPException(status_code=422, detail="X-GitHub-Delivery header is required.")
     raw_body = await request.body()

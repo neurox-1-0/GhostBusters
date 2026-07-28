@@ -33,6 +33,7 @@ from app.models import (
     User,
 )
 from app.settings import settings
+from core.activity_store import PostgresActivityStore
 
 
 WORKSPACE_READ = "workspace.read"
@@ -358,6 +359,7 @@ class AuthStore:
         self.invitations: dict[UUID, Invitation] = {}
         self.activity_events: list[dict[str, object]] = []
         self.login_failures: dict[str, list[datetime]] = {}
+        self.activity_store = PostgresActivityStore(settings.database_url) if settings.database_url else None
         self._ensure_development_workspace()
         self._load_persistent_state()
 
@@ -418,7 +420,7 @@ class AuthStore:
             "password_hashes": {str(key): value for key, value in self.password_hashes.items()},
             "memberships": [item.model_dump(mode="json") for item in self.memberships.values()],
             "invitations": [item.model_dump(mode="json") for item in self.invitations.values()],
-            "activity_events": self.activity_events,
+            "activity_events": [] if self.activity_store is not None else self.activity_events,
         }
         try:
             self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
@@ -763,7 +765,19 @@ class AuthStore:
             "event_type": event_type,
             "details": dict(details),
         })
+        if self.activity_store is not None:
+            self.activity_store.append(self.activity_events[-1])
         self._persist()
+
+    def list_activity_events(self, organization_id: UUID) -> list[dict[str, object]]:
+        if self.activity_store is not None:
+            return self.activity_store.list(organization_id)
+        return [event for event in self.activity_events if event.get("organization_id") == organization_id]
+
+    def get_activity_event(self, organization_id: UUID, event_id: UUID) -> dict[str, object] | None:
+        if self.activity_store is not None:
+            return self.activity_store.get(organization_id, event_id)
+        return next((event for event in self.activity_events if event.get("id") == event_id and event.get("organization_id") == organization_id), None)
 
     def _ensure_development_workspace(self) -> None:
         now = utc_now()
@@ -903,7 +917,7 @@ def make_principal(
             APPROVALS_MODIFY,
         })
     if demo_mode:
-        permissions.add(CLOUD_HUNTS_RUN)
+        permissions.update({WORKSPACE_MANAGE, CLOUD_HUNTS_RUN})
         permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL, INTEGRATIONS_AWS_READ, INTEGRATIONS_AWS_MANAGE, INTEGRATIONS_GITHUB_READ, INTEGRATIONS_GITHUB_MANAGE, INTEGRATIONS_JIRA_READ, INTEGRATIONS_JIRA_MANAGE, BUSINESS_CONTEXT_READ, REPOSITORY_CONTEXT_READ, CLOUD_HUNTS_SCHEDULE_READ, CLOUD_HUNTS_SCHEDULE_MANAGE, OUTCOMES_READ, OUTCOMES_START, OUTCOMES_REFRESH, OUTCOMES_COMPLETE, OUTCOMES_REOPEN, OVERVIEW_READ})
     return Principal(
         user=user,

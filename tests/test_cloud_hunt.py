@@ -91,7 +91,7 @@ def test_dependency_protection_and_waiver_suppress_future_hunts() -> None:
 
 def test_api_cloud_hunt_and_review_queue() -> None:
     client = TestClient(app)
-    client.post("/api/reset")
+    client.post("/api/demo/reset", json={"confirm": True})
     assert len(client.get("/api/cloud/providers").json()) == 3
     response = client.post("/api/cloud/hunts", json={"provider_scope": "multi_cloud"})
     assert response.status_code == 200
