@@ -1,0 +1,75 @@
+services:
+  - type: web
+    name: ghostbusters-web
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+    preDeployCommand: python scripts/migrate.py --database-url "$DATABASE_URL" --fresh-local
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /live
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: DEMO_MODE_ENABLED
+        value: "false"
+      - key: ALLOW_PRODUCTION_DEMO_MODE
+        value: "false"
+      - key: AUTO_CREATE_SCHEMA
+        value: "false"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      - key: GITHUB_CREATE_REAL_PR
+        value: "false"
+      - key: CLOUD_HUNT_SCHEDULE_ENABLED
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ghostbusters-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ghostbusters-redis
+          property: connectionString
+      - key: SECRET_KEY
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: JIRA_API_TOKEN
+        sync: false
+      - key: JIRA_EMAIL
+        sync: false
+      - key: JIRA_BASE_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ALLOWED_REGIONS
+        sync: false
+
+  - type: keyvalue
+    name: ghostbusters-redis
+    plan: starter
+    region: oregon
+    ipAllowList: []
+
+databases:
+  - name: ghostbusters-db
+    plan: starter
+    region: oregon

@@ -21,7 +21,9 @@ def migrate(database_url: str, fresh_local: bool = False) -> None:
             if migration.stem in applied:
                 continue
             if migration.stem == "001_baseline" and fresh_local:
-                connection.execute(SCHEMA.read_text(encoding="utf-8"))
+                exists = connection.execute("SELECT to_regclass('public.organizations')").fetchone()[0]
+                if exists is None:
+                    connection.execute(SCHEMA.read_text(encoding="utf-8"))
             else:
                 sql = migration.read_text(encoding="utf-8")
                 if sql.strip():
@@ -32,6 +34,6 @@ def migrate(database_url: str, fresh_local: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--database-url", required=True)
-    parser.add_argument("--fresh-local", action="store_true", help="Apply db/schema.sql for a new local/demo database.")
+    parser.add_argument("--fresh-local", action="store_true", help="Apply db/schema.sql only when the target database has no organizations table.")
     args = parser.parse_args()
     migrate(args.database_url, args.fresh_local)
