@@ -310,6 +310,10 @@ class EvidenceItem(AppModel):
     freshness_status: FreshnessStatus
     reliability: float = Field(ge=0.0, le=1.0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    repository: str | None = None
+    pull_request_number: int | None = None
+    source_mode: str | None = None
+    correlation_id: str | None = None
 
 
 class ExternalCallEvent(AppModel):
@@ -729,6 +733,7 @@ class WorkflowRun(AppModel):
     decision_impacts: list[str] = Field(default_factory=list)
     stop_reason: str | None = None
     final_outcome: str | None = None
+    github_context: dict[str, Any] | None = None
 
 
 class CloudResource(AppModel):
@@ -869,6 +874,26 @@ class AWSIntegrationConfigRequest(AppModel):
     regions: list[str] | None = None
     cloudwatch_lookback_days: int | None = Field(default=None, ge=1, le=90)
     low_cpu_threshold: float | None = Field(default=None, ge=0, le=100)
+
+
+class GitHubIntegrationConfig(AppModel):
+    organization_id: UUID
+    enabled: bool = False
+    installation_identity: str | None = None
+    allowed_repositories: list[str] = Field(default_factory=list)
+    source_mode: str = "real_github"
+    created_at: datetime
+    updated_at: datetime
+    last_validated: datetime | None = None
+    last_successful_collection: datetime | None = None
+    last_failure_summary: str | None = None
+
+
+class GitHubIntegrationConfigRequest(AppModel):
+    enabled: bool | None = None
+    installation_identity: str | None = None
+    allowed_repositories: list[str] | None = None
+    source_mode: str | None = None
 
 
 class WaiverRequest(AppModel):

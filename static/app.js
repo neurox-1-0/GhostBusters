@@ -45,6 +45,8 @@ const state = {
   goalReplayTimer: null,
   awsConfig: null,
   awsValidation: null,
+  githubConfig: null,
+  githubValidation: null,
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -1332,6 +1334,45 @@ async function loadGoals() {
 
 async function loadAWSConfig() {
   try { state.awsConfig = await api("/api/integrations/aws/config"); renderAWSConfig(); } catch (error) { setMessage("aws-message", friendlyError(error, "AWS settings unavailable.")); }
+}
+
+async function loadGitHubConfig() {
+  try { state.githubConfig = await api("/api/integrations/github/config"); renderGitHubConfig(); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub settings unavailable.")); }
+}
+
+function renderGitHubConfig() {
+  const config = state.githubConfig; if (!config || !$("github-enabled-select")) return;
+  $("github-enabled-select").value = String(Boolean(config.enabled));
+  $("github-installation-input").value = config.installation_identity || "";
+  $("github-repositories-input").value = (config.allowed_repositories || []).join(",");
+  $("github-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
+  $("github-permission-warnings").textContent = config.last_failure_summary || "None recorded";
+}
+
+async function saveGitHubConfig() {
+  try { state.githubConfig = await api("/api/integrations/github/config", { method: "PATCH", body: JSON.stringify({ enabled: $("github-enabled-select").value === "true", installation_identity: $("github-installation-input").value.trim() || null, allowed_repositories: $("github-repositories-input").value.split(",").map((item) => item.trim()).filter(Boolean) }) }); renderGitHubConfig(); setMessage("github-message", "GitHub settings saved. Token material was not stored.", true); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub settings could not be saved.")); }
+}
+
+async function validateGitHubConnection() {
+  return withButtonState("github-validate-button", "Validating...", async () => {
+    state.githubValidation = await api("/api/integrations/github/validate", { method: "POST", body: "{}" });
+    const result = state.githubValidation;
+    setStatusBadge("github-connection-status", { label: result.connected ? "Connected" : "Unavailable", className: result.connected ? "status-approved" : "status-blocked" });
+    $("github-account-id").textContent = result.account_identity || "Not available";
+    $("github-repository-list").textContent = (result.accessible_repositories || []).join(", ") || "None available";
+    $("github-last-checked").textContent = exactTimestamp(result.checked_at);
+    $("github-permission-warnings").textContent = [...(result.permission_warnings || []), ...(result.missing_permissions || [])].join("; ") || "None recorded";
+    setMessage("github-message", result.connected ? "GitHub identity validated for read-only context." : "GitHub validation failed safely.", result.connected);
+  }, "Validated").catch((error) => setMessage("github-message", friendlyError(error, "GitHub validation failed.")));
+}
+
+async function collectGitHubContext() {
+  if (!state.run?.id) return;
+  return withButtonState("collect-github-context-button", "Collecting...", async () => {
+    state.run = await api(`/api/runs/${state.run.id}/github-context`, { method: "POST", body: "{}" });
+    renderAll();
+    setMessage("ui-message", "Read-only GitHub context collected.", true);
+  }, "Collected").catch((error) => showToast("GitHub context failed", friendlyError(error), "error"));
 }
 
 function renderAWSConfig() {
@@ -2653,8 +2694,23 @@ function renderAll() {
   $("case-view").hidden = !hasSelectedCase();
   renderIdentity();
   renderAssistantTriggers();
-  renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
+  renderStatus(); renderSource(); renderGitHubContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
   renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
+}
+
+function renderGitHubContext() {
+  const panel = $("github-context-panel"); if (!panel) return;
+  const context = state.run?.github_context;
+  panel.hidden = !state.run?.github_source;
+  if (!state.run?.github_source) return;
+  const source = state.run.github_source;
+  $("github-context-pr").textContent = `#${source.pull_request_number || "?"}`;
+  $("github-context-commits").textContent = context ? String(context.commit_activity?.recent_commit_count ?? "0") : "Not collected";
+  $("github-context-reviews").textContent = context ? `${(context.reviews || []).length} recorded` : "Not collected";
+  $("github-context-codeowners").textContent = context?.codeowners_available ? "Available" : context ? "Unknown" : "Not collected";
+  $("github-context-summary").textContent = context ? `${context.pr?.title || "Pull request context"} · ${context.repository_default_branch || "default branch not recorded"} · Source mode: ${context.source_mode || "real_github"}` : "Context is collected read-only from the configured GitHub source.";
+  const ownership = $("github-context-ownership"); clear(ownership);
+  (context?.ownership || []).forEach((item) => ownership.appendChild(el("p", "muted", `${item.path}: ${item.owners?.join(", ") || "Unknown owner"} (${item.matched_pattern || "no matching pattern"})`)));
 }
 
 function renderAssistantTriggers() {
@@ -2688,6 +2744,7 @@ function switchMode(mode) {
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
   if (mode === "settings") loadAWSConfig();
+  if (mode === "settings") loadGitHubConfig();
   if (mode === "activity") loadActivity();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
@@ -3326,6 +3383,9 @@ function bindEvents() {
   on("refresh-members-button", "click", loadMembers);
   on("aws-save-button", "click", saveAWSConfig);
   on("aws-validate-button", "click", validateAWSConnection);
+  on("github-save-button", "click", saveGitHubConfig);
+  on("github-validate-button", "click", validateGitHubConnection);
+  on("collect-github-context-button", "click", collectGitHubContext);
   on("invite-member-button", "click", openInviteModal);
   on("invite-close-button", "click", closeInviteModal);
   on("invite-cancel-button", "click", closeInviteModal);

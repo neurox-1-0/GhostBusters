@@ -98,6 +98,18 @@ def create_investigation_plan(
                 select(tool_name, reason)
                 _add_question(questions, question_id, reason, [tool_name])
 
+    github_requested = "github" in goal.lower() or "pull request" in goal.lower() or "repository" in goal.lower()
+    if github_requested:
+        for tool_name, reason, question_id in (
+            ("github_pr_context", "Pull-request context is explicitly in scope.", "github_pr_context"),
+            ("github_activity", "Recent repository activity is needed to test whether work is still active.", "github_activity"),
+            ("github_ownership", "CODEOWNERS and repository ownership are needed before routing review.", "github_ownership"),
+            ("github_reviews", "Review state is needed before a human decision is considered complete.", "github_reviews"),
+        ):
+            if tool_name in available_tools:
+                select(tool_name, reason)
+                _add_question(questions, question_id, reason, [tool_name])
+
     instance_type_changed = resource.current_instance_type != resource.proposed_instance_type
     dependency_known = bool(scenario.dependencies.get("active_downstream_dependencies")) or bool(
         scenario.dependencies.get("blocking_services")

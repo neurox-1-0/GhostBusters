@@ -231,6 +231,19 @@ CREATE TABLE IF NOT EXISTS aws_integration_configs (
     last_failure_summary TEXT
 );
 
+CREATE TABLE IF NOT EXISTS github_integration_configs (
+    organization_id UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    installation_identity TEXT,
+    allowed_repositories JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_mode TEXT NOT NULL DEFAULT 'real_github',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    last_validated TIMESTAMPTZ,
+    last_successful_collection TIMESTAMPTZ,
+    last_failure_summary TEXT
+);
+
 -- Milestone 2 additive schema. Production deployments should replace this
 -- bootstrap file with ordered, versioned migrations before rollout.
 CREATE TABLE IF NOT EXISTS human_decision_events (

@@ -47,6 +47,9 @@ INTEGRATIONS_READ = "integrations.read"
 INTEGRATIONS_MANAGE = "integrations.manage"
 INTEGRATIONS_AWS_READ = "integrations.aws.read"
 INTEGRATIONS_AWS_MANAGE = "integrations.aws.manage"
+INTEGRATIONS_GITHUB_READ = "integrations.github.read"
+INTEGRATIONS_GITHUB_MANAGE = "integrations.github.manage"
+REPOSITORY_CONTEXT_READ = "repository_context.read"
 POLICIES_READ = "policies.read"
 POLICIES_MANAGE = "policies.manage"
 PR_REVIEWS_READ = "pr_reviews.read"
@@ -130,6 +133,9 @@ ROLE_PERMISSIONS = {
         INTEGRATIONS_MANAGE,
         INTEGRATIONS_AWS_READ,
         INTEGRATIONS_AWS_MANAGE,
+        INTEGRATIONS_GITHUB_READ,
+        INTEGRATIONS_GITHUB_MANAGE,
+        REPOSITORY_CONTEXT_READ,
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
@@ -163,11 +169,16 @@ ROLE_PERMISSIONS = {
         INTEGRATIONS_MANAGE,
         INTEGRATIONS_AWS_READ,
         INTEGRATIONS_AWS_MANAGE,
+        INTEGRATIONS_GITHUB_READ,
+        INTEGRATIONS_GITHUB_MANAGE,
+        REPOSITORY_CONTEXT_READ,
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
         GOALS_READ,
         INTEGRATIONS_AWS_READ,
+        INTEGRATIONS_GITHUB_READ,
+        REPOSITORY_CONTEXT_READ,
         GOALS_RUN,
         GOALS_CANCEL,
         CLOUD_HUNTS_READ,
@@ -846,7 +857,7 @@ def make_principal(
         })
     if demo_mode:
         permissions.add(CLOUD_HUNTS_RUN)
-        permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL, INTEGRATIONS_AWS_READ, INTEGRATIONS_AWS_MANAGE})
+        permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL, INTEGRATIONS_AWS_READ, INTEGRATIONS_AWS_MANAGE, INTEGRATIONS_GITHUB_READ, INTEGRATIONS_GITHUB_MANAGE, REPOSITORY_CONTEXT_READ})
     return Principal(
         user=user,
         organization=organization,

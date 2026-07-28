@@ -77,3 +77,24 @@ class GitHubClient:
 
     def list_open_pull_requests(self, owner: str, repo: str, head: str) -> list[dict[str, Any]]:
         return self._request("GET", f"{self._repo(owner, repo)}/pulls?state=open&head={quote(head, safe=':')}", retry_read=True)
+
+    def get_authenticated_user(self) -> dict[str, Any]:
+        return self._request("GET", "/user", retry_read=True)
+
+    def list_repositories(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/user/repos?per_page=100&sort=updated", retry_read=True)
+
+    def get_repository(self, owner: str, repo: str) -> dict[str, Any]:
+        return self._request("GET", self._repo(owner, repo), retry_read=True)
+
+    def list_commits(self, owner: str, repo: str, *, since: str | None = None, path: str | None = None) -> list[dict[str, Any]]:
+        query = "?per_page=100"
+        if since: query += f"&since={quote(since, safe='') }"
+        if path: query += f"&path={quote(path, safe='/') }"
+        return self._request("GET", f"{self._repo(owner, repo)}/commits{query}", retry_read=True)
+
+    def list_pull_request_reviews(self, owner: str, repo: str, number: int) -> list[dict[str, Any]]:
+        return self._request("GET", f"{self._repo(owner, repo)}/pulls/{number}/reviews?per_page=100", retry_read=True)
+
+    def list_repository_events(self, owner: str, repo: str) -> list[dict[str, Any]]:
+        return self._request("GET", f"{self._repo(owner, repo)}/events?per_page=100", retry_read=True)

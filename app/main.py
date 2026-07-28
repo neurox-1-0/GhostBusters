@@ -18,6 +18,7 @@ from app.models import (
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
     GoalContextRequest, GoalCreateRequest,
     AWSIntegrationConfigRequest,
+    GitHubIntegrationConfigRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -47,6 +48,9 @@ from app.auth import (
     GOALS_CANCEL,
     INTEGRATIONS_AWS_READ,
     INTEGRATIONS_AWS_MANAGE,
+    INTEGRATIONS_GITHUB_READ,
+    INTEGRATIONS_GITHUB_MANAGE,
+    REPOSITORY_CONTEXT_READ,
     WORKSPACE_READ,
     Principal,
     ROLE_LABELS,
@@ -71,12 +75,14 @@ from core.workflow_service import (
 )
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntNotFoundError, cloud_hunt_service
 from core.aws_integration import aws_integration_store
+from core.github_integration import github_integration_store
 from core.assistant_service import AssistantValidationError, assistant_service
 from integrations.github_client import GitHubAPIError
 from integrations.github_webhook import repository_allowed, verify_signature
 from integrations.terraform_runner import TerraformAnalysisError, parse_github_terraform_change, select_terraform_files
 from integrations.cloud_adapters import RealAWSCloudAdapter
 from integrations.cloud_registry import CloudProviderRegistry
+from integrations.github_context import GitHubContextAdapter
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
@@ -680,6 +686,36 @@ def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, pr
     )
 
 
+@app.post("/api/runs/{run_id}/github-context", response_model=WorkflowRun)
+def collect_github_context(run_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, REPOSITORY_CONTEXT_READ)
+    try:
+        run = workflow_service.get_run(run_id, principal.organization_id)
+        source = run.github_source
+        if source is None or not source.repository or source.pull_request_number is None:
+            raise HTTPException(status_code=422, detail="This run has no GitHub pull-request source.")
+        client = workflow_service.github_client
+        if client is None:
+            raise HTTPException(status_code=503, detail="GitHub credentials are unavailable.")
+        config = github_integration_store.get(principal.organization_id)
+        context = GitHubContextAdapter(client, config.allowed_repositories, config.source_mode).collect_pr_context(source.repository, source.pull_request_number, run.correlation_id)
+        def update(current: WorkflowRun) -> WorkflowRun:
+            current.github_context = context
+            append_audit_event(current, event_type="github_context_collected", actor="tool", summary="Read-only GitHub context collected.", details={"repository": source.repository, "pull_request": source.pull_request_number, "codeowners_available": context["codeowners_available"]})
+            if not context["codeowners_available"]:
+                append_audit_event(current, event_type="ownership_resolution", actor="tool", summary="CODEOWNERS was unavailable; ownership remains unknown.", stage="ownership", status="warning", reason="No CODEOWNERS file was found.")
+            return current
+        result = workflow_service.store.update(run_id, update, principal.organization_id)
+        github_integration_store.mark_collection(principal.organization_id, True)
+        auth_store.record_activity(principal.organization_id, "github_context_collected", principal.user.id if principal.user else None, {"run_id": str(run_id), "repository": source.repository, "pull_request": source.pull_request_number, "correlation_id": run.correlation_id}, actor_type="Integration", category="Integrations", related_run_id=run_id)
+        return result
+    except HTTPException:
+        raise
+    except (RunNotFoundError, GitHubAPIError) as exc:
+        github_integration_store.mark_collection(principal.organization_id, False, str(exc))
+        raise HTTPException(status_code=409 if isinstance(exc, GitHubAPIError) else 404, detail=str(exc)) from exc
+
+
 @app.post("/api/goals", response_model=WorkflowRun, status_code=201)
 def create_goal(request: GoalCreateRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
     require_permission(principal, GOALS_RUN)
@@ -752,6 +788,7 @@ def reset_runs() -> dict[str, str]:
     cloud_hunt_service.reset()
     decision_event_store.reset()
     aws_integration_store.reset()
+    github_integration_store.reset()
     return result
 
 
@@ -776,6 +813,34 @@ def cloud_providers(principal: Principal = Depends(principal_dependency)) -> lis
 def get_aws_config(principal: Principal = Depends(principal_dependency)):
     require_permission(principal, INTEGRATIONS_AWS_READ)
     return aws_integration_store.get(principal.organization_id)
+
+
+@app.get("/api/integrations/github/config")
+def get_github_config(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_GITHUB_READ)
+    return github_integration_store.get(principal.organization_id)
+
+
+@app.patch("/api/integrations/github/config")
+def update_github_config(request: GitHubIntegrationConfigRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_GITHUB_MANAGE)
+    return github_integration_store.update(principal.organization_id, request)
+
+
+@app.post("/api/integrations/github/validate")
+def validate_github_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, INTEGRATIONS_GITHUB_READ)
+    config = github_integration_store.get(principal.organization_id)
+    if workflow_service.github_client is None:
+        result = {"connected": False, "account_identity": None, "accessible_repositories": [], "permission_warnings": [], "missing_permissions": ["GitHub credentials are unavailable."], "checked_at": utc_now()}
+    else:
+        result = GitHubContextAdapter(workflow_service.github_client, config.allowed_repositories, config.source_mode).validate()
+    github_integration_store.mark_validation(principal.organization_id, bool(result["connected"]), "; ".join(result["missing_permissions"]))
+    if result["connected"]:
+        auth_store.record_activity(principal.organization_id, "github_validation_succeeded", principal.user.id if principal.user else None, {"account_identity": result["account_identity"]}, actor_type="Integration", category="Integrations")
+    else:
+        auth_store.record_activity(principal.organization_id, "github_validation_failed", principal.user.id if principal.user else None, {"missing_permissions": result["missing_permissions"]}, actor_type="Integration", category="Integrations", result="failure")
+    return result
 
 
 @app.patch("/api/integrations/aws/config")
