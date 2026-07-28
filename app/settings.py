@@ -17,6 +17,7 @@ class Settings:
     service_name: str = os.getenv("SERVICE_NAME", "ghostbusters")
     static_dir: Path = Path(os.getenv("STATIC_DIR", "static"))
     database_url: str | None = os.getenv("DATABASE_URL")
+    auth_persistence_path: Path = Path(os.getenv("AUTH_PERSISTENCE_PATH", ".runtime/auth_store.json"))
     redis_url: str | None = os.getenv("REDIS_URL")
     auth_required: bool = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes"}
     demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "true").lower() in {"1", "true", "yes"}

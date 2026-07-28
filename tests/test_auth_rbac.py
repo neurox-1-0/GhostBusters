@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 import app.auth as auth_module
-from app.auth import auth_store, session_store, utc_now
+from app.auth import AuthStore, auth_store, session_store, utc_now
 from app.main import app
 from app.models import AccountStatus, OrganizationRole
 
@@ -48,6 +49,20 @@ def test_register_creates_owner_workspace_and_safe_session_cookie() -> None:
     assert "password" not in str(profile).lower()
     cookie = client.cookies.get(auth_module.settings.session_cookie_name)
     assert cookie
+
+
+def test_registered_credentials_survive_auth_store_restart(tmp_path: Path) -> None:
+    persistence_path = tmp_path / "auth-store.json"
+    first_store = AuthStore(persistence_path)
+    user, organization, _ = first_store.register_owner(
+        "persistent@example.com", "Persistent User", "correct horse battery staple", "Persistent Workspace", "UTC"
+    )
+
+    restarted_store = AuthStore(persistence_path)
+    restored_user, restored_org, _ = restarted_store.authenticate("PERSISTENT@example.com", "correct horse battery staple")
+
+    assert restored_user.id == user.id
+    assert restored_org.id == organization.id
 
 
 def test_login_logout_invalid_disabled_and_expired_session_behaviors() -> None:

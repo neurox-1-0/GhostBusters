@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -290,7 +292,8 @@ class RedisSessionStore:
 
 
 class AuthStore:
-    def __init__(self) -> None:
+    def __init__(self, persistence_path: Path | None = None) -> None:
+        self.persistence_path = persistence_path if persistence_path is not None else settings.auth_persistence_path
         self.users_by_id: dict[UUID, User] = {}
         self.users_by_email: dict[str, User] = {}
         self.password_hashes: dict[UUID, str] = {}
@@ -300,9 +303,76 @@ class AuthStore:
         self.activity_events: list[dict[str, object]] = []
         self.login_failures: dict[str, list[datetime]] = {}
         self._ensure_development_workspace()
+        self._load_persistent_state()
 
     def reset(self) -> None:
-        self.__init__()
+        try:
+            self.persistence_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.__init__(self.persistence_path)
+
+    def _load_persistent_state(self) -> None:
+        if not self.persistence_path.exists():
+            return
+        try:
+            payload = json.loads(self.persistence_path.read_text(encoding="utf-8"))
+            for item in payload.get("organizations", []):
+                organization = Organization.model_validate(item)
+                self.organizations[organization.id] = organization
+            for item in payload.get("users", []):
+                user = User.model_validate(item)
+                self.users_by_id[user.id] = user
+                self.users_by_email[user.email] = user
+            self.password_hashes.update({UUID(key): value for key, value in payload.get("password_hashes", {}).items()})
+            for item in payload.get("memberships", []):
+                membership = OrganizationMembership.model_validate(item)
+                self.memberships[membership.id] = membership
+            for item in payload.get("invitations", []):
+                invitation = Invitation.model_validate(item)
+                self.invitations[invitation.id] = invitation
+            self.activity_events = []
+            for raw_event in payload.get("activity_events", []):
+                event = dict(raw_event)
+                for key in ("id", "organization_id", "actor_user_id"):
+                    if event.get(key):
+                        try:
+                            event[key] = UUID(str(event[key]))
+                        except ValueError:
+                            pass
+                if isinstance(event.get("created_at"), str):
+                    event["created_at"] = datetime.fromisoformat(event["created_at"])
+                self.activity_events.append(event)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            # A damaged local snapshot must not prevent the application from booting.
+            return
+
+    @staticmethod
+    def _json_default(value):
+        if isinstance(value, (UUID, datetime)):
+            return str(value)
+        if hasattr(value, "value"):
+            return value.value
+        raise TypeError(f"Cannot serialize {type(value).__name__}")
+
+    def _persist(self) -> None:
+        payload = {
+            "organizations": [item.model_dump(mode="json") for item in self.organizations.values()],
+            "users": [item.model_dump(mode="json") for item in self.users_by_id.values()],
+            "password_hashes": {str(key): value for key, value in self.password_hashes.items()},
+            "memberships": [item.model_dump(mode="json") for item in self.memberships.values()],
+            "invitations": [item.model_dump(mode="json") for item in self.invitations.values()],
+            "activity_events": self.activity_events,
+        }
+        try:
+            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.persistence_path.with_suffix(self.persistence_path.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, default=self._json_default), encoding="utf-8")
+            temporary.replace(self.persistence_path)
+        except OSError:
+            # Local persistence is best-effort; configured database deployments use
+            # their durable auth store and should not fail a request on a file error.
+            return
 
     def register_owner(self, email: str, display_name: str, password: str, organization_name: str, timezone_name: str, slug: str | None = None) -> tuple[User, Organization, OrganizationMembership]:
         normalized = normalize_email(email)
@@ -618,6 +688,7 @@ class AuthStore:
             "event_type": event_type,
             "details": dict(details),
         })
+        self._persist()
 
     def _ensure_development_workspace(self) -> None:
         now = utc_now()
