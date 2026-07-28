@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from app.models import OutcomeCompleteRequest, OutcomeObservationRequest, OutcomeReopenRequest, OutcomeStartRequest, OutcomeVerification, WorkflowRun
 from app.settings import Settings, settings
+from core.postgres_json_store import PostgresJsonStore
 
 class OutcomeConflictError(Exception): pass
 class OutcomeNotFoundError(Exception): pass
@@ -20,6 +21,7 @@ def fingerprint(value) -> str: return hashlib.sha256(json.dumps(value, sort_keys
 class OutcomeStore:
     def __init__(self, configuration: Settings = settings) -> None:
         self.path = Path(configuration.outcome_verification_config_path)
+        self.database = PostgresJsonStore(configuration.database_url, "outcome_verification") if configuration.database_url else None
         self._items: dict[UUID, OutcomeVerification] = {}
         self._lock = RLock(); self._load()
     def list(self, organization_id: UUID) -> list[OutcomeVerification]:
@@ -36,15 +38,25 @@ class OutcomeStore:
     def reset(self) -> None:
         with self._lock:
             self._items.clear()
-            try: self.path.unlink(missing_ok=True)
-            except OSError: pass
+            if self.database: self.database.delete_all()
+            else:
+                try: self.path.unlink(missing_ok=True)
+                except OSError: pass
     def _load(self) -> None:
+        if self.database:
+            for key, value in self.database.load().items():
+                try: self._items[key] = OutcomeVerification.model_validate(value)
+                except Exception: continue
+            return
         try: payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError): return
         for key, value in payload.items():
             try: self._items[UUID(key)] = OutcomeVerification.model_validate(value)
             except Exception: continue
     def _persist(self) -> None:
+        if self.database:
+            self.database.replace({key: value.model_dump(mode="json") for key, value in self._items.items()})
+            return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True); temp = self.path.with_suffix(self.path.suffix + ".tmp")
             temp.write_text(json.dumps({str(k): v.model_dump(mode="json") for k, v in self._items.items()}), encoding="utf-8"); temp.replace(self.path)

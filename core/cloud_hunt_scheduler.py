@@ -13,6 +13,7 @@ from redis.exceptions import RedisError
 from app.models import CloudHuntRequest, CloudHuntSchedule, CloudHuntScheduleRequest
 from app.settings import Settings, settings
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntService
+from core.postgres_json_store import PostgresJsonStore
 from core.aws_integration import aws_integration_store
 from integrations.cloud_adapters import RealAWSCloudAdapter
 from integrations.cloud_registry import CloudProviderRegistry
@@ -47,6 +48,7 @@ class ScheduleStore:
     def __init__(self, configuration: Settings = settings) -> None:
         self.path = Path(configuration.cloud_hunt_schedule_config_path)
         self.redis = Redis.from_url(configuration.redis_url, decode_responses=True) if configuration.redis_url else None
+        self.database = PostgresJsonStore(configuration.database_url, "cloud_hunt_schedule") if configuration.database_url else None
         self.redis_key = "ghostbusters:cloud-hunt-schedules"
         self._items: dict[UUID, CloudHuntSchedule] = {}
         self._lock = RLock()
@@ -100,12 +102,19 @@ class ScheduleStore:
     def reset(self) -> None:
         with self._lock:
             self._items.clear()
-            try: self.path.unlink(missing_ok=True)
-            except OSError: pass
-            if self.redis is not None:
+            if self.database: self.database.delete_all()
+            else:
+                try: self.path.unlink(missing_ok=True)
+                except OSError: pass
+            if self.redis is not None and not self.database:
                 try: self.redis.delete(self.redis_key)
                 except RedisError: pass
     def _load(self) -> None:
+        if self.database:
+            for key, value in self.database.load().items():
+                try: self._items[key] = CloudHuntSchedule.model_validate(value)
+                except Exception: continue
+            return
         try:
             if self.redis is not None:
                 payload = self.redis.hgetall(self.redis_key)
@@ -119,6 +128,9 @@ class ScheduleStore:
             try: self._items[UUID(key)] = CloudHuntSchedule.model_validate(value)
             except Exception: continue
     def _persist(self) -> None:
+        if self.database:
+            self.database.replace({key: value.model_dump(mode="json") for key, value in self._items.items()})
+            return
         try:
             if self.redis is not None:
                 self.redis.delete(self.redis_key)

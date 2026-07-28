@@ -18,6 +18,8 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, Request, Response
 from redis import Redis
 from redis.exceptions import RedisError
+import psycopg
+from psycopg.rows import dict_row
 
 from app.models import (
     AccountStatus,
@@ -360,7 +362,8 @@ class AuthStore:
         self.activity_events: list[dict[str, object]] = []
         self.login_failures: dict[str, list[datetime]] = {}
         self.activity_store = PostgresActivityStore(settings.database_url) if settings.database_url else None
-        self._ensure_development_workspace()
+        if settings.app_env != "production":
+            self._ensure_development_workspace()
         self._load_persistent_state()
 
     def reset(self) -> None:
@@ -371,39 +374,48 @@ class AuthStore:
         self.__init__(self.persistence_path)
 
     def _load_persistent_state(self) -> None:
+        if settings.database_url:
+            try:
+                with psycopg.connect(settings.database_url, row_factory=dict_row) as connection:
+                    row = connection.execute("SELECT payload FROM auth_state WHERE id = 1").fetchone()
+                if row:
+                    self._load_payload(row["payload"])
+            except Exception as exc:
+                raise RuntimeError("PostgreSQL auth state is unavailable; refusing file-backed fallback.") from exc
+            return
         if not self.persistence_path.exists():
             return
         try:
             payload = json.loads(self.persistence_path.read_text(encoding="utf-8"))
-            for item in payload.get("organizations", []):
-                organization = Organization.model_validate(item)
-                self.organizations[organization.id] = organization
-            for item in payload.get("users", []):
-                user = User.model_validate(item)
-                self.users_by_id[user.id] = user
-                self.users_by_email[user.email] = user
-            self.password_hashes.update({UUID(key): value for key, value in payload.get("password_hashes", {}).items()})
-            for item in payload.get("memberships", []):
-                membership = OrganizationMembership.model_validate(item)
-                self.memberships[membership.id] = membership
-            for item in payload.get("invitations", []):
-                invitation = Invitation.model_validate(item)
-                self.invitations[invitation.id] = invitation
-            self.activity_events = []
-            for raw_event in payload.get("activity_events", []):
-                event = dict(raw_event)
-                for key in ("id", "organization_id", "actor_user_id"):
-                    if event.get(key):
-                        try:
-                            event[key] = UUID(str(event[key]))
-                        except ValueError:
-                            pass
-                if isinstance(event.get("created_at"), str):
-                    event["created_at"] = datetime.fromisoformat(event["created_at"])
-                self.activity_events.append(event)
+            self._load_payload(payload)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             # A damaged local snapshot must not prevent the application from booting.
             return
+
+    def _load_payload(self, payload: dict) -> None:
+        for item in payload.get("organizations", []):
+            organization = Organization.model_validate(item)
+            self.organizations[organization.id] = organization
+        for item in payload.get("users", []):
+            user = User.model_validate(item)
+            self.users_by_id[user.id] = user
+            self.users_by_email[user.email] = user
+        self.password_hashes.update({UUID(key): value for key, value in payload.get("password_hashes", {}).items()})
+        for item in payload.get("memberships", []):
+            membership = OrganizationMembership.model_validate(item)
+            self.memberships[membership.id] = membership
+        for item in payload.get("invitations", []):
+            invitation = Invitation.model_validate(item)
+            self.invitations[invitation.id] = invitation
+        self.activity_events = []
+        for raw_event in payload.get("activity_events", []):
+            event = dict(raw_event)
+            for key in ("id", "organization_id", "actor_user_id"):
+                if event.get(key):
+                    try: event[key] = UUID(str(event[key]))
+                    except ValueError: pass
+            if isinstance(event.get("created_at"), str): event["created_at"] = datetime.fromisoformat(event["created_at"])
+            self.activity_events.append(event)
 
     @staticmethod
     def _json_default(value):
@@ -422,14 +434,24 @@ class AuthStore:
             "invitations": [item.model_dump(mode="json") for item in self.invitations.values()],
             "activity_events": [] if self.activity_store is not None else self.activity_events,
         }
+        if settings.database_url:
+            try:
+                with psycopg.connect(settings.database_url) as connection:
+                    connection.execute(
+                        """INSERT INTO auth_state (id, payload, updated_at) VALUES (1, %s::jsonb, NOW())
+                           ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                        (json.dumps(payload, default=self._json_default),),
+                    )
+                return
+            except Exception as exc:
+                raise RuntimeError("PostgreSQL auth state could not be persisted.") from exc
         try:
             self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.persistence_path.with_suffix(self.persistence_path.suffix + ".tmp")
             temporary.write_text(json.dumps(payload, default=self._json_default), encoding="utf-8")
             temporary.replace(self.persistence_path)
         except OSError:
-            # Local persistence is best-effort; configured database deployments use
-            # their durable auth store and should not fail a request on a file error.
+            # Local development snapshots are best-effort.
             return
 
     def register_owner(self, email: str, display_name: str, password: str, organization_name: str, timezone_name: str, slug: str | None = None) -> tuple[User, Organization, OrganizationMembership]:

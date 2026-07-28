@@ -10,6 +10,7 @@ from uuid import UUID
 
 from app.models import GitHubIntegrationConfig, GitHubIntegrationConfigRequest
 from app.settings import Settings, settings
+from core.postgres_json_store import PostgresJsonStore
 
 
 def utc_now() -> datetime:
@@ -19,6 +20,7 @@ def utc_now() -> datetime:
 class GitHubIntegrationStore:
     def __init__(self, configuration: Settings = settings) -> None:
         self.path = Path(configuration.github_integration_config_path)
+        self.database = PostgresJsonStore(configuration.database_url, "github_integration") if configuration.database_url else None
         self._configs: dict[UUID, GitHubIntegrationConfig] = {}
         self._lock = RLock()
         self._load()
@@ -61,10 +63,17 @@ class GitHubIntegrationStore:
 
     def reset(self) -> None:
         self._configs.clear()
-        try: self.path.unlink(missing_ok=True)
-        except OSError: pass
+        if self.database: self.database.delete_all()
+        else:
+            try: self.path.unlink(missing_ok=True)
+            except OSError: pass
 
     def _load(self) -> None:
+        if self.database:
+            for key, value in self.database.load().items():
+                try: self._configs[key] = GitHubIntegrationConfig.model_validate(value)
+                except Exception: continue
+            return
         try: payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError): return
         for key, value in payload.items():
@@ -72,6 +81,9 @@ class GitHubIntegrationStore:
             except Exception: continue
 
     def _persist(self) -> None:
+        if self.database:
+            self.database.replace({key: value.model_dump(mode="json") for key, value in self._configs.items()})
+            return
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp = self.path.with_suffix(self.path.suffix + ".tmp")

@@ -4,10 +4,10 @@ services:
     runtime: python
     plan: starter
     region: oregon
-    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-    preDeployCommand: python scripts/migrate.py --database-url "$DATABASE_URL" --fresh-local
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /live
+    buildCommand: "python -m pip install --upgrade pip && python -m pip install -r requirements.txt"
+    preDeployCommand: 'python scripts/migrate.py --database-url "$DATABASE_URL"'
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /ready
     envVars:
       - key: APP_ENV
         value: production

@@ -3,7 +3,7 @@
 ## Required configuration
 
 - Runtime: `APP_ENV=production`, `AUTH_REQUIRED=true`, `SECRET_KEY` or `SESSION_SECRET` with at least 32 non-default characters, `TRUST_PROXY_HEADERS=true`, and `DEMO_MODE_ENABLED=false`.
-- PostgreSQL: `DATABASE_URL`; Render runs `python scripts/migrate.py --database-url "$DATABASE_URL" --fresh-local` as the pre-deploy command. The flag initializes only a database with no `organizations` table; existing databases receive only unapplied versioned migrations. Startup does not run migrations.
+- PostgreSQL: `DATABASE_URL`; Render runs `python scripts/migrate.py --database-url "$DATABASE_URL"` as the pre-deploy command. A fresh database is initialized from `db/schema.sql` by the versioned baseline runner; existing databases receive only unapplied migrations. Startup does not run migrations. Rollback is forward-only: restore a backup or add a compensating migration.
 - Redis: `REDIS_URL` for distributed deduplication, scheduler state, leases, and safe multi-instance coordination.
 - Session/security: set `AUTH_REQUIRED=true`, a strong persistent secret/session configuration at the deployment layer, HTTPS, secure cookie handling, and the desired session TTL.
 - GitHub: `GITHUB_INTEGRATION_ENABLED`, `GITHUB_WEBHOOK_SECRET`, token/installation credentials through the existing secret provider, repository allowlist, and webhook URL.
@@ -17,7 +17,7 @@
 
 - Configure backups and test PostgreSQL restore before launch. Back up Redis only when its deployment requires persistence; workflow truth belongs in PostgreSQL.
 - Expose `/live` for process liveness and `/ready` for dependency/configuration readiness.
-- Render uses `/live` for its health check because `/ready` currently reports dependency state in JSON while retaining HTTP 200; use `/ready` from an external deployment monitor until it returns a non-2xx status on failure.
+- Render uses `/ready` for its health check. `/live` remains a process-only liveness probe; `/ready` returns structured JSON with HTTP 503 when required dependencies are unavailable.
 - Monitor structured workflow, webhook, scheduler, integration, approval, remediation, and outcome events using their correlation IDs.
 - Keep bounded external timeouts/retries enabled and review partial-failure warnings.
 - Keep `GITHUB_CREATE_REAL_PR=false` unless real PR creation has been explicitly approved and separately monitored.

@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import (
@@ -134,8 +134,10 @@ def liveness() -> dict[str, str]:
 
 
 @app.get("/ready")
-def readiness() -> dict[str, object]:
+def readiness() -> JSONResponse:
     database = "in_memory"; redis = "not_configured"; errors: list[str] = []
+    if settings.app_env == "production" and not settings.database_url:
+        errors.append("database_configuration"); database = "unavailable"
     if settings.database_url:
         try:
             import psycopg
@@ -144,6 +146,8 @@ def readiness() -> dict[str, object]:
             database = "ready"
         except Exception:
             database = "unavailable"; errors.append("database")
+    if settings.app_env == "production" and not settings.redis_url:
+        errors.append("redis_configuration"); redis = "unavailable"
     if settings.redis_url:
         try:
             from redis import Redis
@@ -152,7 +156,10 @@ def readiness() -> dict[str, object]:
         except Exception:
             redis = "unavailable"; errors.append("redis")
     status = "ready" if not errors else "not_ready"
-    return {"status": status, "database": database, "redis": redis, "errors": errors}
+    payload = {"status": status, "database": database, "redis": redis, "errors": errors,
+               "scheduled_execution_enabled": settings.cloud_hunt_schedule_enabled,
+               "scheduled_execution_message": "Scheduled execution is enabled." if settings.cloud_hunt_schedule_enabled else "Scheduled execution is disabled in this deployment. Manual Run Now remains available."}
+    return JSONResponse(status_code=200 if status == "ready" else 503, content=payload)
 
 
 @app.get("/")

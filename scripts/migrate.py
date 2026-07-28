@@ -20,7 +20,7 @@ def migrate(database_url: str, fresh_local: bool = False) -> None:
         for migration in sorted(MIGRATIONS.glob("*.sql")):
             if migration.stem in applied:
                 continue
-            if migration.stem == "001_baseline" and fresh_local:
+            if migration.stem == "001_baseline":
                 exists = connection.execute("SELECT to_regclass('public.organizations')").fetchone()[0]
                 if exists is None:
                     connection.execute(SCHEMA.read_text(encoding="utf-8"))
