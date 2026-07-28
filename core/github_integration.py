@@ -63,11 +63,11 @@ class GitHubIntegrationStore:
             updated = current.model_copy(update={"enabled": False, "installation_identity": None, "installation_id": None, "account_login": None, "account_type": None, "connected_repositories": [], "allowed_repositories": [], "updated_at": utc_now(), "version": current.version + 1, "last_failure_summary": "GitHub installation disconnected; historical records retained."})
             self._configs[organization_id] = updated; self._persist(); return updated.model_copy(deep=True)
 
-    def update_installation(self, organization_id: UUID, *, installation_id: int | None, account_login: str | None, account_type: str | None, repositories: list[dict[str, object]], enabled: bool = True) -> GitHubIntegrationConfig:
+    def update_installation(self, organization_id: UUID, *, installation_id: int | None, account_login: str | None, account_type: str | None, repositories: list[dict[str, object]], repository_selection: str = "selected", enabled: bool = True) -> GitHubIntegrationConfig:
         with self._lock:
             current = self.get(organization_id)
             safe_repositories = [{key: repo.get(key) for key in ("full_name", "private", "archived", "default_branch", "installation_access") if key in repo} for repo in repositories]
-            updated = current.model_copy(update={"enabled": enabled, "installation_id": installation_id, "installation_identity": str(installation_id) if installation_id else None, "account_login": account_login, "account_type": account_type, "connected_repositories": safe_repositories, "allowed_repositories": [str(repo.get("full_name")).lower() for repo in safe_repositories if repo.get("full_name")], "last_validated": utc_now(), "last_failure_summary": None, "updated_at": utc_now(), "version": current.version + 1})
+            updated = current.model_copy(update={"enabled": enabled, "installation_id": installation_id, "installation_identity": str(installation_id) if installation_id else None, "account_login": account_login, "account_type": account_type, "repository_selection": repository_selection if repository_selection in {"all", "selected"} else "selected", "connected_repositories": safe_repositories, "allowed_repositories": [str(repo.get("full_name")).lower() for repo in safe_repositories if repo.get("full_name")], "last_validated": utc_now(), "last_failure_summary": None, "updated_at": utc_now(), "version": current.version + 1})
             self._configs[organization_id] = updated; self._persist(); return updated.model_copy(deep=True)
 
     def mark_validation(self, organization_id: UUID, success: bool, failure: str | None = None) -> GitHubIntegrationConfig:

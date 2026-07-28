@@ -774,7 +774,8 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
         source = run.github_source
         if source is None or not source.repository or source.pull_request_number is None:
             raise HTTPException(status_code=422, detail="This run has no GitHub pull-request source.")
-        client = workflow_service.github_client
+        config = github_integration_store.get(principal.organization_id)
+        client = GitHubAppClient(config.installation_id).api_client() if config.installation_id else (workflow_service.github_client if settings.github_development_token_fallback else None)
         if client is None:
             raise HTTPException(status_code=503, detail="GitHub credentials are unavailable.")
         config = github_integration_store.get(principal.organization_id)
@@ -1181,7 +1182,7 @@ def github_callback(state: str, installation_id: int | None = None, setup_action
         installation = app_client.installation(); client = app_client.api_client()
         repositories = client.list_installation_repositories()
         safe = [{"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": (item.get("default_branch") or "main"), "installation_access": "available"} for item in repositories if item.get("full_name")]
-        github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=(installation.get("account") or {}).get("login"), account_type=(installation.get("account") or {}).get("type"), repositories=safe)
+        github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=(installation.get("account") or {}).get("login"), account_type=(installation.get("account") or {}).get("type"), repository_selection=str(installation.get("repository_selection") or "selected"), repositories=safe)
         auth_store.record_activity(organization_id, "github_connection_completed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"installation_id": installation_id, "repository_count": len(safe), "correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations")
         return RedirectResponse(url="/?github=connected", status_code=303)
     except Exception as exc:
@@ -1197,7 +1198,7 @@ def github_repositories(principal: Principal = Depends(principal_dependency)) ->
         try:
             repositories = GitHubAppClient(config.installation_id).api_client().list_installation_repositories()
             safe = [{"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": item.get("default_branch") or "main", "installation_access": "available"} for item in repositories if item.get("full_name")]
-            github_integration_store.update_installation(principal.organization_id, installation_id=config.installation_id, account_login=config.account_login, account_type=config.account_type, repositories=safe)
+            github_integration_store.update_installation(principal.organization_id, installation_id=config.installation_id, account_login=config.account_login, account_type=config.account_type, repository_selection=config.repository_selection, repositories=safe)
             return {"items": safe, "count": len(safe)}
         except GitHubAPIError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
     if settings.github_development_token_fallback and settings.github_token:
@@ -1276,10 +1277,11 @@ def validate_github_connection(request: Request, principal: Principal = Depends(
     require_permission(principal, INTEGRATIONS_GITHUB_READ)
     rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = github_integration_store.get(principal.organization_id)
-    if workflow_service.github_client is None:
+    github_client = GitHubAppClient(config.installation_id).api_client() if config.installation_id else (workflow_service.github_client if settings.github_development_token_fallback else None)
+    if github_client is None:
         result = {"connected": False, "account_identity": None, "accessible_repositories": [], "permission_warnings": [], "missing_permissions": ["GitHub credentials are unavailable."], "checked_at": utc_now()}
     else:
-        result = GitHubContextAdapter(workflow_service.github_client, config.allowed_repositories, config.source_mode).validate()
+        result = GitHubContextAdapter(github_client, config.allowed_repositories, config.source_mode).validate()
     github_integration_store.mark_validation(principal.organization_id, bool(result["connected"]), "; ".join(result["missing_permissions"]))
     if result["connected"]:
         auth_store.record_activity(principal.organization_id, "github_validation_succeeded", principal.user.id if principal.user else None, {"account_identity": result["account_identity"]}, actor_type="Integration", category="Integrations")
@@ -1583,7 +1585,7 @@ async def github_webhook(
                 for item in (payload.get("repositories_added") or []):
                     if item.get("full_name"): current[item["full_name"]] = {"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": item.get("default_branch") or "main", "installation_access": "available"}
                 for item in (payload.get("repositories_removed") or []): current.pop(item.get("full_name"), None)
-                github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=config.account_login, account_type=config.account_type, repositories=list(current.values()))
+                github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=config.account_login, account_type=config.account_type, repository_selection=config.repository_selection, repositories=list(current.values()))
                 event_name = "github_repositories_changed"
             auth_store.record_activity(organization_id, event_name, None, {"installation_id": installation_id, "action": action, "correlation_id": x_github_delivery}, actor_type="Integration", category="Integrations", correlation_id=x_github_delivery)
         return {"status": "processed" if association else "ignored", "event": x_github_event}
@@ -1616,9 +1618,12 @@ async def github_webhook(
         return {"status": "duplicate", "run": durable}
     if settings.github_integration_enabled:
         repository = str((payload.get("repository") or {}).get("full_name") or "")
-        if not repository_allowed(repository, settings.github_allowed_repositories):
+        installation_id = int((payload.get("installation") or {}).get("id") or 0)
+        association = github_integration_store.find_by_installation(installation_id) if installation_id else None
+        allowed_repositories = association[1].allowed_repositories if association else settings.github_allowed_repositories
+        if not repository_allowed(repository, tuple(allowed_repositories)):
             raise HTTPException(status_code=403, detail="Repository is not allowed for GitHub integration.")
-        client = workflow_service.github_client
+        client = GitHubAppClient(installation_id).api_client() if association else (workflow_service.github_client if settings.github_development_token_fallback else None)
         if client is None:
             raise HTTPException(status_code=503, detail="GitHub integration is enabled but credentials are unavailable.")
         try:

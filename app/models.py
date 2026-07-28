@@ -1001,6 +1001,7 @@ class GitHubIntegrationConfig(AppModel):
     installation_id: int | None = None
     account_login: str | None = None
     account_type: str | None = None
+    repository_selection: str = "selected"
     connected_repositories: list[dict[str, Any]] = Field(default_factory=list)
     version: int = 1
     allowed_repositories: list[str] = Field(default_factory=list)
