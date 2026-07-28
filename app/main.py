@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.models import (
     AskGhostBustersRequest, AskGhostBustersResponse,
+    DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
     AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
     GoalContextRequest, GoalCreateRequest,
@@ -1638,10 +1639,16 @@ async def github_webhook(
     if action not in {"opened", "reopened", "synchronize"}:
         return {"status": "ignored", "reason": f"Unsupported pull_request action: {action}"}
     repository_delivery = bool(payload.get("repository") or payload.get("pull_request"))
+    association = github_integration_store.find_by_installation(installation_id) if installation_id else None
+    if installation_id and association is None:
+        raise HTTPException(status_code=403, detail="GitHub installation is not connected to an organization.")
+    if settings.app_env == "production" and association is None:
+        raise HTTPException(status_code=403, detail="GitHub App installation is not connected to an organization.")
+    webhook_organization_id = association[0] if association else DEFAULT_DEVELOPMENT_ORGANIZATION_ID
     cached_run_id = webhook_deduplicator.get_run_id(x_github_delivery)
     if cached_run_id is not None:
         try:
-            cached_run = workflow_service.get_run(cached_run_id)
+            cached_run = workflow_service.get_run(cached_run_id, webhook_organization_id)
             cached_legacy_github_run = (
                 settings.github_integration_enabled
                 and repository_delivery
@@ -1652,7 +1659,7 @@ async def github_webhook(
                 return {"status": "duplicate", "run": cached_run}
         except RunNotFoundError:
             pass
-    durable = workflow_service.find_run_by_idempotency(x_github_delivery)
+    durable = workflow_service.find_run_by_idempotency(x_github_delivery, webhook_organization_id)
     legacy_github_run = (
         durable is not None
         and settings.github_integration_enabled
@@ -1665,7 +1672,6 @@ async def github_webhook(
     if settings.github_integration_enabled:
         repository = str((payload.get("repository") or {}).get("full_name") or "")
         installation_id = int((payload.get("installation") or {}).get("id") or 0)
-        association = github_integration_store.find_by_installation(installation_id) if installation_id else None
         allowed_repositories = association[1].allowed_repositories if association else settings.github_allowed_repositories
         if not repository_allowed(repository, tuple(allowed_repositories)):
             raise HTTPException(status_code=403, detail="Repository is not allowed for GitHub integration.")
@@ -1681,7 +1687,8 @@ async def github_webhook(
             head_sha = str((pr.get("head") or {}).get("sha") or "")
             fetched = {item["filename"]: client.get_file_content(owner, repo, item["filename"], head_sha)["content"] for item in selected}
             source = parse_github_terraform_change(repository, pr, files, fetched)
-            run, created = workflow_service.start_github_run(source, x_github_delivery)
+            run, created = workflow_service.start_github_run(source, x_github_delivery, organization_id=webhook_organization_id)
+            auth_store.record_activity(webhook_organization_id, "github_pr_review_created", None, {"run_id": str(run.id), "repository": repository, "pull_request": number, "delivery_id": x_github_delivery, "correlation_id": run.correlation_id}, actor_type="Integration", category="PR Reviews", target_type="run", target_id=run.id, target_display_name=f"PR #{number} {repository}", related_run_id=run.id, correlation_id=run.correlation_id)
         except (GitHubAPIError, TerraformAnalysisError, ValueError, KeyError) as exc:
             detail = str(exc) if isinstance(exc, TerraformAnalysisError) else "GitHub integration failed safely."
             raise HTTPException(status_code=422, detail=detail) from exc
