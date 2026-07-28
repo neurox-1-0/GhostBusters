@@ -26,6 +26,7 @@
           <button id="cloud-hunt-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">⌕</span>Cloud Hunt</button>
           <button id="review-queue-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">✓</span>Approvals</button>
           <button id="technical-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">⚙</span>Technical Audit</button>
+          <button id="activity-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">≡</span>Activity Log</button>
           <button id="settings-view-button" class="view-button" type="button" aria-pressed="false"><span aria-hidden="true">S</span>Settings</button>
         </nav>
 
@@ -390,6 +391,38 @@
               <details class="audit-section"><summary>Business impact</summary><div id="impact-view"></div></details>
               <details class="audit-section"><summary>Runtime architecture</summary><div id="runtime-view"></div></details>
             </div>
+          </section>
+
+          <section id="activity-view" class="mode-view page-enter" hidden aria-labelledby="activity-title">
+            <div class="mode-header panel">
+              <div><p class="kicker">Workspace history</p><h2 id="activity-title" class="section-title">Activity Log</h2><p>See who or what performed actions across this organization.</p></div>
+              <div class="toolbar-actions"><span class="status-chip light" id="activity-timezone">Timezone: UTC</span><button id="activity-refresh-button" class="secondary compact" type="button">Refresh</button></div>
+            </div>
+            <section class="panel activity-toolbar" aria-label="Activity filters">
+              <div class="filter-row" id="activity-category-filters">
+                <button class="filter-chip filter-chip-active" type="button" data-activity-category="">All Activity</button>
+                <button class="filter-chip" type="button" data-activity-category="Human Decisions">Human Decisions</button>
+                <button class="filter-chip" type="button" data-activity-category="PR Reviews">PR Reviews</button>
+                <button class="filter-chip" type="button" data-activity-category="Cloud Hunt">Cloud Hunt</button>
+                <button class="filter-chip" type="button" data-activity-category="Members">Members</button>
+                <button class="filter-chip" type="button" data-activity-category="Integrations">Integrations</button>
+                <button class="filter-chip" type="button" data-activity-category="Policies">Policies</button>
+                <button class="filter-chip" type="button" data-activity-category="Authentication">Authentication</button>
+                <button class="filter-chip" type="button" data-activity-category="System">System</button>
+              </div>
+              <div class="activity-filter-grid">
+                <label>Actor type<select id="activity-actor-type"><option value="">All actors</option><option value="User">User</option><option value="Agent">Agent</option><option value="System">System</option><option value="Integration">Integration</option></select></label>
+                <label>Action<input id="activity-action-filter" type="search" placeholder="Filter action" /></label>
+                <label>Result<select id="activity-result-filter"><option value="">All results</option><option value="success">Success</option><option value="failure">Failure</option><option value="denied">Denied</option></select></label>
+                <label>Target type<select id="activity-target-filter"><option value="">All targets</option><option value="case">Case</option><option value="run">Run</option><option value="hunt">Cloud Hunt</option><option value="workspace">Workspace</option></select></label>
+                <label>Sort<select id="activity-sort-filter"><option value="created_at_desc">Newest first</option><option value="created_at_asc">Oldest first</option></select></label>
+                <label>Date range<select id="activity-date-range"><option value="all">All time</option><option value="today">Today</option><option value="7d">Last 7 Days</option><option value="30d">Last 30 Days</option><option value="custom">Custom</option></select></label>
+                <label class="activity-search">Search<input id="activity-search-input" type="search" placeholder="Search actor, target, action, correlation" /></label>
+              </div>
+              <div class="activity-custom-dates" id="activity-custom-dates" hidden><label>From<input id="activity-created-from" type="datetime-local" /></label><label>To<input id="activity-created-to" type="datetime-local" /></label></div>
+            </section>
+            <p class="helper" id="activity-filter-status"></p>
+            <section class="panel activity-panel" aria-label="Activity events"><div id="activity-loading" hidden></div><div id="activity-error" class="message" hidden></div><div id="activity-list"></div><div class="activity-pagination"><span id="activity-pagination-summary">0 events</span><button id="activity-prev-button" class="secondary compact" type="button">Previous</button><button id="activity-next-button" class="secondary compact" type="button">Next</button><select id="activity-page-size" aria-label="Activity page size"><option>25</option><option>50</option><option>100</option></select></div></section>
           </section>
 
           <section id="cloud-hunt-view" class="mode-view page-enter" hidden aria-labelledby="cloud-hunt-title">

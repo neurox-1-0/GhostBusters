@@ -1368,3 +1368,23 @@ samp {
     transition-duration: 0.01ms !important;
   }
 }
+/* Workspace Activity Log */
+.activity-toolbar { display: grid; gap: 1rem; }
+.activity-filter-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 0.75rem; align-items: end; }
+.activity-filter-grid label, .activity-custom-dates label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 12px; font-weight: 700; }
+.activity-filter-grid .activity-search { grid-column: span 2; }
+.activity-custom-dates { display: flex; gap: 0.75rem; }
+.activity-panel { overflow: hidden; }
+.activity-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; padding-top: 1rem; }
+.activity-pagination span { margin-right: auto; color: var(--muted); font-size: 13px; }
+.activity-details-drawer { max-width: 600px; margin-left: auto; min-height: 100%; border-radius: 0; overflow-y: auto; }
+.activity-details-drawer .data-list { margin-top: 1rem; }
+@media (max-width: 760px) {
+  .activity-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .activity-filter-grid .activity-search { grid-column: 1 / -1; }
+  .activity-custom-dates { flex-wrap: wrap; }
+  .activity-custom-dates label { flex: 1 1 180px; }
+  .activity-pagination { flex-wrap: wrap; justify-content: flex-start; }
+  .activity-pagination span { flex: 1 1 100%; }
+  .activity-details-drawer { width: 100%; }
+}

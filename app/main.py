@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -30,6 +30,7 @@ from app.auth import (
     APPROVALS_ADD_CONTEXT,
     APPROVALS_MODIFY,
     APPROVALS_READ,
+    ACTIVITY_READ,
     AUDIT_READ,
     CLOUD_HUNTS_READ,
     CLOUD_HUNTS_RUN,
@@ -146,6 +147,108 @@ def logout(request: Request, response: Response) -> dict[str, str]:
 @app.get("/api/auth/me", response_model=CurrentUserResponse)
 def me(principal: Principal = Depends(principal_dependency)) -> CurrentUserResponse:
     return principal.response()
+
+
+ACTIVITY_CATEGORIES = {"Human Decisions", "PR Reviews", "Cloud Hunt", "Members", "Roles and Access", "Integrations", "Policies", "Authentication", "Workspace", "System"}
+ACTIVITY_SORTS = {"created_at_desc", "created_at_asc", "newest", "oldest"}
+SENSITIVE_ACTIVITY_KEYS = {"password", "token", "token_hash", "csrf_token", "cookie", "secret", "private_key", "access_token", "client_secret"}
+
+
+def _redact_activity(value):
+    if isinstance(value, dict):
+        return {str(key): ("[REDACTED]" if str(key).lower() in SENSITIVE_ACTIVITY_KEYS else _redact_activity(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_activity(item) for item in value]
+    return value
+
+
+def _public_activity_event(event: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": str(event.get("id")),
+        "organization_id": str(event.get("organization_id")),
+        "actor_type": event.get("actor_type", "System"),
+        "actor_user_id": str(event["actor_user_id"]) if event.get("actor_user_id") else None,
+        "actor_display_name": event.get("actor_display_name", "System"),
+        "actor_role_snapshot": event.get("actor_role_snapshot"),
+        "category": event.get("category", "System"),
+        "action": event.get("action", event.get("event_type")),
+        "target_type": event.get("target_type", "workspace"),
+        "target_id": event.get("target_id"),
+        "target_display_name": event.get("target_display_name", "Workspace"),
+        "result": event.get("result", "success"),
+        "summary": event.get("summary", "Activity recorded."),
+        "metadata": _redact_activity(event.get("metadata", event.get("details", {}))),
+        "correlation_id": event.get("correlation_id"),
+        "related_case_id": event.get("related_case_id"),
+        "related_run_id": event.get("related_run_id"),
+        "created_at": event.get("created_at"),
+    }
+
+
+@app.get("/api/activity")
+def list_activity(
+    category: str | None = None,
+    actor_type: str | None = None,
+    actor_user_id: UUID | None = None,
+    action: str | None = None,
+    result: str | None = None,
+    target_type: str | None = None,
+    search: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    sort: str = "created_at_desc",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    principal: Principal = Depends(principal_dependency),
+) -> dict[str, object]:
+    require_permission(principal, ACTIVITY_READ)
+    if category and category not in ACTIVITY_CATEGORIES:
+        raise HTTPException(status_code=422, detail="Unknown activity category.")
+    if sort not in ACTIVITY_SORTS:
+        raise HTTPException(status_code=422, detail="Unknown activity sort.")
+    def aware(value: datetime | None) -> datetime | None:
+        return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+    start, end = aware(created_from), aware(created_to)
+    needle = (search or "").strip().lower()
+    events = []
+    for event in auth_store.activity_events:
+        if event.get("organization_id") != principal.organization_id:
+            continue
+        created_at = event.get("created_at")
+        if not isinstance(created_at, datetime):
+            continue
+        if category and event.get("category") != category:
+            continue
+        if actor_type and str(event.get("actor_type", "")).lower() != actor_type.lower():
+            continue
+        if actor_user_id and event.get("actor_user_id") != actor_user_id:
+            continue
+        if action and str(event.get("action", event.get("event_type", ""))).lower() != action.lower():
+            continue
+        if result and str(event.get("result", "")).lower() != result.lower():
+            continue
+        if target_type and str(event.get("target_type", "")).lower() != target_type.lower():
+            continue
+        if (start and created_at < start) or (end and created_at > end):
+            continue
+        if needle:
+            searchable = " ".join(str(event.get(key, "")) for key in ("actor_display_name", "actor_role_snapshot", "category", "action", "target_display_name", "summary", "correlation_id", "metadata"))
+            if needle not in searchable.lower():
+                continue
+        events.append(event)
+    events.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=sort in {"created_at_desc", "newest"})
+    total = len(events)
+    start_index = (page - 1) * page_size
+    return {"items": [_public_activity_event(event) for event in events[start_index:start_index + page_size]], "total": total, "page": page, "page_size": page_size, "has_next": start_index + page_size < total, "timezone": principal.organization.timezone}
+
+
+@app.get("/api/activity/{event_id}")
+def get_activity(event_id: UUID, principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, ACTIVITY_READ)
+    event = next((item for item in auth_store.activity_events if item.get("id") == event_id and item.get("organization_id") == principal.organization_id), None)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Activity event not found.")
+    return _public_activity_event(event)
 
 
 @app.get("/api/members")
@@ -290,6 +393,8 @@ def create_run(request: StartRunRequest, response: Response, principal: Principa
         raise HTTPException(status_code=500, detail=f"Run failed safely: {exc}") from exc
     if not created:
         response.status_code = 200
+    else:
+        auth_store.record_activity(principal.organization_id, "pr_review_created", None, {"run_id": str(run.id), "scenario": run.scenario_name}, actor_type="System", category="PR Reviews", target_type="run", target_id=run.id, target_display_name=f"PR review {run.id}", related_run_id=run.id)
     return run
 
 
@@ -407,7 +512,35 @@ def _record_decision_success(
     )
     response_snapshot["decision_event_id"] = str(event.id)
     event.response_snapshot["decision_event_id"] = str(event.id)
-    auth_store.record_activity(principal.organization_id, "human_decision_recorded", principal.user.id if principal.user else None, {"case_id": str(case_id), "action": action, "correlation_id": correlation_id, "decision_event_id": str(event.id)})
+    auth_store.record_activity(
+        principal.organization_id,
+        "human_decision_recorded",
+        principal.user.id if principal.user else None,
+        {"case_id": str(case_id), "action": action, "correlation_id": correlation_id, "decision_event_id": str(event.id), "previous_state": previous_state, "resulting_state": resulting, "reason": _trim(request.comment)},
+        actor_type="User" if principal.user else "System",
+        target_type="case",
+        target_id=case_id,
+        target_display_name=f"{case_type} {case_id}",
+        correlation_id=correlation_id,
+        related_case_id=case_id,
+        related_run_id=case_id if case_type == "workflow_run" else None,
+    )
+    remediation = response_snapshot["remediation_result"]
+    if action == "approve" and isinstance(remediation, dict) and remediation.get("created"):
+        auth_store.record_activity(
+            principal.organization_id,
+            "remediation_pr_created",
+            None,
+            {"case_id": str(case_id), "correlation_id": correlation_id, "remediation": remediation},
+            actor_type="Agent",
+            category="PR Reviews" if case_type == "workflow_run" else "Cloud Hunt",
+            target_type="case",
+            target_id=case_id,
+            target_display_name=f"{case_type} {case_id}",
+            correlation_id=correlation_id,
+            related_case_id=case_id,
+            related_run_id=case_id if case_type == "workflow_run" else None,
+        )
     return response_snapshot
 
 
@@ -489,7 +622,10 @@ def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: P
 def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_RUN)
     try:
-        return cloud_hunt_service.start_hunt(request, principal.organization_id)
+        hunt = cloud_hunt_service.start_hunt(request, principal.organization_id)
+        auth_store.record_activity(principal.organization_id, "cloud_hunt_started", principal.user.id if principal.user else None, {"hunt_id": str(hunt.id), "provider_scope": request.provider_scope}, actor_type="User" if principal.user else "System", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)
+        auth_store.record_activity(principal.organization_id, "cloud_hunt_completed", None, {"hunt_id": str(hunt.id), "candidates": hunt.candidates_found}, actor_type="Agent", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)
+        return hunt
     except CloudHuntConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

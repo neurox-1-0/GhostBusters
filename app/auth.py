@@ -58,6 +58,7 @@ APPROVALS_ADD_CONTEXT = "approvals.add_context"
 APPROVALS_MODIFY = "approvals.modify"
 AUDIT_READ = "audit.read"
 ACTIVITY_READ = "activity.read"
+ACTIVITY_EXPORT = "activity.export"
 BILLING_READ = "billing.read"
 BILLING_MANAGE = "billing.manage"
 
@@ -67,6 +68,46 @@ ROLE_LABELS = {
     OrganizationRole.reviewer: "Reviewer",
     OrganizationRole.viewer: "Viewer",
 }
+
+ACTIVITY_CATEGORY_LABELS = {
+    "human_decision": "Human Decisions",
+    "pr_review": "PR Reviews",
+    "cloud_hunt": "Cloud Hunt",
+    "member": "Members",
+    "roles_access": "Roles and Access",
+    "integration": "Integrations",
+    "policy": "Policies",
+    "authentication": "Authentication",
+    "workspace": "Workspace",
+    "system": "System",
+}
+
+
+def activity_category(event_type: str) -> str:
+    value = event_type.lower()
+    if any(token in value for token in ("human_decision", "approval", "rejection", "evidence", "context", "recommendation_modified", "preferred_action")):
+        return "Human Decisions"
+    if any(token in value for token in ("cloud_hunt", "candidate", "provider_inventory", "resource_normalized")):
+        return "Cloud Hunt"
+    if any(token in value for token in ("member", "invitation", "user_account")):
+        return "Members"
+    if any(token in value for token in ("role", "permission")):
+        return "Roles and Access"
+    if "integration" in value or "github" in value or "terraform" in value:
+        return "Integrations"
+    if "policy" in value:
+        return "Policies"
+    if any(token in value for token in ("login", "logout", "authentication")):
+        return "Authentication"
+    if any(token in value for token in ("workspace", "registered")):
+        return "Workspace"
+    return "System"
+
+
+def activity_summary(event_type: str, details: dict[str, object]) -> str:
+    if details.get("summary"):
+        return str(details["summary"])
+    return event_type.replace("_", " ").strip().capitalize()
 
 ROLE_PERMISSIONS = {
     OrganizationRole.owner: {
@@ -94,6 +135,7 @@ ROLE_PERMISSIONS = {
         APPROVALS_MODIFY,
         AUDIT_READ,
         ACTIVITY_READ,
+        ACTIVITY_EXPORT,
         BILLING_READ,
         BILLING_MANAGE,
     },
@@ -121,6 +163,7 @@ ROLE_PERMISSIONS = {
         APPROVALS_MODIFY,
         AUDIT_READ,
         ACTIVITY_READ,
+        ACTIVITY_EXPORT,
     },
     OrganizationRole.reviewer: {
         WORKSPACE_READ,
@@ -519,16 +562,61 @@ class AuthStore:
         membership = self.membership_for_user(DEMO_USER_ID, DEFAULT_DEVELOPMENT_ORGANIZATION_ID)
         return make_principal(None, self.organizations[DEFAULT_DEVELOPMENT_ORGANIZATION_ID], membership, authenticated=False, demo_mode=True)
 
-    def record_activity(self, organization_id: UUID, event_type: str, actor_user_id: UUID | None, details: dict[str, object]) -> None:
-        self.activity_events.append(
-            {
-                "organization_id": organization_id,
-                "event_type": event_type,
-                "actor_user_id": actor_user_id,
-                "details": details,
-                "created_at": utc_now(),
-            }
-        )
+    def record_activity(
+        self,
+        organization_id: UUID,
+        event_type: str,
+        actor_user_id: UUID | None,
+        details: dict[str, object],
+        *,
+        actor_type: str | None = None,
+        category: str | None = None,
+        action: str | None = None,
+        target_type: str | None = None,
+        target_id: str | UUID | None = None,
+        target_display_name: str | None = None,
+        result: str = "success",
+        summary: str | None = None,
+        correlation_id: str | None = None,
+        related_case_id: str | UUID | None = None,
+        related_run_id: str | UUID | None = None,
+    ) -> None:
+        """Append a workspace event with actor and target snapshots.
+
+        This intentionally has no update or delete counterpart. Older producers may
+        still pass event_type/details only; those records are normalized here.
+        """
+        now = utc_now()
+        user = self.users_by_id.get(actor_user_id) if actor_user_id else None
+        membership = next((item for item in self.memberships.values() if item.user_id == actor_user_id and item.organization_id == organization_id), None) if actor_user_id else None
+        inferred_category = category or activity_category(event_type)
+        inferred_action = action or event_type
+        inferred_target_type = target_type or ("case" if details.get("case_id") else "workspace")
+        inferred_target_id = target_id or details.get("case_id") or details.get("run_id")
+        inferred_summary = summary or activity_summary(event_type, details)
+        self.activity_events.append({
+            "id": uuid4(),
+            "organization_id": organization_id,
+            "actor_type": actor_type or ("User" if actor_user_id else "System"),
+            "actor_user_id": actor_user_id,
+            "actor_display_name": user.display_name if user else ("System" if not actor_user_id else "Unknown user"),
+            "actor_role_snapshot": ROLE_LABELS.get(membership.role) if membership else ("System" if not actor_user_id else None),
+            "category": inferred_category,
+            "action": inferred_action,
+            "target_type": inferred_target_type,
+            "target_id": str(inferred_target_id) if inferred_target_id else None,
+            "target_display_name": target_display_name or str(details.get("target_display_name") or inferred_target_id or "Workspace"),
+            "result": result,
+            "summary": inferred_summary,
+            "metadata": dict(details),
+            "correlation_id": correlation_id or details.get("correlation_id"),
+            "related_case_id": str(related_case_id or details.get("case_id")) if (related_case_id or details.get("case_id")) else None,
+            "related_run_id": str(related_run_id or details.get("run_id")) if (related_run_id or details.get("run_id")) else None,
+            "created_at": now,
+            # Compatibility for the existing overview/test producers.
+            "event_type": event_type,
+            "details": dict(details),
+        })
 
     def _ensure_development_workspace(self) -> None:
         now = utc_now()

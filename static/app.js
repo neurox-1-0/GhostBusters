@@ -47,6 +47,7 @@ const state = {
   invitationPreview: null,
   members: [],
   invitations: [],
+  activity: { items: [], total: 0, page: 1, pageSize: 25, hasNext: false, error: "", filters: { category: "", actorType: "", action: "", result: "", targetType: "", search: "", dateRange: "all", createdFrom: "", createdTo: "", sort: "created_at_desc" } },
 };
 
 const stageDefinitions = [
@@ -624,6 +625,7 @@ function renderIdentity() {
     $("sign-out-button").disabled = !authenticated;
   }
   if ($("settings-view-button")) $("settings-view-button").hidden = authenticated && !hasPermission("members.read");
+  if ($("activity-view-button")) $("activity-view-button").hidden = authenticated && !hasPermission("activity.read");
   [["reviewer-identity-name", userDisplayName()], ["reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`], ["cloud-reviewer-identity-name", userDisplayName()], ["cloud-reviewer-identity-detail", `${roleLabel()} · ${userEmail()}`]].forEach(([id, value]) => {
     if ($(id)) $(id).textContent = value;
   });
@@ -1056,6 +1058,7 @@ async function loadInitial() {
   loadPRReviews();
   loadReviewQueue();
   loadMembers();
+  loadActivity();
   renderAll();
 }
 
@@ -1616,6 +1619,89 @@ function allowedReviewActions(status) {
   if (status === "rejected" || status === "approval_revoked") return ["reopen_case", "add_follow_up_context"];
   if (status === "reopened") return ["add_follow_up_context", "request_evidence", "reject"];
   return [];
+}
+
+function activityExactTimestamp(value) {
+  const date = parseTime(value);
+  if (!date) return "Not recorded";
+  const timezone = state.activity.timezone || state.currentUser?.organization?.timezone || userTimezone();
+  try { return `${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium", timeZone: timezone }).format(date)} ${timezone}`; }
+  catch { return exactTimestamp(value); }
+}
+
+function activityQuery() {
+  const filters = state.activity.filters;
+  const params = new URLSearchParams({ page: String(state.activity.page), page_size: String(state.activity.pageSize), sort: filters.sort });
+  if (filters.category) params.set("category", filters.category);
+  if (filters.actorType) params.set("actor_type", filters.actorType);
+  if (filters.action.trim()) params.set("action", filters.action.trim());
+  if (filters.result) params.set("result", filters.result);
+  if (filters.targetType) params.set("target_type", filters.targetType);
+  if (filters.search.trim()) params.set("search", filters.search.trim());
+  if (filters.dateRange === "custom") {
+    if (filters.createdFrom) params.set("created_from", new Date(filters.createdFrom).toISOString());
+    if (filters.createdTo) params.set("created_to", new Date(filters.createdTo).toISOString());
+  } else if (filters.dateRange !== "all") {
+    const days = filters.dateRange === "today" ? 1 : Number(filters.dateRange.replace("d", ""));
+    params.set("created_from", new Date(Date.now() - days * 86400000).toISOString());
+  }
+  return params;
+}
+
+function activityActionLabel(action) { return labelFor(action || "activity"); }
+
+function renderActivityLog() {
+  const list = $("activity-list");
+  if (!list) return;
+  clear(list);
+  const data = state.activity;
+  $("activity-timezone").textContent = `Timezone: ${data.timezone || state.currentUser?.organization?.timezone || userTimezone()}`;
+  $("activity-pagination-summary").textContent = data.total ? `Showing ${(data.page - 1) * data.pageSize + 1}-${Math.min(data.page * data.pageSize, data.total)} of ${data.total} events` : "0 events";
+  $("activity-prev-button").disabled = data.page <= 1;
+  $("activity-next-button").disabled = !data.hasNext;
+  $("activity-page-size").value = String(data.pageSize);
+  document.querySelectorAll("[data-activity-category]").forEach((button) => {
+    const active = button.dataset.activityCategory === data.filters.category;
+    button.classList.toggle("filter-chip-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  if (data.loading) { renderSkeletonList(list, 6); return; }
+  if (data.error) { const error = el("div", "empty-state", data.error); const retry = el("button", "secondary compact", "Retry"); retry.type = "button"; retry.addEventListener("click", loadActivity); append(error, retry); list.appendChild(error); return; }
+  if (!data.items.length) { list.appendChild(el("div", "empty-state", data.filters.category || data.filters.search ? "No activity matches these filters." : "No activity recorded yet.")); return; }
+  const rows = data.items.map((item) => ({ ...item, timestamp: append(el("div"), el("strong", null, activityExactTimestamp(item.created_at)), el("small", "row-meta", relativeTime(item.created_at))) }));
+  list.appendChild(responsiveTable([
+    { label: "Timestamp", render: (item) => item.timestamp },
+    { label: "Actor", render: (item) => append(el("div"), el("strong", "row-title", item.actor_display_name), el("small", "row-meta", item.actor_type)) },
+    { label: "Role or actor type", render: (item) => item.actor_role_snapshot || item.actor_type },
+    { label: "Action", render: (item) => activityActionLabel(item.action) },
+    { label: "Target", render: (item) => item.target_display_name || item.target_id || "Workspace" },
+    { label: "Category", render: (item) => el("span", "status-badge status-neutral", item.category) },
+    { label: "Result", render: (item) => el("span", `status-badge ${item.result === "success" ? "status-completed" : "status-warning"}`, labelFor(item.result)) },
+    { label: "Details", render: (item) => { const button = el("button", "secondary compact", "View details"); button.type = "button"; button.addEventListener("click", () => openActivityDetails(item)); return button; } },
+  ], rows, "No activity matches these filters."));
+}
+
+async function loadActivity() {
+  if (!state.currentUser?.authenticated || !hasPermission("activity.read")) return;
+  const data = state.activity;
+  data.loading = true; data.error = ""; renderActivityLog();
+  try {
+    const payload = await api(`/api/activity?${activityQuery().toString()}`);
+    data.items = payload.items || []; data.total = payload.total || 0; data.page = payload.page || 1; data.pageSize = payload.page_size || data.pageSize; data.hasNext = Boolean(payload.has_next); data.timezone = payload.timezone;
+  } catch (error) { data.error = friendlyError(error, "Activity Log could not be loaded."); }
+  data.loading = false; renderActivityLog();
+}
+
+function openActivityDetails(item) {
+  const existing = $("activity-details-dialog"); existing?.remove();
+  const backdrop = el("div", "modal-backdrop"); backdrop.id = "activity-details-dialog";
+  const dialog = el("section", "demo-modal activity-details-drawer"); dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true");
+  const close = el("button", "icon-button", "×"); close.type = "button"; close.setAttribute("aria-label", "Close activity details"); close.addEventListener("click", () => backdrop.remove());
+  append(dialog, append(el("div", "section-heading"), append(el("div"), el("p", "kicker", "Activity details"), el("h2", "section-title", activityActionLabel(item.action)), close)), dataList([
+    ["Exact time", activityExactTimestamp(item.created_at)], ["Actor", `${item.actor_display_name} (${item.actor_type})`], ["Role snapshot", item.actor_role_snapshot || item.actor_type], ["Action", activityActionLabel(item.action)], ["Target", item.target_display_name || item.target_id], ["Result", labelFor(item.result)], ["Summary", item.summary], ["Previous state", item.metadata?.previous_state], ["Resulting state", item.metadata?.resulting_state], ["Reason/comment", item.metadata?.reason || item.metadata?.comment], ["Correlation ID", item.correlation_id], ["Related case", item.related_case_id], ["Related run", item.related_run_id], ["Metadata", item.metadata],
+  ]));
+  if (item.related_case_id || item.related_run_id) { const links = el("div", "start-actions"); if (item.related_run_id) { const link = el("button", "secondary compact", "Open PR Review"); link.type = "button"; link.addEventListener("click", () => { backdrop.remove(); state.run = state.prReviews.find((run) => run.id === item.related_run_id) || null; switchMode("simple"); }); links.appendChild(link); } const audit = el("button", "secondary compact", "Open Technical Audit"); audit.type = "button"; audit.addEventListener("click", () => { backdrop.remove(); state.run = state.prReviews.find((run) => run.id === (item.related_run_id || item.related_case_id)) || null; switchMode("technical"); }); links.appendChild(audit); dialog.appendChild(links); }
+  backdrop.appendChild(dialog); document.body.appendChild(backdrop); close.focus?.();
 }
 
 function renderHumanControls() {
@@ -2303,7 +2389,7 @@ function renderAll() {
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers();
+  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
 function renderAssistantTriggers() {
@@ -2321,9 +2407,10 @@ function switchMode(mode) {
     "cloud-hunt": ["Discovery", "Cloud Hunt"],
     "review-queue": ["Human control", "Approvals"],
     technical: ["Audit", "Technical Audit"],
+    activity: ["Workspace", "Activity Log"],
     settings: ["Settings", "Members"],
   };
-  ["overview", "simple", "cloud-hunt", "review-queue", "technical", "settings"].forEach((item) => {
+  ["overview", "simple", "cloud-hunt", "review-queue", "technical", "activity", "settings"].forEach((item) => {
     const view = item === "simple" ? "simple-view" : `${item}-view`;
     const button = item === "simple" ? "simple-view-button" : `${item}-view-button`;
     $(view).hidden = item !== mode;
@@ -2332,6 +2419,7 @@ function switchMode(mode) {
   });
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
+  if (mode === "activity") loadActivity();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2916,6 +3004,21 @@ function bindEvents() {
   on("cloud-hunt-view-button", "click", () => switchMode("cloud-hunt"));
   on("review-queue-view-button", "click", () => { switchMode("review-queue"); loadReviewQueue(); });
   on("technical-view-button", "click", () => switchView(true));
+  on("activity-view-button", "click", () => { switchMode("activity"); loadActivity(); });
+  on("activity-refresh-button", "click", loadActivity);
+  document.querySelectorAll("[data-activity-category]").forEach((filter) => filter.addEventListener("click", () => { state.activity.filters.category = filter.dataset.activityCategory || ""; state.activity.page = 1; loadActivity(); }));
+  on("activity-actor-type", "change", (event) => { state.activity.filters.actorType = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-result-filter", "change", (event) => { state.activity.filters.result = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-target-filter", "change", (event) => { state.activity.filters.targetType = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-sort-filter", "change", (event) => { state.activity.filters.sort = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-date-range", "change", (event) => { state.activity.filters.dateRange = event.target.value; $("activity-custom-dates").hidden = event.target.value !== "custom"; state.activity.page = 1; loadActivity(); });
+  on("activity-created-from", "change", (event) => { state.activity.filters.createdFrom = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-created-to", "change", (event) => { state.activity.filters.createdTo = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-page-size", "change", (event) => { state.activity.pageSize = Number(event.target.value); state.activity.page = 1; loadActivity(); });
+  on("activity-action-filter", "change", (event) => { state.activity.filters.action = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-search-input", "change", (event) => { state.activity.filters.search = event.target.value; state.activity.page = 1; loadActivity(); });
+  on("activity-prev-button", "click", () => { state.activity.page = Math.max(1, state.activity.page - 1); loadActivity(); });
+  on("activity-next-button", "click", () => { if (state.activity.hasNext) { state.activity.page += 1; loadActivity(); } });
   on("open-technical-button", "click", () => switchView(true));
   document.querySelectorAll("[data-review-action]").forEach((button) => button.addEventListener("click", () => selectReviewAction(button.dataset.reviewAction)));
   on("submit-review-button", "click", submitSelectedReview);

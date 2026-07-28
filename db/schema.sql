@@ -77,6 +77,29 @@ ALTER TABLE invitations ALTER COLUMN normalized_email SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS invitations_pending_email_idx ON invitations(organization_id, normalized_email) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS activity_events_org_idx ON activity_events(organization_id, created_at);
 
+-- Activity Log uses append-only rows. Production deployments should replace these
+-- additive statements with versioned migrations before changing this schema.
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS actor_type TEXT NOT NULL DEFAULT 'System';
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS actor_display_name TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS actor_role_snapshot TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'System';
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS action TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS target_type TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS target_id TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS target_display_name TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT 'success';
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS correlation_id TEXT;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS related_case_id UUID;
+ALTER TABLE activity_events ADD COLUMN IF NOT EXISTS related_run_id UUID;
+CREATE INDEX IF NOT EXISTS activity_events_actor_idx ON activity_events(actor_user_id, created_at);
+CREATE INDEX IF NOT EXISTS activity_events_category_idx ON activity_events(category);
+CREATE INDEX IF NOT EXISTS activity_events_action_idx ON activity_events(action);
+CREATE INDEX IF NOT EXISTS activity_events_target_type_idx ON activity_events(target_type);
+CREATE INDEX IF NOT EXISTS activity_events_correlation_idx ON activity_events(correlation_id);
+CREATE INDEX IF NOT EXISTS activity_events_case_idx ON activity_events(related_case_id);
+
 INSERT INTO organizations (id, name, slug, status, timezone, created_at, updated_at)
 VALUES ('00000000-0000-0000-0000-000000000001', 'GhostBusters Development', 'ghostbusters-dev', 'active', 'UTC', NOW(), NOW())
 ON CONFLICT (id) DO NOTHING;
