@@ -84,6 +84,9 @@ class GitHubClient:
     def list_repositories(self) -> list[dict[str, Any]]:
         return self._request("GET", "/user/repos?per_page=100&sort=updated", retry_read=True)
 
+    def list_installation_repositories(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/installation/repositories?per_page=100", retry_read=True).get("repositories", [])
+
     def get_repository(self, owner: str, repo: str) -> dict[str, Any]:
         return self._request("GET", self._repo(owner, repo), retry_read=True)
 

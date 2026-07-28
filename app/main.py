@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import (
@@ -93,6 +93,7 @@ from core.github_integration import github_integration_store
 from core.jira_integration import jira_integration_store
 from core.assistant_service import AssistantValidationError, assistant_service
 from integrations.github_client import GitHubAPIError
+from integrations.github_app import GitHubAppClient, github_app_state
 from integrations.github_webhook import repository_allowed, verify_signature
 from integrations.terraform_runner import TerraformAnalysisError, parse_github_terraform_change, select_terraform_files
 from integrations.cloud_adapters import RealAWSCloudAdapter
@@ -1154,7 +1155,65 @@ def get_github_config(principal: Principal = Depends(principal_dependency)):
 @app.patch("/api/integrations/github/config")
 def update_github_config(request: GitHubIntegrationConfigRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, INTEGRATIONS_GITHUB_MANAGE)
-    return github_integration_store.update(principal.organization_id, request)
+    try: return github_integration_store.update(principal.organization_id, request)
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/integrations/github/connect")
+def connect_github(principal: Principal = Depends(principal_dependency)) -> RedirectResponse:
+    require_permission(principal, INTEGRATIONS_GITHUB_MANAGE)
+    if not settings.github_app_name or not settings.github_app_callback_url or not settings.github_app_id:
+        raise HTTPException(status_code=503, detail="GitHub App onboarding is not configured.")
+    state = github_app_state.create(str(principal.organization_id), str(principal.user.id if principal.user else ""))
+    url = f"https://github.com/apps/{settings.github_app_name}/installations/new?state={state}"
+    auth_store.record_activity(principal.organization_id, "github_connection_started", principal.user.id if principal.user else None, {"correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations")
+    return RedirectResponse(url=url, status_code=307)
+
+
+@app.get("/api/integrations/github/callback")
+def github_callback(state: str, installation_id: int | None = None, setup_action: str | None = None) -> RedirectResponse:
+    try: payload = github_app_state.consume(state)
+    except ValueError as exc: return RedirectResponse(url="/?github=error&reason=invalid_state", status_code=303)
+    organization_id = UUID(str(payload["organization_id"]))
+    if not installation_id: return RedirectResponse(url="/?github=error&reason=missing_installation", status_code=303)
+    try:
+        app_client = GitHubAppClient(installation_id)
+        installation = app_client.installation(); client = app_client.api_client()
+        repositories = client.list_installation_repositories()
+        safe = [{"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": (item.get("default_branch") or "main"), "installation_access": "available"} for item in repositories if item.get("full_name")]
+        github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=(installation.get("account") or {}).get("login"), account_type=(installation.get("account") or {}).get("type"), repositories=safe)
+        auth_store.record_activity(organization_id, "github_connection_completed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"installation_id": installation_id, "repository_count": len(safe), "correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations")
+        return RedirectResponse(url="/?github=connected", status_code=303)
+    except Exception as exc:
+        auth_store.record_activity(organization_id, "github_connection_failed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"reason": "GitHub App connection failed safely.", "correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations", result="failure")
+        return RedirectResponse(url="/?github=error&reason=connection_failed", status_code=303)
+
+
+@app.get("/api/integrations/github/repositories")
+def github_repositories(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, INTEGRATIONS_GITHUB_READ)
+    config = github_integration_store.get(principal.organization_id)
+    if config.installation_id:
+        try:
+            repositories = GitHubAppClient(config.installation_id).api_client().list_installation_repositories()
+            safe = [{"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": item.get("default_branch") or "main", "installation_access": "available"} for item in repositories if item.get("full_name")]
+            github_integration_store.update_installation(principal.organization_id, installation_id=config.installation_id, account_login=config.account_login, account_type=config.account_type, repositories=safe)
+            return {"items": safe, "count": len(safe)}
+        except GitHubAPIError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if settings.github_development_token_fallback and settings.github_token:
+        items = GitHubContextAdapter(workflow_service.github_client, config.allowed_repositories, config.source_mode).validate().get("accessible_repositories", []) if workflow_service.github_client else []
+        return {"items": [{"full_name": name, "installation_access": "development_token"} for name in items], "count": len(items), "source_mode": "development_token_fallback"}
+    return {"items": [], "count": 0, "source_mode": "not_connected"}
+
+
+@app.post("/api/integrations/github/disconnect")
+def disconnect_github(request: Request, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_GITHUB_MANAGE)
+    config = github_integration_store.get(principal.organization_id)
+    try: updated = github_integration_store.disconnect(principal.organization_id, config.version)
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    auth_store.record_activity(principal.organization_id, "github_disconnected", principal.user.id if principal.user else None, {"correlation_id": request.headers.get("X-Correlation-ID")}, actor_type="Integration", category="Integrations")
+    return updated
 
 
 @app.get("/api/integrations/jira/config")
@@ -1511,6 +1570,23 @@ async def github_webhook(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Malformed webhook JSON.") from exc
     action = payload.get("action")
+    installation_id = int((payload.get("installation") or {}).get("id") or 0)
+    if x_github_event in {"installation", "installation_repositories"}:
+        association = github_integration_store.find_by_installation(installation_id) if installation_id else None
+        if association:
+            organization_id, config = association
+            if x_github_event == "installation" and action == "deleted":
+                github_integration_store.disconnect(organization_id)
+                event_name = "github_installation_removed"
+            else:
+                current = {item.get("full_name"): item for item in config.connected_repositories if item.get("full_name")}
+                for item in (payload.get("repositories_added") or []):
+                    if item.get("full_name"): current[item["full_name"]] = {"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": item.get("default_branch") or "main", "installation_access": "available"}
+                for item in (payload.get("repositories_removed") or []): current.pop(item.get("full_name"), None)
+                github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=config.account_login, account_type=config.account_type, repositories=list(current.values()))
+                event_name = "github_repositories_changed"
+            auth_store.record_activity(organization_id, event_name, None, {"installation_id": installation_id, "action": action, "correlation_id": x_github_delivery}, actor_type="Integration", category="Integrations", correlation_id=x_github_delivery)
+        return {"status": "processed" if association else "ignored", "event": x_github_event}
     if action not in {"opened", "reopened", "synchronize"}:
         return {"status": "ignored", "reason": f"Unsupported pull_request action: {action}"}
     repository_delivery = bool(payload.get("repository") or payload.get("pull_request"))

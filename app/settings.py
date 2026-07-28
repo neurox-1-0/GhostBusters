@@ -94,6 +94,16 @@ class Settings:
     github_allowed_repositories: tuple[str, ...] = tuple(item.strip().lower() for item in os.getenv("GITHUB_ALLOWED_REPOSITORIES", "").split(",") if item.strip())
     github_api_base_url: str = os.getenv("GITHUB_API_BASE_URL", "https://api.github.com")
     github_request_timeout_seconds: float = float(os.getenv("GITHUB_REQUEST_TIMEOUT_SECONDS", "10"))
+    github_app_id: str | None = os.getenv("GITHUB_APP_ID") or None
+    github_app_client_id: str | None = os.getenv("GITHUB_APP_CLIENT_ID") or None
+    github_app_client_secret: str | None = os.getenv("GITHUB_APP_CLIENT_SECRET") or None
+    github_app_private_key: str | None = os.getenv("GITHUB_APP_PRIVATE_KEY") or None
+    github_app_private_key_path: Path | None = Path(os.getenv("GITHUB_APP_PRIVATE_KEY_PATH")) if os.getenv("GITHUB_APP_PRIVATE_KEY_PATH") else None
+    github_app_name: str | None = os.getenv("GITHUB_APP_NAME") or None
+    github_app_callback_url: str | None = os.getenv("GITHUB_APP_CALLBACK_URL") or None
+    github_app_state_ttl_seconds: int = int(os.getenv("GITHUB_APP_STATE_TTL_SECONDS", "600"))
+    github_app_installation_token_ttl_seconds: int = int(os.getenv("GITHUB_APP_INSTALLATION_TOKEN_TTL_SECONDS", "300"))
+    github_development_token_fallback: bool = os.getenv("GITHUB_DEVELOPMENT_TOKEN_FALLBACK", "false" if os.getenv("APP_ENV", "development").lower() == "production" else "true").lower() in {"1", "true", "yes"}
     github_integration_config_path: Path = Path(os.getenv("GITHUB_INTEGRATION_CONFIG_PATH", ".runtime/github_integrations.json"))
     jira_base_url: str | None = os.getenv("JIRA_BASE_URL") or None
     jira_email: str | None = os.getenv("JIRA_EMAIL") or None
@@ -137,6 +147,8 @@ def validate_startup_settings(config: Settings = settings) -> None:
         errors.append("DEMO_MODE_ENABLED must be false unless ALLOW_PRODUCTION_DEMO_MODE=true.")
     if config.github_integration_enabled and not config.github_webhook_secret:
         errors.append("GITHUB_WEBHOOK_SECRET is required when GitHub webhooks are enabled.")
+    if config.github_development_token_fallback:
+        errors.append("GITHUB_DEVELOPMENT_TOKEN_FALLBACK must be false in production; configure a GitHub App instead.")
     if config.auto_create_schema:
         errors.append("AUTO_CREATE_SCHEMA=false is required; use the versioned migration command.")
     if errors:

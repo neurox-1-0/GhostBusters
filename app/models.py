@@ -998,6 +998,11 @@ class GitHubIntegrationConfig(AppModel):
     organization_id: UUID
     enabled: bool = False
     installation_identity: str | None = None
+    installation_id: int | None = None
+    account_login: str | None = None
+    account_type: str | None = None
+    connected_repositories: list[dict[str, Any]] = Field(default_factory=list)
+    version: int = 1
     allowed_repositories: list[str] = Field(default_factory=list)
     source_mode: str = "real_github"
     created_at: datetime
@@ -1012,6 +1017,7 @@ class GitHubIntegrationConfigRequest(AppModel):
     installation_identity: str | None = None
     allowed_repositories: list[str] | None = None
     source_mode: str | None = None
+    expected_version: int | None = None
 
 
 class JiraIntegrationConfig(AppModel):

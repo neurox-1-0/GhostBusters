@@ -1379,9 +1379,20 @@ function renderGitHubConfig() {
   $("github-repositories-input").value = (config.allowed_repositories || []).join(",");
   $("github-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
   $("github-permission-warnings").textContent = config.last_failure_summary || "None recorded";
+  if ($("github-installation-id")) $("github-installation-id").textContent = config.installation_id || "Not connected";
+  if ($("github-account-id")) $("github-account-id").textContent = config.account_login ? `${config.account_login}${config.account_type ? ` (${config.account_type})` : ""}` : config.installation_identity || "Not connected";
+  if ($("github-repository-list")) $("github-repository-list").textContent = (config.connected_repositories || []).map((item) => item.full_name).join(", ") || "None connected";
+  const connected = Boolean(config.installation_id);
+  if ($("github-connected-state")) $("github-connected-state").hidden = !connected;
+  if ($("github-disconnected-state")) $("github-disconnected-state").hidden = connected;
+  setStatusBadge("github-connection-status", { label: connected ? "Connected" : "Not connected", className: connected ? "status-approved" : "status-neutral" });
   renderRepositorySettings();
   const editable = hasPermission("integrations.github.manage"); $("github-save-button").hidden = !editable; $("github-enabled-select").disabled = !editable; $("github-installation-input").readOnly = !editable; $("github-repositories-input").readOnly = !editable;
 }
+
+function connectGitHub() { window.location.href = "/api/integrations/github/connect"; }
+async function manageGitHubRepositories() { try { const result = await api("/api/integrations/github/repositories"); state.githubConfig = await api("/api/integrations/github/config"); renderGitHubConfig(); setMessage("github-message", `${result.count || 0} repositories available from the GitHub installation.`, true); } catch (error) { setMessage("github-message", friendlyError(error, "Repositories could not be loaded.")); } }
+async function disconnectGitHub() { if (!window.confirm("Disconnect the GitHub App from this workspace? Historical reviews and audit records will remain.")) return; try { state.githubConfig = await api("/api/integrations/github/disconnect", { method: "POST", body: "{}" }); renderGitHubConfig(); setMessage("github-message", "GitHub disconnected. Historical reviews remain available.", true); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub could not be disconnected.")); } }
 
 async function saveGitHubConfig() {
   try { state.githubConfig = await api("/api/integrations/github/config", { method: "PATCH", body: JSON.stringify({ enabled: $("github-enabled-select").value === "true", installation_identity: $("github-installation-input").value.trim() || null, allowed_repositories: $("github-repositories-input").value.split(",").map((item) => item.trim()).filter(Boolean) }) }); renderGitHubConfig(); setMessage("github-message", "GitHub settings saved. Token material was not stored.", true); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub settings could not be saved.")); }
@@ -3552,6 +3563,9 @@ function bindEvents() {
   on("aws-validate-button", "click", validateAWSConnection);
   on("github-save-button", "click", saveGitHubConfig);
   on("github-validate-button", "click", validateGitHubConnection);
+  on("github-connect-button", "click", connectGitHub);
+  on("github-manage-repositories-button", "click", manageGitHubRepositories);
+  on("github-disconnect-button", "click", disconnectGitHub);
   on("jira-save-button", "click", saveJiraConfig);
   on("jira-validate-button", "click", validateJiraConnection);
   on("schedule-create-button", "click", createCloudSchedule);
