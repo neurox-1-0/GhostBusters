@@ -246,6 +246,26 @@ class AIPlanner:
     ) -> AIPlannerResult:
         prior_evidence = list(prior_evidence or [])
         prior_executions = list(prior_executions or [])
+        if category == "hard_policy_precheck":
+            ai_decisions = list(decisions or [])
+            ai_decisions.append(AIDecisionRecord(
+                sequence_number=len(ai_decisions) + 1,
+                model="deterministic-planner",
+                planning_mode=mode,
+                purpose="decide_next_step",
+                input_summary="Deterministic destructive or production precheck.",
+                proposed_action=None,
+                accepted=True,
+                validation_result="Deterministic hard policy precheck blocked tool execution.",
+                fallback_used=False,
+                fallback_reason=reason,
+                latency_ms=0,
+                created_at=utc_now(),
+                usage_metadata={},
+                error_category=category,
+                error=None,
+            ))
+            return self._result(mode, objective, [], prior_evidence, ai_decisions, [], None, f"{mode}:{category}")
         executed = {record.tool_name for record in prior_executions}
         remaining_plan = deterministic_plan.model_copy(
             deep=True,

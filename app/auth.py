@@ -50,6 +50,12 @@ CLOUD_HUNTS_READ = "cloud_hunts.read"
 CLOUD_HUNTS_RUN = "cloud_hunts.run"
 APPROVALS_READ = "approvals.read"
 APPROVALS_DECIDE = "approvals.decide"
+APPROVALS_REJECT = "approvals.reject"
+APPROVALS_REVOKE = "approvals.revoke"
+APPROVALS_REOPEN = "approvals.reopen"
+APPROVALS_REQUEST_EVIDENCE = "approvals.request_evidence"
+APPROVALS_ADD_CONTEXT = "approvals.add_context"
+APPROVALS_MODIFY = "approvals.modify"
 AUDIT_READ = "audit.read"
 ACTIVITY_READ = "activity.read"
 BILLING_READ = "billing.read"
@@ -79,6 +85,13 @@ ROLE_PERMISSIONS = {
         PR_REVIEWS_READ,
         CLOUD_HUNTS_READ,
         APPROVALS_READ,
+        APPROVALS_DECIDE,
+        APPROVALS_REJECT,
+        APPROVALS_REVOKE,
+        APPROVALS_REOPEN,
+        APPROVALS_REQUEST_EVIDENCE,
+        APPROVALS_ADD_CONTEXT,
+        APPROVALS_MODIFY,
         AUDIT_READ,
         ACTIVITY_READ,
         BILLING_READ,
@@ -99,6 +112,13 @@ ROLE_PERMISSIONS = {
         CLOUD_HUNTS_READ,
         CLOUD_HUNTS_RUN,
         APPROVALS_READ,
+        APPROVALS_DECIDE,
+        APPROVALS_REJECT,
+        APPROVALS_REVOKE,
+        APPROVALS_REOPEN,
+        APPROVALS_REQUEST_EVIDENCE,
+        APPROVALS_ADD_CONTEXT,
+        APPROVALS_MODIFY,
         AUDIT_READ,
         ACTIVITY_READ,
     },
@@ -108,6 +128,12 @@ ROLE_PERMISSIONS = {
         CLOUD_HUNTS_READ,
         APPROVALS_READ,
         APPROVALS_DECIDE,
+        APPROVALS_REJECT,
+        APPROVALS_REVOKE,
+        APPROVALS_REOPEN,
+        APPROVALS_REQUEST_EVIDENCE,
+        APPROVALS_ADD_CONTEXT,
+        APPROVALS_MODIFY,
         AUDIT_READ,
     },
     OrganizationRole.viewer: {
@@ -632,7 +658,15 @@ def make_principal(
 ) -> Principal:
     permissions = set(ROLE_PERMISSIONS[membership.role])
     if membership.approval_permission_enabled:
-        permissions.add(APPROVALS_DECIDE)
+        permissions.update({
+            APPROVALS_DECIDE,
+            APPROVALS_REJECT,
+            APPROVALS_REVOKE,
+            APPROVALS_REOPEN,
+            APPROVALS_REQUEST_EVIDENCE,
+            APPROVALS_ADD_CONTEXT,
+            APPROVALS_MODIFY,
+        })
     if demo_mode:
         permissions.add(CLOUD_HUNTS_RUN)
     return Principal(

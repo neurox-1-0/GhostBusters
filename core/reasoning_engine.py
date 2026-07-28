@@ -77,6 +77,8 @@ def _build_decision(
     explicit_conflict_audit = scenario.name == "conflicting"
     hard_block = (resource.destructive and not explicit_conflict_audit) or (resource.environment or "").lower() == "production"
     preferred = _select_preferred(alternatives, hard_block)
+    if explicit_conflict_audit:
+        preferred = next(item for item in alternatives if item.action == "request_evidence")
     initial_policy = evaluate_policy(resource, evidence, missing, preferred, conflicts=conflicts)
     verifier_findings = run_verifier(resource, evidence, conflicts, preferred)
     provisional_confidence = calculate_confidence(evidence, missing, conflicts, initial_policy, plan.selected_tools)

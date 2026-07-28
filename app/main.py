@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.models import (
     AskGhostBustersRequest, AskGhostBustersResponse,
+    AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
@@ -22,6 +23,12 @@ from app.models import (
 from app.settings import settings
 from app.auth import (
     APPROVALS_DECIDE,
+    APPROVALS_REJECT,
+    APPROVALS_REVOKE,
+    APPROVALS_REOPEN,
+    APPROVALS_REQUEST_EVIDENCE,
+    APPROVALS_ADD_CONTEXT,
+    APPROVALS_MODIFY,
     APPROVALS_READ,
     AUDIT_READ,
     CLOUD_HUNTS_READ,
@@ -44,6 +51,8 @@ from app.auth import (
     set_session_cookies,
     utc_now,
 )
+from core.audit import append_audit_event
+from core.decision_events import decision_event_store, normalized_fingerprint
 from core.run_store import RunNotFoundError
 from core.storage_factory import build_webhook_deduplicator
 from core.workflow_service import (
@@ -299,12 +308,122 @@ def get_run(run_id: UUID, principal: Principal = Depends(principal_dependency)) 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/runs/{run_id}/review", response_model=WorkflowRun)
-def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
-    require_permission(principal, APPROVALS_DECIDE)
+ACTION_PERMISSIONS = {
+    "approve": APPROVALS_DECIDE,
+    "reject": APPROVALS_REJECT,
+    "revoke_approval": APPROVALS_REVOKE,
+    "reopen_case": APPROVALS_REOPEN,
+    "request_evidence": APPROVALS_REQUEST_EVIDENCE,
+    "add_context": APPROVALS_ADD_CONTEXT,
+    "add_follow_up_context": APPROVALS_ADD_CONTEXT,
+    "modify": APPROVALS_MODIFY,
+}
+
+REASON_REQUIRED_ACTIONS = {"reject", "revoke_approval", "reopen_case", "modify"}
+CONTEXT_ACTIONS = {"add_context", "add_follow_up_context"}
+
+
+def _trim(value: str | None) -> str | None:
+    trimmed = (value or "").strip()
+    return trimmed or None
+
+
+def _validate_decision_contract(request: HumanReviewRequest | ReviewCaseActionRequest, valid_sources: set[str] | None = None) -> None:
+    if request.expected_version is None:
+        raise HTTPException(status_code=422, detail="expected_version is required.")
+    if not _trim(request.idempotency_key):
+        raise HTTPException(status_code=422, detail="idempotency_key is required.")
+    if request.action in REASON_REQUIRED_ACTIONS and not _trim(request.comment):
+        raise HTTPException(status_code=422, detail="A reason is required for this action.")
+    if request.action in CONTEXT_ACTIONS and not _trim(request.human_context or request.comment):
+        raise HTTPException(status_code=422, detail="Meaningful context is required.")
+    if request.action == "request_evidence":
+        if not request.requested_sources:
+            raise HTTPException(status_code=422, detail="requested_sources is required.")
+        if valid_sources is not None:
+            unknown = sorted(set(request.requested_sources) - valid_sources)
+            if unknown:
+                raise HTTPException(status_code=422, detail=f"Unknown evidence source(s): {', '.join(unknown)}")
+
+
+def _decision_payload(case_id: UUID, case_type: str, request: HumanReviewRequest | ReviewCaseActionRequest, principal: Principal) -> dict[str, object]:
+    data = request.model_dump(mode="json", exclude={"reviewer"})
+    data["case_id"] = str(case_id)
+    data["case_type"] = case_type
+    data["organization_id"] = str(principal.organization_id)
+    data["actor_user_id"] = str(principal.user.id) if principal.user else None
+    return data
+
+
+def _remediation_result(case: dict[str, object]) -> dict[str, object]:
+    mock_pr = case.get("mock_pr") or case.get("simulated_pr")
+    real_pr = case.get("real_pr")
+    if real_pr:
+        return {"created": True, "type": "github_pr", "url": real_pr.get("url") if isinstance(real_pr, dict) else None}
+    if mock_pr:
+        status = str(case.get("status") or "")
+        return {"created": status in {"pr_created", "remediation_pr_created"}, "type": "simulated_pr", "proposal_only": status == "remediation_proposal_prepared"}
+    return {"created": False, "type": None, "proposal_only": False}
+
+
+def _record_decision_success(
+    *,
+    case_id: UUID,
+    case_type: str,
+    action: str,
+    request: HumanReviewRequest | ReviewCaseActionRequest,
+    principal: Principal,
+    previous_state: dict[str, object],
+    resulting: dict[str, object],
+    fingerprint: str,
+    correlation_id: str,
+) -> dict[str, object]:
+    base = dict(resulting)
+    response_snapshot: dict[str, object] = {
+        **base,
+        "case_id": str(case_id),
+        "status": base.get("status"),
+        "new_version": base.get("version"),
+        "correlation_id": correlation_id,
+        "updated_at": base.get("updated_at"),
+        "remediation_result": _remediation_result(base),
+        "idempotent_replay": False,
+    }
+    related = decision_event_store.latest_for_case(principal.organization_id, case_id, "approve") if action == "revoke_approval" else None
+    event = decision_event_store.append(
+        organization_id=principal.organization_id,
+        case_id=case_id,
+        case_type=case_type,
+        principal=principal,
+        action=action,
+        reason=_trim(request.comment),
+        previous_state=previous_state,
+        resulting_state={"status": base.get("status"), "version": base.get("version"), "updated_at": base.get("updated_at")},
+        related_event_id=related.id if related else None,
+        correlation_id=correlation_id,
+        idempotency_key=_trim(request.idempotency_key) or "",
+        request_fingerprint=fingerprint,
+        response_snapshot=response_snapshot,
+    )
+    response_snapshot["decision_event_id"] = str(event.id)
+    event.response_snapshot["decision_event_id"] = str(event.id)
+    auth_store.record_activity(principal.organization_id, "human_decision_recorded", principal.user.id if principal.user else None, {"case_id": str(case_id), "action": action, "correlation_id": correlation_id, "decision_event_id": str(event.id)})
+    return response_snapshot
+
+
+@app.post("/api/runs/{run_id}/review")
+def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, ACTION_PERMISSIONS[request.action])
+    _validate_decision_contract(request, set(workflow_service.tool_registry.names()))
     reviewer = principal.reviewer_name if principal.authenticated else request.reviewer
-    secured_request = request.model_copy(update={"reviewer": reviewer})
+    secured_request = request.model_copy(update={"reviewer": reviewer, "comment": _trim(request.comment), "human_context": _trim(request.human_context), "idempotency_key": _trim(request.idempotency_key)})
+    fingerprint = normalized_fingerprint(_decision_payload(run_id, "workflow_run", secured_request, principal))
+    replay = decision_event_store.replay(principal.organization_id, secured_request.idempotency_key or "", fingerprint)
+    if replay is not None:
+        return replay
+    correlation_id = secrets.token_urlsafe(18)
     try:
+        previous = workflow_service.get_run(run_id, principal.organization_id).model_dump(mode="json")
         run, maybe_pr_created = workflow_service.review_run(
             run_id,
             secured_request,
@@ -312,20 +431,34 @@ def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, pr
             principal.user.id if principal.user else None,
             principal.user.email if principal.user else None,
             principal.membership.role,
+            secured_request.expected_version,
         )
+        append_audit_event(run, event_type="human_decision_event_recorded", actor="system", summary="Human decision event recorded.", details={"correlation_id": correlation_id, "action": secured_request.action})
+        run = workflow_service.store.update(run.id, run, principal.organization_id)
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except WorkflowConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if maybe_pr_created and (run.mock_pr is not None or run.real_pr is not None):
         response.status_code = 201
-    return run
+    return _record_decision_success(
+        case_id=run_id,
+        case_type="workflow_run",
+        action=secured_request.action,
+        request=secured_request,
+        principal=principal,
+        previous_state={"status": previous.get("status"), "version": previous.get("version"), "updated_at": previous.get("updated_at")},
+        resulting=run.model_dump(mode="json"),
+        fingerprint=fingerprint,
+        correlation_id=correlation_id,
+    )
 
 
 @app.post("/api/reset")
 def reset_runs() -> dict[str, str]:
     result = workflow_service.reset()
     cloud_hunt_service.reset()
+    decision_event_store.reset()
     return result
 
 
@@ -404,19 +537,54 @@ def get_review_case(review_id: UUID, principal: Principal = Depends(principal_de
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/reviews/{review_id}/action", response_model=ReviewCase)
-def act_on_review_case(review_id: UUID, request: ReviewCaseActionRequest, principal: Principal = Depends(principal_dependency)) -> ReviewCase:
-    require_permission(principal, APPROVALS_DECIDE)
+@app.post("/api/reviews/{review_id}/action")
+def act_on_review_case(review_id: UUID, request: ReviewCaseActionRequest, principal: Principal = Depends(principal_dependency)):
+    if request.action == "waive":
+        require_permission(principal, APPROVALS_DECIDE)
+    else:
+        require_permission(principal, ACTION_PERMISSIONS[request.action])
+        _validate_decision_contract(request, {"pricing", "utilization", "jira", "git_activity", "dependencies", "owner", "cost", "activity"})
     reviewer = principal.reviewer_name if principal.authenticated else request.reviewer
-    secured_request = request.model_copy(update={"reviewer": reviewer})
+    secured_request = request.model_copy(update={"reviewer": reviewer, "comment": _trim(request.comment), "human_context": _trim(request.human_context), "idempotency_key": _trim(request.idempotency_key)})
+    fingerprint = normalized_fingerprint(_decision_payload(review_id, "review_case", secured_request, principal))
+    replay = None if request.action == "waive" else decision_event_store.replay(principal.organization_id, secured_request.idempotency_key or "", fingerprint)
+    if replay is not None:
+        return replay
+    correlation_id = secrets.token_urlsafe(18)
     try:
-        return cloud_hunt_service.act_on_case(
+        previous_case = cloud_hunt_service.get_case(review_id, principal.organization_id).model_dump(mode="json")
+        case = cloud_hunt_service.act_on_case(
             review_id,
             secured_request,
             principal.organization_id,
             principal.user.id if principal.user else None,
             principal.user.email if principal.user else None,
             principal.membership.role,
+        )
+        case.audit_events.append(
+            AuditEvent(
+                sequence_number=len(case.audit_events) + 1,
+                timestamp=utc_now(),
+                event_type="human_decision_event_recorded",
+                actor="system",
+                summary="Human decision event recorded.",
+                details={"correlation_id": correlation_id, "action": secured_request.action},
+            )
+        )
+        cloud_hunt_service._cases[case.id] = case.model_copy(deep=True)
+        if cloud_hunt_service.persistence is not None:
+            cloud_hunt_service.persistence.save_case(case)
+        case_dict = case.model_dump(mode="json")
+        return _record_decision_success(
+            case_id=review_id,
+            case_type="review_case",
+            action=secured_request.action,
+            request=secured_request,
+            principal=principal,
+            previous_state={"status": previous_case.get("status"), "version": previous_case.get("version"), "updated_at": previous_case.get("updated_at")},
+            resulting=case_dict,
+            fingerprint=fingerprint,
+            correlation_id=correlation_id,
         )
     except CloudHuntNotFoundError:
         if secured_request.action == "waive":
@@ -425,9 +593,24 @@ def act_on_review_case(review_id: UUID, request: ReviewCaseActionRequest, princi
             run_request = HumanReviewRequest(
                 action=secured_request.action, reviewer=secured_request.reviewer, comment=secured_request.comment,
                 requested_sources=secured_request.requested_sources, modified_action=secured_request.modified_action, human_context=secured_request.human_context,
+                expected_version=secured_request.expected_version, idempotency_key=secured_request.idempotency_key,
             )
-            workflow_service.review_run(review_id, run_request, principal.organization_id, principal.user.id if principal.user else None, principal.user.email if principal.user else None, principal.membership.role)
-            return next(case for case in cloud_hunt_service.list_cases(principal.organization_id) if case.id == review_id)
+            previous_run = workflow_service.get_run(review_id, principal.organization_id).model_dump(mode="json")
+            run, _ = workflow_service.review_run(review_id, run_request, principal.organization_id, principal.user.id if principal.user else None, principal.user.email if principal.user else None, principal.membership.role, secured_request.expected_version)
+            append_audit_event(run, event_type="human_decision_event_recorded", actor="system", summary="Human decision event recorded.", details={"correlation_id": correlation_id, "action": secured_request.action})
+            run = workflow_service.store.update(run.id, run, principal.organization_id)
+            case = next(case for case in cloud_hunt_service.list_cases(principal.organization_id) if case.id == review_id)
+            return _record_decision_success(
+                case_id=review_id,
+                case_type="workflow_run",
+                action=secured_request.action,
+                request=secured_request,
+                principal=principal,
+                previous_state={"status": previous_run.get("status"), "version": previous_run.get("version"), "updated_at": previous_run.get("updated_at")},
+                resulting={**case.model_dump(mode="json"), "version": run.version, "status": run.status.value},
+                fingerprint=fingerprint,
+                correlation_id=correlation_id,
+            )
         except (StopIteration, WorkflowConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     except CloudHuntConflictError as exc:

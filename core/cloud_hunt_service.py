@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import RLock
 from uuid import UUID, uuid4
 
 from app.models import (
@@ -38,6 +39,7 @@ class CloudHuntService:
         self._hunts: dict[UUID, CloudHuntRun] = {}
         self._cases: dict[UUID, ReviewCase] = {}
         self._waivers: dict[str, datetime] = {}
+        self._lock = RLock()
         if self.persistence is not None:
             self._hunts = {item.id: item for item in self.persistence.list_hunts()}
             self._cases = {item.id: item for item in self.persistence.list_cases()}
@@ -177,40 +179,57 @@ class CloudHuntService:
         reviewer_email: str | None = None,
         reviewer_role: OrganizationRole | None = None,
     ) -> ReviewCase:
-        case = self._cases.get(case_id)
-        if case is None or case.organization_id != organization_id:
-            raise CloudHuntNotFoundError(str(case_id))
-        if case.status in {"rejected", "waived", "pr_created"}:
-            raise CloudHuntConflictError(f"Review case is already {case.status}.")
-        if request.action == "approve":
-            if self._is_protected(case.candidate):
-                raise CloudHuntConflictError("Protected resources require context and cannot be automatically remediated.")
-            case.simulated_pr = self._simulated_pr(case, request.reviewer)
-            case.status, case.final_outcome, case.human_decision = "pr_created", "simulated_pr_created", "approve"
-        elif request.action == "reject":
-            case.status, case.final_outcome, case.human_decision = "rejected", request.comment or "rejected", "reject"
-        elif request.action == "waive":
-            if request.waiver is None:
-                raise CloudHuntConflictError("waiver details are required.")
-            self._waivers[case.resource_id] = request.waiver.expiry_date
-            case.waiver_expiry = request.waiver.expiry_date
-            case.status, case.final_outcome, case.human_decision = "waived", request.waiver.reason, "waive"
-            self._case_audit(case, "waiver_created", f"Waiver created by {request.reviewer}.", {"owner": request.waiver.owner, "expiry": request.waiver.expiry_date.isoformat()})
-        elif request.action == "request_evidence":
-            case.status, case.final_outcome, case.human_decision = "needs_more_evidence", request.comment or "Additional evidence requested", "request_evidence"
-        elif request.action == "add_context":
-            case.status, case.final_outcome, case.human_decision = "pending", request.human_context or request.comment or "Context added", "add_context"
-        elif request.action == "modify":
-            if not request.modified_action:
-                raise CloudHuntConflictError("modified_action is required.")
-            case.recommendation = request.modified_action
-            case.status, case.final_outcome, case.human_decision = "pending", "recommendation_modified", "modify"
-        case.updated_at = _now()
-        self._case_audit(case, "human_decision_recorded", f"{request.action} recorded by {request.reviewer}.", {"comment": request.comment, "reviewer_user_id": str(reviewer_user_id) if reviewer_user_id else None, "reviewer_email": reviewer_email, "reviewer_role": reviewer_role})
-        self._cases[case.id] = case.model_copy(deep=True)
-        if self.persistence is not None:
-            self.persistence.save_case(case)
-        return case.model_copy(deep=True)
+        with self._lock:
+            case = self._cases.get(case_id)
+            if case is None or case.organization_id != organization_id:
+                raise CloudHuntNotFoundError(str(case_id))
+            if request.expected_version is not None and case.version != request.expected_version:
+                raise CloudHuntConflictError("Case version is stale. Refresh and try again.")
+            if case.status in {"rejected", "waived", "pr_created", "remediation_pr_created"} and request.action not in {"reopen_case"}:
+                raise CloudHuntConflictError(f"Review case is already {case.status}.")
+            if request.action == "approve":
+                if self._is_protected(case.candidate):
+                    raise CloudHuntConflictError("Protected resources require context and cannot be automatically remediated.")
+                has_mapping = bool(case.terraform_address)
+                case.simulated_pr = self._simulated_pr(case, request.reviewer)
+                if has_mapping:
+                    case.status, case.final_outcome = "remediation_pr_created", "simulated_pr_created"
+                else:
+                    case.status, case.final_outcome = "remediation_proposal_prepared", "proposal_prepared"
+                case.human_decision = "approve"
+            elif request.action == "reject":
+                case.status, case.final_outcome, case.human_decision = "rejected", request.comment or "rejected", "reject"
+            elif request.action == "waive":
+                if request.waiver is None:
+                    raise CloudHuntConflictError("waiver details are required.")
+                self._waivers[case.resource_id] = request.waiver.expiry_date
+                case.waiver_expiry = request.waiver.expiry_date
+                case.status, case.final_outcome, case.human_decision = "waived", request.waiver.reason, "waive"
+                self._case_audit(case, "waiver_created", f"Waiver created by {request.reviewer}.", {"owner": request.waiver.owner, "expiry": request.waiver.expiry_date.isoformat()})
+            elif request.action == "request_evidence":
+                case.status, case.final_outcome, case.human_decision = "needs_more_evidence", request.comment or "Additional evidence requested", "request_evidence"
+            elif request.action in {"add_context", "add_follow_up_context"}:
+                case.status, case.final_outcome, case.human_decision = "pending_human_review", request.human_context or request.comment or "Context added", request.action
+            elif request.action == "modify":
+                if not request.modified_action:
+                    raise CloudHuntConflictError("modified_action is required.")
+                case.recommendation = request.modified_action
+                case.status, case.final_outcome, case.human_decision = "pending_human_review", "recommendation_modified", "modify"
+            elif request.action == "revoke_approval":
+                if case.status not in {"approved", "pr_created", "remediation_pr_created", "remediation_proposal_prepared"}:
+                    raise CloudHuntConflictError("Only approved cases can have approval revoked.")
+                case.status, case.final_outcome, case.human_decision = "approval_revoked", "approval_revoked_no_external_reversal", "revoke_approval"
+            elif request.action == "reopen_case":
+                if case.status not in {"rejected", "approval_revoked", "remediation_pr_created", "remediation_proposal_prepared", "pr_created"}:
+                    raise CloudHuntConflictError("Only rejected, revoked, or remediated cases can be reopened.")
+                case.status, case.final_outcome, case.human_decision = "reopened", "case_reopened", "reopen_case"
+            case.version += 1
+            case.updated_at = _now()
+            self._case_audit(case, "human_decision_recorded", f"{request.action} recorded by {request.reviewer}.", {"comment": request.comment, "reviewer_user_id": str(reviewer_user_id) if reviewer_user_id else None, "reviewer_email": reviewer_email, "reviewer_role": reviewer_role})
+            self._cases[case.id] = case.model_copy(deep=True)
+            if self.persistence is not None:
+                self.persistence.save_case(case)
+            return case.model_copy(deep=True)
 
     def reset(self) -> None:
         self._hunts.clear()

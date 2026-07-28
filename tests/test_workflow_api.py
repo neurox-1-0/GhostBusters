@@ -29,7 +29,7 @@ def test_workflow_api_start_get_approve_and_reset() -> None:
 
     approved = client.post(
         f"/api/runs/{run['id']}/review",
-        json={"action": "approve", "reviewer": "varsha", "comment": "approved"},
+        json={"action": "approve", "reviewer": "varsha", "comment": "approved", "expected_version": run["version"], "idempotency_key": "api-approve"},
     )
     assert approved.status_code == 201
     assert approved.json()["status"] == "pr_created"
@@ -58,7 +58,7 @@ def test_workflow_api_invalid_states_and_missing_resources() -> None:
     blocked = client.post("/api/runs", json={"goal": "check", "scenario_name": "destructive"}).json()
     approval = client.post(
         f"/api/runs/{blocked['id']}/review",
-        json={"action": "approve", "reviewer": "varsha"},
+        json={"action": "approve", "reviewer": "varsha", "expected_version": blocked["version"], "idempotency_key": "blocked-approve"},
     )
     assert approval.status_code == 409
 
@@ -74,14 +74,14 @@ def test_workflow_api_request_context_modify_reject_and_webhook(monkeypatch) -> 
     ).json()
     requested = client.post(
         f"/api/runs/{evidence_needed['id']}/review",
-        json={"action": "request_evidence", "reviewer": "r", "requested_sources": ["pricing"]},
+        json={"action": "request_evidence", "reviewer": "r", "requested_sources": ["pricing"], "expected_version": evidence_needed["version"], "idempotency_key": "request-pricing"},
     )
     assert requested.status_code == 200
     assert requested.json()["decision_record"]["tool_executions"][-1]["tool_name"] == "pricing"
 
     context = client.post(
         f"/api/runs/{evidence_needed['id']}/review",
-        json={"action": "add_context", "reviewer": "r", "human_context": "manual note"},
+        json={"action": "add_context", "reviewer": "r", "human_context": "manual note", "expected_version": requested.json()["version"], "idempotency_key": "add-context"},
     )
     assert context.status_code == 200
     assert any(item["source"] == "human_review" for item in context.json()["decision_record"]["evidence"])
@@ -89,14 +89,14 @@ def test_workflow_api_request_context_modify_reject_and_webhook(monkeypatch) -> 
     safe = client.post("/api/runs", json={"goal": "reduce", "scenario_name": "safe"}).json()
     modified = client.post(
         f"/api/runs/{safe['id']}/review",
-        json={"action": "modify", "reviewer": "r", "modified_action": "schedule"},
+        json={"action": "modify", "reviewer": "r", "modified_action": "schedule", "comment": "schedule instead", "expected_version": safe["version"], "idempotency_key": "modify-schedule"},
     )
     assert modified.status_code == 200
     assert modified.json()["decision_record"]["preferred_action"] == "schedule"
 
     rejected = client.post(
         f"/api/runs/{modified.json()['id']}/review",
-        json={"action": "reject", "reviewer": "r", "comment": "not now"},
+        json={"action": "reject", "reviewer": "r", "comment": "not now", "expected_version": modified.json()["version"], "idempotency_key": "reject-modified"},
     )
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"

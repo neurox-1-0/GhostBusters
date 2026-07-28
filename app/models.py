@@ -28,7 +28,7 @@ VerifierSeverity = Literal["info", "low", "medium", "high", "critical"]
 PolicyStatus = Literal["passed", "blocked", "needs_human_context"]
 PolicyEngine = Literal["python", "conftest", "python_fallback"]
 FinalStatus = Literal["recommendation_ready", "blocked", "abstained", "needs_human_context", "keep"]
-HumanReviewAction = Literal["approve", "reject", "request_evidence", "modify", "add_context"]
+HumanReviewAction = Literal["approve", "reject", "request_evidence", "modify", "add_context", "revoke_approval", "reopen_case", "add_follow_up_context"]
 CloudProvider = Literal["aws", "azure", "gcp"]
 CloudProviderScope = Literal["aws", "azure", "gcp", "multi_cloud"]
 CloudHuntTrigger = Literal["manual_cloud_hunt", "scheduled_cloud_hunt"]
@@ -43,7 +43,19 @@ GhostSignalType = Literal[
     "cost_without_usage", "recent_activity", "active_dependency", "production_resource",
 ]
 ReviewCaseSource = Literal["terraform_pr", "cloud_hunt", "manual_demo"]
-ReviewCaseStatus = Literal["pending", "approved", "rejected", "needs_more_evidence", "waived", "pr_created"]
+ReviewCaseStatus = Literal[
+    "pending",
+    "approved",
+    "rejected",
+    "approval_revoked",
+    "reopened",
+    "pending_human_review",
+    "needs_more_evidence",
+    "remediation_proposal_prepared",
+    "remediation_pr_created",
+    "waived",
+    "pr_created",
+]
 RequiredReviewerRole = Literal[
     "application_owner", "finops_reviewer", "platform_engineer", "cloud_owner", "administrator"
 ]
@@ -78,6 +90,10 @@ class RunStatus(StrEnum):
     needs_more_evidence = "needs_more_evidence"
     approved = "approved"
     rejected = "rejected"
+    approval_revoked = "approval_revoked"
+    reopened = "reopened"
+    remediation_proposal_prepared = "remediation_proposal_prepared"
+    remediation_pr_created = "remediation_pr_created"
     pr_created = "pr_created"
     failed_safely = "failed_safely"
 
@@ -547,6 +563,8 @@ class HumanReviewRequest(AppModel):
     requested_sources: list[str] = Field(default_factory=list)
     modified_action: AlternativeAction | None = None
     human_context: str | None = None
+    expected_version: int | None = None
+    idempotency_key: str | None = None
 
 
 class HumanReviewRecord(AppModel):
@@ -765,6 +783,7 @@ class ReviewCase(AppModel):
     terraform_address: str | None = None
     simulated_pr: MockPullRequest | None = None
     audit_events: list[AuditEvent] = Field(default_factory=list)
+    version: int = 1
 
 
 class CloudHuntRequest(AppModel):
@@ -782,10 +801,12 @@ class WaiverRequest(AppModel):
 
 
 class ReviewCaseActionRequest(AppModel):
-    action: Literal["approve", "reject", "request_evidence", "add_context", "modify", "waive"]
+    action: Literal["approve", "reject", "request_evidence", "add_context", "modify", "revoke_approval", "reopen_case", "add_follow_up_context", "waive"]
     reviewer: str = "demo-reviewer"
     comment: str | None = None
     requested_sources: list[str] = Field(default_factory=list)
     modified_action: str | None = None
     human_context: str | None = None
     waiver: WaiverRequest | None = None
+    expected_version: int | None = None
+    idempotency_key: str | None = None

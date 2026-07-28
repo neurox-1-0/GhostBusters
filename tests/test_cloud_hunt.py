@@ -64,7 +64,7 @@ def test_hunt_summary_cases_and_approval_are_fixture_only() -> None:
     assert cases
     strong = next(case for case in cases if case.resource_id == "i-forgotten-test")
     approved = service.act_on_case(strong.id, ReviewCaseActionRequest(action="approve", reviewer="judge"))
-    assert approved.status == "pr_created"
+    assert approved.status == "remediation_pr_created"
     assert approved.simulated_pr is not None
     assert "No provider mutation" in approved.simulated_pr.terraform_patch_preview or "Simulated" in approved.simulated_pr.terraform_patch_preview
 

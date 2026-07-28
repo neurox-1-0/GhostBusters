@@ -335,6 +335,10 @@ function runStatusLabel(status) {
     pending_human_review: "Awaiting Human Review",
     needs_more_evidence: "More Evidence Required",
     pr_created: "Remediation PR Created",
+    remediation_pr_created: "Remediation PR Created",
+    remediation_proposal_prepared: "Remediation Proposal Prepared",
+    approval_revoked: "Approval Revoked",
+    reopened: "Case Reopened",
     failed_safely: "Failed safely",
     rejected: "Recommendation Rejected",
     approved: "Approved",
@@ -360,6 +364,10 @@ function reviewStateStatus(status) {
     blocked: { key: "blocked", label: "Blocked by policy", className: "status-blocked" },
     approved: { key: "approved", label: "Remediation approved", className: "status-approved" },
     pr_created: { key: "pr-created", label: "Remediation PR created", className: "status-pr-created" },
+    remediation_pr_created: { key: "pr-created", label: "Remediation PR created", className: "status-pr-created" },
+    remediation_proposal_prepared: { key: "approved", label: "Remediation proposal prepared", className: "status-approved" },
+    approval_revoked: { key: "blocked", label: "Approval revoked", className: "status-blocked" },
+    reopened: { key: "awaiting-review", label: "Case reopened", className: "status-awaiting-review" },
     keep: { key: "neutral", label: "No action required", className: "status-neutral" },
     rejected: { key: "blocked", label: "Blocked by policy", className: "status-blocked" },
   }[status] || { key: "awaiting-review", label: "Pending human review", className: "status-awaiting-review" };
@@ -398,9 +406,11 @@ function humanReviewStatusMeta(caseItem) {
 function decisionStatusMeta(status, label) {
   if (status === "pending_human_review" || status === "pending") return { key: "awaiting-review", label: label || "Pending human review", className: "status-awaiting-review" };
   if (status === "needs_more_evidence" || status === "abstained") return { key: "needs-context", label: label || "More evidence required", className: "status-needs-context" };
-  if (status === "blocked" || status === "rejected" || status === "failed_safely") return { key: "blocked", label: label || runStatusLabel(status), className: "status-blocked" };
+  if (status === "blocked" || status === "rejected" || status === "approval_revoked" || status === "failed_safely") return { key: "blocked", label: label || runStatusLabel(status), className: "status-blocked" };
   if (status === "approved") return { key: "approved", label: label || "Approved", className: "status-approved" };
-  if (status === "pr_created") return { key: "pr-created", label: label || "Remediation PR created", className: "status-pr-created" };
+  if (status === "pr_created" || status === "remediation_pr_created") return { key: "pr-created", label: label || "Remediation PR created", className: "status-pr-created" };
+  if (status === "remediation_proposal_prepared") return { key: "approved", label: label || "Remediation proposal prepared", className: "status-approved" };
+  if (status === "reopened") return { key: "awaiting-review", label: label || "Case reopened", className: "status-awaiting-review" };
   return { key: "neutral", label: label || "Not made", className: "status-neutral" };
 }
 
@@ -547,7 +557,9 @@ async function api(path, options = {}) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const detail = payload.detail || `${response.status} ${response.statusText}`;
-    throw new Error(typeof detail === "string" ? detail : prettyValue(detail));
+    const error = new Error(typeof detail === "string" ? detail : prettyValue(detail));
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -600,7 +612,7 @@ function organizationName() {
 function renderIdentity() {
   const initials = userDisplayName().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "GB";
   const authenticated = Boolean(state.currentUser?.authenticated);
-  const appShell = document.querySelector(".app-shell");
+  const appShell = typeof document.querySelector === "function" ? document.querySelector(".app-shell") : null;
   if (appShell) appShell.hidden = !authenticated;
   const authScreen = $("auth-modal-backdrop");
   if (authScreen) authScreen.hidden = authenticated;
@@ -632,9 +644,28 @@ function showToast(title, detail = "", type = "success") {
 }
 
 function friendlyError(error, fallback = "Request failed. Try again.") {
+  if (error?.status === 409) return "This case changed while you were deciding. Refresh the case and try again.";
   const message = error?.message || fallback;
   if (/traceback|stack|exception|file "/i.test(message)) return fallback;
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
+}
+
+function decisionIdempotencyKey(caseId, action) {
+  const random = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${caseId}:${action}:${random}`;
+}
+
+function approvalPermissionFor(action) {
+  return {
+    approve: "approvals.decide",
+    reject: "approvals.reject",
+    revoke_approval: "approvals.revoke",
+    reopen_case: "approvals.reopen",
+    request_evidence: "approvals.request_evidence",
+    add_context: "approvals.add_context",
+    add_follow_up_context: "approvals.add_context",
+    modify: "approvals.modify",
+  }[action] || "approvals.decide";
 }
 
 async function withButtonState(buttonId, loadingLabel, work, successLabel = null) {
@@ -1581,12 +1612,15 @@ function allowedReviewActions(status) {
   if (status === "needs_more_evidence") return ["add_context", "request_evidence", "reject"];
   if (status === "abstained") return ["add_context", "request_evidence"];
   if (status === "blocked" || status === "keep" || status === "failed_safely") return ["add_context"];
+  if (status === "approved" || status === "pr_created" || status === "remediation_pr_created") return ["revoke_approval", "add_follow_up_context"];
+  if (status === "rejected" || status === "approval_revoked") return ["reopen_case", "add_follow_up_context"];
+  if (status === "reopened") return ["add_follow_up_context", "request_evidence", "reject"];
   return [];
 }
 
 function renderHumanControls() {
   const status = state.run?.status;
-  const allowed = hasPermission("approvals.decide") ? allowedReviewActions(status) : [];
+  const allowed = allowedReviewActions(status).filter((action) => hasPermission(approvalPermissionFor(action)));
   const human = humanDecision(state.run);
   setStatusBadge("human-decision", decisionStatusMeta(status, human.label));
   $("human-decision-technical").hidden = true;
@@ -1626,6 +1660,9 @@ function humanDecision(run) {
     request_evidence: `More evidence requested by ${reviewer}`,
     add_context: `Context added by ${reviewer}`,
     modify: `Recommendation modified by ${reviewer}`,
+    revoke_approval: `Approval revoked by ${reviewer}`,
+    reopen_case: `Case reopened by ${reviewer}`,
+    add_follow_up_context: `Follow-up context added by ${reviewer}`,
   };
   return { label: labels[latest.action] || labelFor(latest.action), technical: `Review action: ${latest.action}` };
 }
@@ -1635,9 +1672,10 @@ function selectReviewAction(action) {
   $("review-form").hidden = false;
   $("review-form-title").textContent = labelFor(action);
   $("sources-field").hidden = action !== "request_evidence";
-  $("context-field").hidden = action !== "add_context";
+  $("context-field").hidden = !(action === "add_context" || action === "add_follow_up_context");
   $("modify-field").hidden = action !== "modify";
-  $("submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : "Send Review Update";
+  $("comment-input").placeholder = ["reject", "revoke_approval", "reopen_case", "modify"].includes(action) ? "Required reason" : "Optional review comment";
+  $("submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : action === "revoke_approval" ? "Revoke Approval" : action === "reopen_case" ? "Reopen Case" : "Send Review Update";
   $("review-form").scrollIntoView({ block: "nearest" });
 }
 
@@ -1649,9 +1687,9 @@ function closeReviewForm() {
 async function submitSelectedReview() {
   const action = state.selectedReviewAction;
   if (!action || !state.run) return;
-  const payload = { action, comment: $("comment-input").value || null };
+  const payload = { action, comment: $("comment-input").value || null, expected_version: state.run.version, idempotency_key: decisionIdempotencyKey(state.run.id, action) };
   if (action === "request_evidence") payload.requested_sources = $("requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
-  if (action === "add_context") payload.human_context = $("human-context").value || null;
+  if (action === "add_context" || action === "add_follow_up_context") payload.human_context = $("human-context").value || null;
   if (action === "modify") payload.modified_action = $("modified-action").value || null;
   return withButtonState("submit-review-button", action === "approve" ? "Creating PR..." : "Saving review...", async () => {
     state.loading.review = true;
@@ -1659,7 +1697,9 @@ async function submitSelectedReview() {
     closeReviewForm();
     startAnimation(true);
     setMessage("review-message", `${labelFor(action)} accepted by the backend.`, true);
-    showToast(action === "approve" ? "Remediation PR created" : "Approval recorded", `${labelFor(action)} accepted by the backend.`, "success");
+    const remediation = state.run.remediation_result;
+    const title = action === "approve" && remediation?.created ? "Remediation PR created" : action === "approve" ? "Remediation proposal prepared" : "Decision recorded";
+    showToast(title, `Correlation ${state.run.correlation_id || "recorded"}.`, "success");
   }, "Recorded").catch((error) => {
     const message = friendlyError(error, "Failed to record approval.");
     setMessage("review-message", message);
@@ -1673,6 +1713,10 @@ async function submitSelectedReview() {
 function finalOutcome(run) {
   return {
     pr_created: run?.real_pr ? "Real Remediation PR Created" : "Simulated Remediation PR Created",
+    remediation_pr_created: "Remediation PR Created",
+    remediation_proposal_prepared: "Remediation Proposal Prepared",
+    approval_revoked: "Approval Revoked",
+    reopened: "Case Reopened",
     rejected: "Recommendation Rejected",
     needs_more_evidence: "More Evidence Requested",
     blocked: "Blocked by Policy",
@@ -2398,7 +2442,10 @@ function cloudAllowedReviewActions(caseItem, candidate) {
   if (!caseItem) return [];
   const status = caseItem.status;
   const protectedResource = isCloudProtected(candidate, caseItem);
-  if (["blocked", "protected", "rejected", "pr_created", "waived", "approved", "completed"].includes(status)) return [];
+  if (["blocked", "protected", "waived", "completed"].includes(status)) return [];
+  if (["approved", "pr_created", "remediation_pr_created", "remediation_proposal_prepared"].includes(status)) return ["revoke_approval", "add_follow_up_context"];
+  if (["rejected", "approval_revoked"].includes(status)) return ["reopen_case", "add_follow_up_context"];
+  if (status === "reopened") return ["add_follow_up_context", "request_evidence", "reject"];
   if (caseItem.policy_status === "blocked") return [];
   if (protectedResource) return status === "needs_more_evidence" ? ["request_evidence", "add_context", "reject"] : ["request_evidence", "add_context", "reject"];
   if (status === "needs_more_evidence") return ["request_evidence", "add_context", "reject"];
@@ -2563,7 +2610,7 @@ function renderCloudFindingDetail() {
 }
 
 function renderCloudHumanControls(caseItem, candidate) {
-  const allowed = hasPermission("approvals.decide") ? cloudAllowedReviewActions(caseItem, candidate) : [];
+  const allowed = cloudAllowedReviewActions(caseItem, candidate).filter((action) => hasPermission(approvalPermissionFor(action)));
   document.querySelectorAll("[data-cloud-review-action]").forEach((button) => {
     const visible = allowed.includes(button.dataset.cloudReviewAction);
     button.hidden = !visible;
@@ -2577,8 +2624,9 @@ function selectCloudReviewAction(action) {
   $("cloud-review-form").hidden = false;
   $("cloud-review-form-title").textContent = labelFor(action);
   $("cloud-sources-field").hidden = action !== "request_evidence";
-  $("cloud-context-field").hidden = action !== "add_context";
-  $("cloud-submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : "Send Decision Update";
+  $("cloud-context-field").hidden = !(action === "add_context" || action === "add_follow_up_context");
+  $("cloud-comment-input").placeholder = ["reject", "revoke_approval", "reopen_case", "modify"].includes(action) ? "Required reason" : "Optional decision note";
+  $("cloud-submit-review-button").textContent = action === "approve" ? "Approve Recommendation" : action === "reject" ? "Confirm Rejection" : action === "revoke_approval" ? "Revoke Approval" : action === "reopen_case" ? "Reopen Case" : "Send Decision Update";
   $("cloud-review-form").scrollIntoView({ block: "nearest" });
 }
 
@@ -2592,9 +2640,9 @@ async function submitSelectedCloudReview() {
   const action = state.selectedCloudReviewAction;
   const caseItem = selectedCloudCase();
   if (!action || !caseItem) return;
-  const payload = { action, comment: $("cloud-comment-input").value || null };
+  const payload = { action, comment: $("cloud-comment-input").value || null, expected_version: caseItem.version, idempotency_key: decisionIdempotencyKey(caseItem.id, action) };
   if (action === "request_evidence") payload.requested_sources = $("cloud-requested-sources").value.split(",").map((item) => item.trim()).filter(Boolean);
-  if (action === "add_context") payload.human_context = $("cloud-human-context").value || null;
+  if (action === "add_context" || action === "add_follow_up_context") payload.human_context = $("cloud-human-context").value || null;
   return withButtonState("cloud-submit-review-button", action === "approve" ? "Recording approval..." : "Saving decision...", async () => {
     const updated = await api(`/api/reviews/${caseItem.id}/action`, { method: "POST", body: JSON.stringify(payload) });
     state.reviews = state.reviews.map((item) => item.id === updated.id ? updated : item);
@@ -2609,7 +2657,8 @@ async function submitSelectedCloudReview() {
     renderCloudHunt();
     renderReviewQueue();
     renderOverview();
-    showToast(action === "approve" ? "Approval recorded" : "Decision recorded", `${labelFor(action)} accepted by the backend.`, "success");
+    const title = action === "approve" && updated.remediation_result?.created ? "Remediation PR created" : action === "approve" ? "Remediation proposal prepared" : "Decision recorded";
+    showToast(title, `Correlation ${updated.correlation_id || "recorded"}.`, "success");
   }, "Recorded").catch((error) => {
     const message = friendlyError(error, "Failed to record cloud decision.");
     setMessage("cloud-review-message", message);

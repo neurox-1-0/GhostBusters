@@ -111,7 +111,7 @@ def test_reviewer_identity_is_derived_from_session_not_browser_payload() -> None
     approved = client.post(
         f"/api/runs/{run['id']}/review",
         headers={"X-CSRF-Token": csrf},
-        json={"action": "approve", "reviewer": "spoofed-admin@example.com"},
+        json={"action": "approve", "reviewer": "spoofed-admin@example.com", "expected_version": run["version"], "idempotency_key": "spoof-proof-approve"},
     )
 
     assert approved.status_code == 201
@@ -134,7 +134,7 @@ def test_viewer_cannot_call_hidden_approval_action_directly() -> None:
     blocked = viewer_client.post(
         f"/api/runs/{run['id']}/review",
         headers={"X-CSRF-Token": viewer_client.get("/api/auth/me").json()["csrf_token"]},
-        json={"action": "approve"},
+        json={"action": "approve", "expected_version": run["version"], "idempotency_key": "viewer-blocked"},
     )
 
     assert blocked.status_code in {403, 404}

@@ -191,3 +191,28 @@ CREATE TABLE IF NOT EXISTS cloud_review_cases (
 ALTER TABLE cloud_review_cases ADD COLUMN IF NOT EXISTS organization_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES organizations(id);
 CREATE INDEX IF NOT EXISTS cloud_review_cases_status_idx ON cloud_review_cases ((payload->>'status'));
 CREATE INDEX IF NOT EXISTS cloud_review_cases_org_idx ON cloud_review_cases(organization_id, updated_at);
+
+-- Milestone 2 additive schema. Production deployments should replace this
+-- bootstrap file with ordered, versioned migrations before rollout.
+CREATE TABLE IF NOT EXISTS human_decision_events (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id),
+    case_id UUID NOT NULL,
+    case_type TEXT NOT NULL,
+    actor_snapshot JSONB NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT,
+    previous_state JSONB NOT NULL,
+    resulting_state JSONB NOT NULL,
+    related_event_id UUID REFERENCES human_decision_events(id),
+    correlation_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    response_snapshot JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (organization_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS human_decision_events_case_idx ON human_decision_events(organization_id, case_type, case_id, created_at);
+CREATE INDEX IF NOT EXISTS human_decision_events_correlation_idx ON human_decision_events(organization_id, correlation_id);
+CREATE INDEX IF NOT EXISTS human_decision_events_action_idx ON human_decision_events(organization_id, action, created_at);

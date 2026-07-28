@@ -263,6 +263,7 @@ class WorkflowService:
         reviewer_user_id: UUID | None = None,
         reviewer_email: str | None = None,
         reviewer_role: OrganizationRole | None = None,
+        expected_version: int | None = None,
     ) -> tuple[WorkflowRun, bool]:
         try:
             existing = self.store.get(run_id, organization_id)
@@ -272,6 +273,8 @@ class WorkflowService:
             return existing, False
 
         def update(current: WorkflowRun) -> WorkflowRun:
+            if expected_version is not None and current.version != expected_version:
+                raise WorkflowConflictError("Case version is stale. Refresh and try again.")
             record = self._review_record(request, organization_id, reviewer_user_id, reviewer_email, reviewer_role)
             if request.action == "approve":
                 self._approve(current, record)
@@ -286,6 +289,13 @@ class WorkflowService:
                 self._add_context(current, request, record)
             elif request.action == "modify":
                 self._modify(current, request, record)
+            elif request.action == "revoke_approval":
+                self._revoke_approval(current, record)
+            elif request.action == "reopen_case":
+                self._reopen_case(current, record)
+            elif request.action == "add_follow_up_context":
+                follow_up = request.model_copy(update={"action": "add_context"})
+                self._add_context(current, follow_up, record)
             current.updated_at = utc_now()
             return current
 
@@ -325,6 +335,32 @@ class WorkflowService:
         )
         run.status = RunStatus.pr_created
         append_audit_event(run, event_type="mock_pr_created", actor="agent", summary="Simulated remediation PR created.", details={"branch": run.mock_pr.branch})
+
+    def _revoke_approval(self, run: WorkflowRun, record: HumanReviewRecord) -> None:
+        if run.status not in {RunStatus.approved, RunStatus.pr_created}:
+            raise HumanReviewError("Only approved cases can have approval revoked.")
+        run.human_reviews.append(record)
+        run.status = RunStatus.approval_revoked
+        append_audit_event(
+            run,
+            event_type="approval_revoked",
+            actor="human",
+            summary="Approval revoked. No rollback, Terraform apply, or GitHub pull-request closure was performed.",
+            details=record.model_dump(mode="json"),
+        )
+
+    def _reopen_case(self, run: WorkflowRun, record: HumanReviewRecord) -> None:
+        if run.status not in {RunStatus.rejected, RunStatus.approval_revoked, RunStatus.pr_created, RunStatus.approved}:
+            raise HumanReviewError("Only rejected, revoked, approved, or PR-created cases can be reopened.")
+        run.human_reviews.append(record)
+        run.status = RunStatus.reopened
+        append_audit_event(
+            run,
+            event_type="case_reopened",
+            actor="human",
+            summary="Case reopened for human review.",
+            details=record.model_dump(mode="json"),
+        )
 
     def _resource_for_run(self, run: WorkflowRun) -> TerraformResourceChange:
         if run.github_source and run.github_source.resource_changes:
