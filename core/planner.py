@@ -86,6 +86,18 @@ def create_investigation_plan(
             selected.append(tool_name)
             notes.append(f"Selected {tool_name}: {reason}")
 
+    aws_requested = "aws" in goal.lower() or "real_aws" in goal.lower()
+    if aws_requested:
+        for tool_name, reason, question_id in (
+            ("aws_inventory", "AWS inventory is explicitly in scope.", "aws_inventory"),
+            ("aws_cloudwatch", "Utilization evidence is needed for a safe recommendation.", "aws_utilization"),
+            ("aws_tags", "Ownership and environment tags are needed for protection checks.", "aws_tags"),
+            ("aws_pricing", "AWS pricing is relevant to savings estimation.", "aws_pricing"),
+        ):
+            if tool_name in available_tools:
+                select(tool_name, reason)
+                _add_question(questions, question_id, reason, [tool_name])
+
     instance_type_changed = resource.current_instance_type != resource.proposed_instance_type
     dependency_known = bool(scenario.dependencies.get("active_downstream_dependencies")) or bool(
         scenario.dependencies.get("blocking_services")

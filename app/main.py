@@ -17,6 +17,7 @@ from app.models import (
     AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
     GoalContextRequest, GoalCreateRequest,
+    AWSIntegrationConfigRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -44,6 +45,8 @@ from app.auth import (
     GOALS_READ,
     GOALS_RUN,
     GOALS_CANCEL,
+    INTEGRATIONS_AWS_READ,
+    INTEGRATIONS_AWS_MANAGE,
     WORKSPACE_READ,
     Principal,
     ROLE_LABELS,
@@ -67,10 +70,13 @@ from core.workflow_service import (
     workflow_service,
 )
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntNotFoundError, cloud_hunt_service
+from core.aws_integration import aws_integration_store
 from core.assistant_service import AssistantValidationError, assistant_service
 from integrations.github_client import GitHubAPIError
 from integrations.github_webhook import repository_allowed, verify_signature
 from integrations.terraform_runner import TerraformAnalysisError, parse_github_terraform_change, select_terraform_files
+from integrations.cloud_adapters import RealAWSCloudAdapter
+from integrations.cloud_registry import CloudProviderRegistry
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
@@ -745,6 +751,7 @@ def reset_runs() -> dict[str, str]:
     result = workflow_service.reset()
     cloud_hunt_service.reset()
     decision_event_store.reset()
+    aws_integration_store.reset()
     return result
 
 
@@ -765,6 +772,32 @@ def cloud_providers(principal: Principal = Depends(principal_dependency)) -> lis
     return cloud_hunt_service.providers()
 
 
+@app.get("/api/integrations/aws/config")
+def get_aws_config(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_AWS_READ)
+    return aws_integration_store.get(principal.organization_id)
+
+
+@app.patch("/api/integrations/aws/config")
+def update_aws_config(request: AWSIntegrationConfigRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, INTEGRATIONS_AWS_MANAGE)
+    return aws_integration_store.update(principal.organization_id, request)
+
+
+@app.post("/api/integrations/aws/validate")
+def validate_aws_connection(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, INTEGRATIONS_AWS_READ)
+    config = aws_integration_store.get(principal.organization_id)
+    regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
+    adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
+    result = adapter.validate()
+    if result["connected"]:
+        aws_integration_store.mark_collection(principal.organization_id, True)
+    else:
+        aws_integration_store.mark_collection(principal.organization_id, False, "; ".join(result["missing_permissions"]))
+    return result
+
+
 @app.get("/api/cloud/hunt/fixtures")
 def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: Principal = Depends(principal_dependency)) -> list[object]:
     require_permission(principal, CLOUD_HUNTS_READ)
@@ -775,11 +808,23 @@ def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: P
 def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_RUN)
     try:
+        registry_override = None
+        if request.inventory_source == "real_aws":
+            config = aws_integration_store.get(principal.organization_id)
+            if not config.enabled:
+                raise CloudHuntConflictError("Real AWS mode is disabled for this organization.")
+            regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
+            adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
+            validation = adapter.validate()
+            if not validation["connected"]:
+                raise CloudHuntConflictError("AWS validation failed safely; real AWS mode did not fall back to fixtures.")
+            registry_override = CloudProviderRegistry([adapter])
         hunt = cloud_hunt_service.start_hunt(
             request,
             principal.organization_id,
             principal.user.id if principal.user else None,
             principal.user.display_name if principal.user else None,
+            registry_override,
         )
         auth_store.record_activity(principal.organization_id, "cloud_hunt_started", principal.user.id if principal.user else None, {"hunt_id": str(hunt.id), "provider_scope": request.provider_scope}, actor_type="User" if principal.user else "System", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)
         auth_store.record_activity(principal.organization_id, "cloud_hunt_completed", None, {"hunt_id": str(hunt.id), "candidates": hunt.candidates_found}, actor_type="Agent", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)

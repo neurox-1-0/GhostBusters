@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
 from app.models import CloudProvider, CloudResource
@@ -71,6 +72,101 @@ class AWSCloudAdapter(CloudProviderAdapter):
 
     def list_resources(self) -> list[CloudResource]:
         return [item.model_copy(deep=True) for item in self._resources]
+
+
+class RealAWSCloudAdapter(CloudProviderAdapter):
+    """Read-only EC2, EBS, EIP, CloudWatch, STS, and best-effort pricing adapter."""
+
+    provider = "aws"
+    display_name = "AWS"
+    fixture_backed = False
+
+    def __init__(self, regions: list[str], lookback_days: int = 14, low_cpu_threshold: float = 10.0, session_factory=None) -> None:
+        self.regions = list(dict.fromkeys(regions))
+        self.lookback_days = lookback_days
+        self.low_cpu_threshold = low_cpu_threshold
+        self._session_factory = session_factory
+        self.account_id: str | None = None
+        self.collection_warnings: list[str] = []
+
+    def _session(self):
+        if self._session_factory:
+            return self._session_factory()
+        try:
+            import boto3
+            return boto3.Session()
+        except ImportError as exc:
+            raise RuntimeError("boto3 is not installed; real AWS mode is unavailable.") from exc
+
+    @staticmethod
+    def _error_code(exc: Exception) -> str:
+        return str(getattr(exc, "response", {}).get("Error", {}).get("Code", exc.__class__.__name__))
+
+    def validate(self) -> dict[str, Any]:
+        checked_at = datetime.now(timezone.utc)
+        try:
+            identity = self._session().client("sts", region_name=self.regions[0] if self.regions else None).get_caller_identity()
+            self.account_id = str(identity.get("Account") or "")
+            missing = []
+            warnings = []
+            session = self._session()
+            region = self.regions[0] if self.regions else getattr(session, "region_name", None)
+            if not region:
+                warnings.append("No AWS region is configured.")
+            else:
+                try: session.client("ec2", region_name=region).describe_regions(RegionNames=[region], AllRegions=False)
+                except Exception as exc: missing.append(f"ec2:DescribeRegions ({self._error_code(exc)})")
+                try: session.client("cloudwatch", region_name=region).list_metrics(Namespace="AWS/EC2", RecentlyActive="PT3H")
+                except Exception as exc: missing.append(f"cloudwatch:ListMetrics ({self._error_code(exc)})")
+            return {"connected": True, "account_id": self.account_id, "allowed_regions": self.regions, "permission_warnings": warnings, "missing_permissions": missing, "checked_at": checked_at}
+        except Exception as exc:
+            return {"connected": False, "account_id": None, "allowed_regions": self.regions, "permission_warnings": [], "missing_permissions": [f"sts:GetCallerIdentity ({self._error_code(exc)})"], "checked_at": checked_at}
+
+    def list_resources(self) -> list[CloudResource]:
+        session = self._session()
+        resources: list[CloudResource] = []
+        for region in self.regions:
+            try:
+                ec2 = session.client("ec2", region_name=region)
+                reservations = ec2.describe_instances().get("Reservations", [])
+                for reservation in reservations:
+                    for instance in reservation.get("Instances", []):
+                        tags = {str(tag.get("Key")): str(tag.get("Value", "")) for tag in instance.get("Tags", [])}
+                        resource_id = str(instance.get("InstanceId"))
+                        state = str((instance.get("State") or {}).get("Name") or "unknown")
+                        metrics = self._instance_metrics(session, region, resource_id)
+                        resources.append(self._resource(resource_id, f"EC2 {resource_id}", "virtual_machine", region, tags, state, instance.get("LaunchTime"), metrics, {"instance_type": instance.get("InstanceType")}))
+                for volume in ec2.describe_volumes().get("Volumes", []):
+                    tags = {str(tag.get("Key")): str(tag.get("Value", "")) for tag in volume.get("Tags", [])}
+                    attached = bool(volume.get("Attachments"))
+                    resources.append(self._resource(str(volume.get("VolumeId")), f"EBS {volume.get('VolumeId')}", "storage_volume", region, tags, "attached" if attached else "unattached", volume.get("CreateTime"), {"available": False, "reason": "EBS utilization metrics are not available for this volume."}, {"attached": attached, "size_gib": volume.get("Size")}))
+                for address in ec2.describe_addresses().get("Addresses", []):
+                    allocation = str(address.get("AllocationId") or address.get("PublicIp") or "unknown")
+                    associated = bool(address.get("AssociationId") or address.get("InstanceId") or address.get("NetworkInterfaceId"))
+                    resources.append(self._resource(allocation, f"Elastic IP {address.get('PublicIp', allocation)}", "public_ip", region, {}, "associated" if associated else "unassociated", None, {"available": False, "reason": "Elastic IP has no utilization metric."}, {"associated": associated, "public_ip": address.get("PublicIp")}))
+            except Exception as exc:
+                self.collection_warnings.append(f"{region}: {self._error_code(exc)}")
+        return resources
+
+    def _instance_metrics(self, session, region: str, instance_id: str) -> dict[str, Any]:
+        end = datetime.now(timezone.utc)
+        start = end - __import__("datetime").timedelta(days=self.lookback_days)
+        try:
+            result = session.client("cloudwatch", region_name=region).get_metric_statistics(Namespace="AWS/EC2", MetricName="CPUUtilization", Dimensions=[{"Name": "InstanceId", "Value": instance_id}], StartTime=start, EndTime=end, Period=3600, Statistics=["Average", "Maximum"])
+            datapoints = result.get("Datapoints", [])
+            if not datapoints: return {"available": False, "reason": "No CloudWatch CPUUtilization datapoints were returned.", "metric": "CPUUtilization", "lookback_days": self.lookback_days}
+            return {"available": True, "metric": "CPUUtilization", "average_cpu_pct": sum(float(item.get("Average", 0)) for item in datapoints) / len(datapoints), "peak_cpu_pct": max(float(item.get("Maximum", 0)) for item in datapoints), "datapoints": len(datapoints), "lookback_days": self.lookback_days, "source": "AWS CloudWatch"}
+        except Exception as exc:
+            return {"available": False, "reason": f"CloudWatch metrics unavailable: {self._error_code(exc)}", "metric": "CPUUtilization", "lookback_days": self.lookback_days}
+
+    def _resource(self, resource_id, name, normalized_type, region, tags, state, created_at, utilization, metadata) -> CloudResource:
+        created = created_at if isinstance(created_at, datetime) else None
+        age_days = max(0, (datetime.now(timezone.utc) - created).days) if created else None
+        environment = tags.get("Environment") or tags.get("environment")
+        owner = tags.get("Owner") or tags.get("owner")
+        return CloudResource(provider="aws", account_or_subscription_id=self.account_id or "unknown", region_or_location=region, resource_id=resource_id, resource_name=name, provider_resource_type=normalized_type, normalized_resource_type=normalized_type, status=state, environment=environment, owner=owner, created_at=created, age_days=age_days, tags=tags, estimated_monthly_cost=None, metadata={**metadata, "utilization": utilization, "source_mode": "real_aws", "collected_at": datetime.now(timezone.utc).isoformat(), "pricing": {"available": False, "reason": "AWS Pricing lookup is not available for this resource."}})
+
+    def get_utilization_evidence(self, resource_id: str) -> dict[str, Any]: return self._evidence(resource_id, "utilization")
 
 
 class AzureCloudAdapter(CloudProviderAdapter):

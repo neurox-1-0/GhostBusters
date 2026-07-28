@@ -43,6 +43,8 @@ const state = {
   goalTab: "timeline",
   goalReplayPaused: false,
   goalReplayTimer: null,
+  awsConfig: null,
+  awsValidation: null,
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -1328,6 +1330,35 @@ async function loadGoals() {
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
 }
 
+async function loadAWSConfig() {
+  try { state.awsConfig = await api("/api/integrations/aws/config"); renderAWSConfig(); } catch (error) { setMessage("aws-message", friendlyError(error, "AWS settings unavailable.")); }
+}
+
+function renderAWSConfig() {
+  const config = state.awsConfig; if (!config || !$("aws-enabled-select")) return;
+  $("aws-enabled-select").value = String(Boolean(config.enabled));
+  $("aws-regions-input").value = (config.regions || []).join(",");
+  $("aws-lookback-input").value = config.cloudwatch_lookback_days || 14;
+  $("aws-last-success").textContent = config.last_successful_collection ? exactTimestamp(config.last_successful_collection) : "Not recorded";
+  $("aws-permission-warnings").textContent = config.last_failure_summary || "None recorded";
+}
+
+async function saveAWSConfig() {
+  try { state.awsConfig = await api("/api/integrations/aws/config", { method: "PATCH", body: JSON.stringify({ enabled: $("aws-enabled-select").value === "true", regions: $("aws-regions-input").value.split(",").map((item) => item.trim()).filter(Boolean), cloudwatch_lookback_days: Number($("aws-lookback-input").value) }) }); renderAWSConfig(); setMessage("aws-message", "AWS settings saved. No credentials were stored.", true); } catch (error) { setMessage("aws-message", friendlyError(error, "AWS settings could not be saved.")); }
+}
+
+async function validateAWSConnection() {
+  return withButtonState("aws-validate-button", "Validating...", async () => {
+    state.awsValidation = await api("/api/integrations/aws/validate", { method: "POST", body: "{}" });
+    const result = state.awsValidation;
+    setStatusBadge("aws-connection-status", { label: result.connected ? "Connected" : "Unavailable", className: result.connected ? "status-approved" : "status-blocked" });
+    $("aws-account-id").textContent = result.account_id || "Not available";
+    $("aws-last-checked").textContent = exactTimestamp(result.checked_at);
+    $("aws-permission-warnings").textContent = [...(result.permission_warnings || []), ...(result.missing_permissions || [])].join("; ") || "None recorded";
+    setMessage("aws-message", result.connected ? "AWS identity validated. Real collection remains read-only." : "AWS validation failed safely. Fixture mode was not used.", result.connected);
+  }, "Validated").catch((error) => setMessage("aws-message", friendlyError(error, "AWS validation failed.")));
+}
+
 async function selectGoal(goalId, switchToView = true) {
   try {
     state.selectedGoal = await api(`/api/goals/${goalId}`);
@@ -1524,7 +1555,7 @@ async function startCloudHunt() {
     state.loading.cloudHunt = true;
     renderCloudHunt();
     setMessage("cloud-hunt-message", "Scanning fixture inventory...", true);
-    state.hunt = await api("/api/cloud/hunts", { method: "POST", body: JSON.stringify({ provider_scope: $("cloud-provider-scope").value, inventory_source: "fixtures" }) });
+    state.hunt = await api("/api/cloud/hunts", { method: "POST", body: JSON.stringify({ provider_scope: $("cloud-provider-scope").value, inventory_source: $("cloud-data-source").value }) });
     state.selectedCloudHuntId = state.hunt.id;
     await loadCloudHunts();
     await loadReviewQueue();
@@ -2656,6 +2687,7 @@ function switchMode(mode) {
   });
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
+  if (mode === "settings") loadAWSConfig();
   if (mode === "activity") loadActivity();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
@@ -3002,6 +3034,7 @@ function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
   renderCloudRunDetailMeta();
+  if ($("cloud-data-source-badge")) $("cloud-data-source-badge").textContent = state.hunt?.data_source_mode || "Fixture-backed";
   clear(summary);
   renderCloudJourney();
   renderCloudFindingDetail();
@@ -3291,6 +3324,8 @@ function bindEvents() {
   on("cloud-run-next-button", "click", () => { if (!$("cloud-run-next-button").disabled) { state.cloudHuntPage += 1; loadCloudHunts(); } });
   on("refresh-review-queue-button", "click", loadReviewQueue);
   on("refresh-members-button", "click", loadMembers);
+  on("aws-save-button", "click", saveAWSConfig);
+  on("aws-validate-button", "click", validateAWSConnection);
   on("invite-member-button", "click", openInviteModal);
   on("invite-close-button", "click", closeInviteModal);
   on("invite-cancel-button", "click", closeInviteModal);

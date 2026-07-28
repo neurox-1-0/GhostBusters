@@ -45,6 +45,8 @@ MEMBERS_DISABLE = "members.disable"
 OWNERSHIP_TRANSFER = "ownership.transfer"
 INTEGRATIONS_READ = "integrations.read"
 INTEGRATIONS_MANAGE = "integrations.manage"
+INTEGRATIONS_AWS_READ = "integrations.aws.read"
+INTEGRATIONS_AWS_MANAGE = "integrations.aws.manage"
 POLICIES_READ = "policies.read"
 POLICIES_MANAGE = "policies.manage"
 PR_REVIEWS_READ = "pr_reviews.read"
@@ -126,6 +128,8 @@ ROLE_PERMISSIONS = {
         OWNERSHIP_TRANSFER,
         INTEGRATIONS_READ,
         INTEGRATIONS_MANAGE,
+        INTEGRATIONS_AWS_READ,
+        INTEGRATIONS_AWS_MANAGE,
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
@@ -157,10 +161,13 @@ ROLE_PERMISSIONS = {
         MEMBERS_DISABLE,
         INTEGRATIONS_READ,
         INTEGRATIONS_MANAGE,
+        INTEGRATIONS_AWS_READ,
+        INTEGRATIONS_AWS_MANAGE,
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
         GOALS_READ,
+        INTEGRATIONS_AWS_READ,
         GOALS_RUN,
         GOALS_CANCEL,
         CLOUD_HUNTS_READ,
@@ -839,7 +846,7 @@ def make_principal(
         })
     if demo_mode:
         permissions.add(CLOUD_HUNTS_RUN)
-        permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL})
+        permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL, INTEGRATIONS_AWS_READ, INTEGRATIONS_AWS_MANAGE})
     return Principal(
         user=user,
         organization=organization,

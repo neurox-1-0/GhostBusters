@@ -68,10 +68,12 @@ class CloudHuntService:
         organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
         started_by_user_id: UUID | None = None,
         started_by_display_name: str | None = None,
+        registry_override: CloudProviderRegistry | None = None,
     ) -> CloudHuntRun:
         if not self.configuration.cloud_hunt_enabled:
             raise CloudHuntConflictError("Cloud Hunt Mode is disabled by CLOUD_HUNT_ENABLED.")
         started = _now()
+        registry = registry_override or self.registry
         hunt = CloudHuntRun(
             id=uuid4(), trigger_source=request.trigger_source, provider_scope=request.provider_scope,
             organization_id=organization_id,
@@ -81,8 +83,14 @@ class CloudHuntService:
             started_by_display_name=started_by_display_name,
             data_source_mode=self._data_source_mode(request.inventory_source),
         )
-        self._audit(hunt, "cloud_hunt_started", "Cloud Hunt started from controlled inventory fixtures.", {"provider_scope": request.provider_scope})
-        resources = self.registry.list_resources(request.provider_scope)
+        source_label = "real AWS inventory" if request.inventory_source == "real_aws" else "controlled inventory fixtures"
+        self._audit(hunt, "cloud_hunt_started", f"Cloud Hunt started from {source_label}.", {"provider_scope": request.provider_scope, "source_mode": hunt.data_source_mode})
+        resources = registry.list_resources(request.provider_scope)
+        hunt.account_ids = sorted({resource.account_or_subscription_id for resource in resources if resource.account_or_subscription_id})
+        hunt.regions = sorted({resource.region_or_location for resource in resources if resource.region_or_location})
+        for adapter in registry._adapters.values():
+            warnings = getattr(adapter, "collection_warnings", [])
+            hunt.errors.extend(str(item) for item in warnings)
         hunt.resources_scanned = len(resources)
         for resource in resources:
             self._audit(hunt, "provider_inventory_requested", f"Requested {resource.provider} inventory.", {"provider": resource.provider})
@@ -101,7 +109,7 @@ class CloudHuntService:
                 continue
             active_candidates.append(candidate)
             self._audit(hunt, "candidate_selected", f"Selected {candidate.resource.resource_name} for investigation.", {"resource_id": candidate.resource.resource_id})
-            adapter = self.registry.get(candidate.resource.provider)
+            adapter = registry.get(candidate.resource.provider)
             if adapter is not None:
                 # These are read-only adapter calls; their normalized outputs feed the case explanation.
                 for method_name in ("get_cost_evidence", "get_utilization_evidence", "get_dependency_evidence", "get_activity_evidence", "get_ownership_evidence"):
@@ -290,6 +298,8 @@ class CloudHuntService:
         value = (inventory_source or "fixtures").strip().lower().replace("-", "_")
         if value in {"fixtures", "fixture", "fixture_backed"}:
             return "Fixture-backed"
+        if value in {"real_aws", "aws", "connected_aws"}:
+            return "Connected cloud account"
         if value in {"connected", "cloud_account", "connected_cloud_account"}:
             return "Connected cloud account"
         if value in {"imported", "imported_inventory"}:

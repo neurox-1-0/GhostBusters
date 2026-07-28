@@ -796,6 +796,8 @@ class CloudHuntRun(AppModel):
     started_by_user_id: UUID | None = None
     started_by_display_name: str | None = None
     data_source_mode: Literal["Fixture-backed", "Connected cloud account", "Imported inventory", "Mixed"] = "Fixture-backed"
+    account_ids: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=list)
     resources_scanned: int = 0
     candidates_found: int = 0
     investigations_created: int = 0
@@ -848,6 +850,25 @@ class CloudHuntRequest(AppModel):
     inventory_source: str = "fixtures"
     goal: str = "Find forgotten cloud resources without disrupting active workloads"
     trigger_source: CloudHuntTrigger = "manual_cloud_hunt"
+
+
+class AWSIntegrationConfig(AppModel):
+    organization_id: UUID
+    enabled: bool = False
+    regions: list[str] = Field(default_factory=list)
+    cloudwatch_lookback_days: int = Field(default=14, ge=1, le=90)
+    low_cpu_threshold: float = Field(default=10.0, ge=0, le=100)
+    created_at: datetime
+    updated_at: datetime
+    last_successful_collection: datetime | None = None
+    last_failure_summary: str | None = None
+
+
+class AWSIntegrationConfigRequest(AppModel):
+    enabled: bool | None = None
+    regions: list[str] | None = None
+    cloudwatch_lookback_days: int | None = Field(default=None, ge=1, le=90)
+    low_cpu_threshold: float | None = Field(default=None, ge=0, le=100)
 
 
 class WaiverRequest(AppModel):

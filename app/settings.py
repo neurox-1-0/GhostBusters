@@ -66,6 +66,11 @@ class Settings:
     cloud_hunt_utilization_lookback_days: int = int(os.getenv("CLOUD_HUNT_UTILIZATION_LOOKBACK_DAYS", "14"))
     cloud_hunt_low_cpu_threshold: float = float(os.getenv("CLOUD_HUNT_LOW_CPU_THRESHOLD", "10"))
     cloud_hunt_enabled: bool = os.getenv("CLOUD_HUNT_ENABLED", "true").lower() in {"1", "true", "yes"}
+    aws_profile: str | None = os.getenv("AWS_PROFILE") or None
+    aws_region: str | None = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None
+    aws_allowed_regions: tuple[str, ...] = tuple(item.strip() for item in os.getenv("AWS_ALLOWED_REGIONS", "").split(",") if item.strip())
+    aws_cloudwatch_lookback_days: int = int(os.getenv("AWS_CLOUDWATCH_LOOKBACK_DAYS", "14"))
+    aws_integration_config_path: Path = Path(os.getenv("AWS_INTEGRATION_CONFIG_PATH", ".runtime/aws_integrations.json"))
     github_integration_enabled: bool = os.getenv("GITHUB_INTEGRATION_ENABLED", "false").lower() in {"1", "true", "yes"}
     github_token: str | None = os.getenv("GITHUB_TOKEN") or None
     github_webhook_secret: str | None = os.getenv("GITHUB_WEBHOOK_SECRET") or None

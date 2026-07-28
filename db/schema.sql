@@ -218,6 +218,19 @@ ALTER TABLE cloud_review_cases ADD COLUMN IF NOT EXISTS organization_id UUID NOT
 CREATE INDEX IF NOT EXISTS cloud_review_cases_status_idx ON cloud_review_cases ((payload->>'status'));
 CREATE INDEX IF NOT EXISTS cloud_review_cases_org_idx ON cloud_review_cases(organization_id, updated_at);
 
+-- AWS integration configuration contains no credentials. Production deployments should use versioned migrations for this additive table.
+CREATE TABLE IF NOT EXISTS aws_integration_configs (
+    organization_id UUID PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    regions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cloudwatch_lookback_days INTEGER NOT NULL DEFAULT 14,
+    low_cpu_threshold DOUBLE PRECISION NOT NULL DEFAULT 10,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    last_successful_collection TIMESTAMPTZ,
+    last_failure_summary TEXT
+);
+
 -- Milestone 2 additive schema. Production deployments should replace this
 -- bootstrap file with ordered, versioned migrations before rollout.
 CREATE TABLE IF NOT EXISTS human_decision_events (

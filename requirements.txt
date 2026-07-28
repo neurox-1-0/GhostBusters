@@ -7,4 +7,5 @@ python-dotenv
 psycopg[binary]
 redis
 google-genai
+boto3
 
