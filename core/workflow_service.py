@@ -111,7 +111,13 @@ class WorkflowService:
         self.ai_client = ai_client
         self.github_client = github_client or (GitHubClient(configuration.github_token, configuration.github_api_base_url, configuration.github_request_timeout_seconds) if configuration.github_integration_enabled and configuration.github_token else None)
 
-    def start_run(self, request: StartRunRequest, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> tuple[WorkflowRun, bool]:
+    def start_run(
+        self,
+        request: StartRunRequest,
+        organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+        creator_user_id: UUID | None = None,
+        creator_display_name: str | None = None,
+    ) -> tuple[WorkflowRun, bool]:
         if request.idempotency_key:
             existing = self.store.find_by_idempotency_key(request.idempotency_key, organization_id)
             if existing is not None:
@@ -128,6 +134,13 @@ class WorkflowService:
             created_at=now,
             updated_at=now,
             idempotency_key=request.idempotency_key,
+            scope=request.scope,
+            constraints=request.constraints,
+            success_criteria=request.success_criteria,
+            stop_conditions=request.stop_conditions,
+            creator_user_id=creator_user_id,
+            creator_display_name=creator_display_name,
+            data_source_mode=request.data_source_mode,
         )
         append_audit_event(run, event_type="run_created", actor="system", summary="Run created.")
         append_audit_event(run, event_type="goal_received", actor="agent", summary=request.goal, details={"constraints": request.constraints})
@@ -167,8 +180,15 @@ class WorkflowService:
                         current.scenario_name,
                     )
                 current.decision_record = decision
+                self._capture_goal_state(current, decision)
                 current.status = map_final_status(decision.final_status)
                 self._copy_decision_audit(current, decision)
+                if current.status == RunStatus.pending_human_review:
+                    append_audit_event(current, event_type="human_review_required", actor="agent", summary="Human approval is required before any remediation step.", stage="human_review", status="waiting", decision_impact="Execution paused for authenticated human review.")
+                else:
+                    append_audit_event(current, event_type="goal_completed", actor="agent", summary="Goal execution completed safely.", stage="completed", status="completed", decision_impact=decision.final_summary)
+                current.stop_reason = decision.termination_reason
+                current.final_outcome = decision.final_status
             except Exception as exc:
                 current.status = RunStatus.failed_safely
                 current.error = str(exc)
@@ -177,6 +197,35 @@ class WorkflowService:
             return current
 
         return self.store.update(run.id, execute, organization_id), True
+
+    def cancel_goal(self, run_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> WorkflowRun:
+        def cancel(current: WorkflowRun) -> WorkflowRun:
+            if current.status in {RunStatus.approved, RunStatus.pr_created, RunStatus.remediation_pr_created}:
+                raise WorkflowConflictError("Completed remediation decisions cannot be canceled.")
+            current.status = RunStatus.canceled
+            current.stop_reason = "Canceled by an authenticated user before any infrastructure mutation."
+            current.final_outcome = "canceled_safely"
+            append_audit_event(current, event_type="failed_safely", actor="system", summary="Goal canceled safely; no infrastructure mutation was performed.", stage="canceled", status="canceled", decision_impact="No Terraform apply, merge, or cloud mutation was performed.")
+            return current
+        return self.store.update(run_id, cancel, organization_id)
+
+    @staticmethod
+    def _capture_goal_state(run: WorkflowRun, decision: DecisionRecord) -> None:
+        plan = decision.investigation_plan
+        run.original_plan = plan.model_dump(mode="json")
+        run.selected_tools = list(plan.selected_tools)
+        run.skipped_tools = {
+            tool: next((note.split(": ", 1)[1] for note in plan.planning_notes if note.startswith(f"Skipped {tool}:")), "Not relevant to this investigation.")
+            for tool in plan.skipped_tools
+        }
+        run.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "policy_evaluated"]
+        run.current_step = "human_review" if decision.final_status == "recommendation_ready" else "completed"
+        run.tool_attempts = [record.model_dump(mode="json") for record in decision.tool_executions]
+        run.evidence_summaries = [
+            {"source": item.source, "claim": item.claim, "value_summary": str(item.value)[:500], "freshness": item.freshness_status, "reliability": item.reliability, "collected_at": item.collected_at, "effect_on_decision": "Used in deterministic recommendation evaluation."}
+            for item in decision.evidence
+        ]
+        run.decision_impacts = [item.explanation for item in decision.verifier_findings if item.status != "passed"] or [decision.final_summary]
 
     def start_run_request(self, scenario_name: str, goal: str | None = None) -> tuple[WorkflowRun, bool]:
         scenario = load_scenario(scenario_name)
@@ -382,6 +431,8 @@ class WorkflowService:
         resource = self._resource_for_run(run)
         run.human_reviews.append(record)
         append_audit_event(run, event_type="additional_evidence_requested", actor="human", summary="Additional evidence requested.", details={"sources": request.requested_sources})
+        run.plan_revisions.append({"reason": "Human requested additional evidence.", "added_steps": request.requested_sources, "removed_steps": [], "created_at": utc_now()})
+        append_audit_event(run, event_type="plan_revised", actor="agent", summary="Plan revised to collect requested evidence.", stage="replanning", status="completed", reason="Human evidence request.")
         plan = InvestigationPlan(
             goal=run.goal,
             resource_id=resource.address,
@@ -426,6 +477,7 @@ class WorkflowService:
             metadata={"reviewer": request.reviewer, "timestamp": record.created_at.isoformat()},
         )
         evidence = decision.evidence + [context]
+        run.plan_revisions.append({"reason": "Human context arrived.", "added_steps": ["human_context"], "removed_steps": [], "created_at": utc_now()})
         run.decision_record = self._recalculate_decision(
             decision,
             resource,
@@ -437,6 +489,7 @@ class WorkflowService:
         run.status = map_final_status(run.decision_record.final_status)
         self._append_policy_audit(run, run.decision_record.policy_result)
         append_audit_event(run, event_type="human_context_added", actor="human", summary="Human context added.", details={"reviewer": request.reviewer})
+        append_audit_event(run, event_type="plan_revised", actor="agent", summary="Plan revised after human context arrived.", stage="replanning", status="completed", reason="Authenticated human context.")
         append_audit_event(run, event_type="workflow_resumed", actor="agent", summary="Workflow resumed after human context.", details={"status": run.status})
 
     def _modify(self, run: WorkflowRun, request: HumanReviewRequest, record: HumanReviewRecord) -> None:
@@ -595,15 +648,28 @@ class WorkflowService:
                 details=event.get("details", {}),
             )
         self._append_ai_audit(run, decision)
+        append_audit_event(run, event_type="scope_resolved", actor="agent", summary="Investigation scope resolved from the authenticated goal.", stage="scope", status="completed", input_summary=run.scope or "Workspace scope", decision_impact="The plan is constrained to the recorded scope.")
+        append_audit_event(run, event_type="step_started", actor="agent", summary="Dynamic investigation plan started.", stage="planning", status="running")
         append_audit_event(run, event_type="investigation_plan_created", actor="agent", summary="Investigation plan created.", details={"selected_tools": decision.investigation_plan.selected_tools})
+        append_audit_event(run, event_type="plan_created", actor="agent", summary="Dynamic investigation plan created.", stage="planning", status="completed", output_summary=f"{len(decision.investigation_plan.selected_tools)} tools selected.")
         for tool in decision.investigation_plan.selected_tools:
-            append_audit_event(run, event_type="tool_selected", actor="agent", summary=f"Selected {tool}.")
+            reason = next((note for note in decision.investigation_plan.planning_notes if note.startswith(f"Selected {tool}:")), "Selected by the dynamic plan.")
+            append_audit_event(run, event_type="tool_selected", actor="agent", summary=f"Selected {tool}.", tool=tool, reason=reason)
+        for tool in decision.investigation_plan.skipped_tools:
+            reason = next((note for note in decision.investigation_plan.planning_notes if note.startswith(f"Skipped {tool}:")), "Not relevant to this investigation.")
+            append_audit_event(run, event_type="step_skipped", actor="agent", summary=f"Skipped {tool}.", tool=tool, reason=reason, status="skipped")
         for record in decision.tool_executions:
             self._append_tool_execution_audit(run, record)
+            append_audit_event(run, event_type="evidence_recorded", actor="agent", summary=f"Evidence recorded from {record.tool_name}.", tool=record.tool_name, output_summary=record.output_summary, status=record.status)
         append_audit_event(run, event_type="conflicts_detected", actor="agent", summary=f"{len(decision.conflicts)} conflict(s) detected.")
+        if decision.conflicts:
+            append_audit_event(run, event_type="conflict_detected", actor="agent", summary="Evidence conflict detected; the recommendation remains safety constrained.", stage="reasoning", status="warning", decision_impact="Human context or additional evidence may be required.")
         append_audit_event(run, event_type="alternatives_generated", actor="agent", summary=f"{len(decision.alternatives)} alternative(s) generated.")
+        if decision.preferred_action:
+            append_audit_event(run, event_type="alternative_selected", actor="agent", summary=f"Selected alternative: {decision.preferred_action}.", decision_impact=decision.final_summary)
         append_audit_event(run, event_type="verifier_completed", actor="agent", summary="Verifier checks completed.")
         self._append_policy_audit(run, decision.policy_result)
+        append_audit_event(run, event_type="policy_evaluated", actor="policy", summary=f"Policy evaluated: {decision.policy_result.status}.", stage="safety", status=decision.policy_result.status, decision_impact="Mandatory human approval remains authoritative.")
         append_audit_event(run, event_type="recommendation_produced", actor="agent", summary=decision.final_summary)
 
     def _append_ai_audit(self, run: WorkflowRun, decision: DecisionRecord) -> None:

@@ -37,6 +37,12 @@ const state = {
   cloudHuntPageSize: 20,
   cloudHuntFilters: { status: "", provider: "", search: "", sort: "newest" },
   cloudHuntError: "",
+  goals: [],
+  selectedGoal: null,
+  goalEvents: [],
+  goalTab: "timeline",
+  goalReplayPaused: false,
+  goalReplayTimer: null,
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -358,6 +364,7 @@ function runStatusLabel(status) {
     blocked: "Blocked by policy",
     keep: "No change recommended",
     abstained: "No recommendation",
+    canceled: "Canceled safely",
   }[status] || labelFor(status || "no_case");
 }
 
@@ -1087,6 +1094,7 @@ async function loadInitial() {
   loadPRReviews();
   loadReviewQueue();
   loadCloudHunts();
+  loadGoals();
   loadMembers();
   loadActivity();
   renderAll();
@@ -1308,6 +1316,82 @@ async function loadPRReviews({ preserveSelection = true, showNotice = false } = 
     renderPRReviewList();
     renderOverview();
   }
+}
+
+async function loadGoals() {
+  try {
+    state.goals = await api("/api/goals");
+    const stored = localStorage.getItem("ghostbusters:lastGoalId");
+    const selected = state.goals.find((goal) => goal.id === stored) || state.goals[0];
+    if (selected) await selectGoal(selected.id, false);
+    if (!state.goalReplayTimer) state.goalReplayTimer = window.setInterval(() => { if (state.selectedGoal && state.activeMode === "goals" && !state.goalReplayPaused) refreshGoalJourney(); }, 2500);
+  } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
+}
+
+async function selectGoal(goalId, switchToView = true) {
+  try {
+    state.selectedGoal = await api(`/api/goals/${goalId}`);
+    state.goalEvents = await api(`/api/goals/${goalId}/events`);
+    localStorage.setItem("ghostbusters:lastGoalId", goalId);
+    if (switchToView) switchMode("goals");
+    renderGoalExecution();
+  } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goal journey.")); }
+}
+
+async function refreshGoalJourney() { return state.selectedGoal ? selectGoal(state.selectedGoal.id, false) : loadGoals(); }
+
+async function startGoal() {
+  const goal = $("goal-input").value.trim();
+  if (!goal) return setMessage("goal-message", "Enter a goal before starting.");
+  return withButtonState("goal-start-button", "Starting...", async () => {
+    const created = await api("/api/goals", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value.trim() || null, scenario_name: $("goal-scenario-select").value, data_source_mode: "Fixture-backed" }) });
+    state.selectedGoal = created;
+    await selectGoal(created.id);
+    setMessage("goal-message", "Goal execution recorded. No infrastructure was changed.", true);
+  }, "Started").catch((error) => setMessage("goal-message", friendlyError(error, "Goal failed safely.")));
+}
+
+async function cancelSelectedGoal() {
+  if (!state.selectedGoal) return;
+  try { state.selectedGoal = await api(`/api/goals/${state.selectedGoal.id}/cancel`, { method: "POST", body: "{}" }); state.goalEvents = await api(`/api/goals/${state.selectedGoal.id}/events`); renderGoalExecution(); showToast("Goal canceled safely", "No Terraform, GitHub, or cloud mutation was performed.", "success"); }
+  catch (error) { showToast("Cancel failed", friendlyError(error), "error"); }
+}
+
+function goalEventClass(event) { if (["failed_safely", "tool_failed"].includes(event.event_type)) return "goal-failed"; if (["human_review_required", "conflict_detected", "policy_evaluated"].includes(event.event_type)) return "goal-warning"; if (["tool_started", "step_started"].includes(event.event_type)) return "goal-running"; return "goal-completed"; }
+
+function renderGoalExecution() {
+  if (!$("goal-execution-panel")) return;
+  const run = state.selectedGoal;
+  $("goal-execution-panel").hidden = !run;
+  if (!run) return;
+  $("goal-summary-title").textContent = run.goal;
+  setStatusBadge("goal-summary-status", { label: runStatusLabel(run.status), className: ["failed_safely", "canceled", "blocked"].includes(run.status) ? "status-blocked" : run.status === "pending_human_review" ? "status-awaiting-review" : "status-approved" });
+  $("goal-summary-scope").textContent = run.scope || "Workspace scope";
+  $("goal-summary-elapsed").textContent = `${Math.max(0, Math.round((new Date(run.updated_at) - new Date(run.created_at)) / 1000))}s recorded`;
+  $("goal-summary-planning").textContent = planningModeLabel(run.decision_record?.planning_mode || "deterministic_only");
+  $("goal-summary-source").textContent = run.data_source_mode || "Fixture-backed";
+  $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created"].includes(run.status);
+  const journey = $("goal-journey-list"); clear(journey);
+  (state.goalEvents || []).forEach((event) => { const item = el("li", goalEventClass(event)); append(item, el("strong", null, event.label || labelFor(event.event_type)), el("small", null, `${exactTimestamp(event.timestamp)} · ${event.summary || "Recorded event"}`)); journey.appendChild(item); });
+  const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
+  $("goal-current-action").textContent = latest?.label || runStatusLabel(run.status);
+  $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
+  $("goal-current-reason").textContent = latest?.reason || latest?.summary || "Recorded by the execution plan.";
+  $("goal-current-input").textContent = latest?.input_summary || "Sanitized execution context";
+  $("goal-current-attempt").textContent = latest?.attempt_number || "1";
+  $("goal-current-output").textContent = latest?.output_summary || latest?.summary || "Recorded output";
+  $("goal-current-impact").textContent = latest?.decision_impact || run.stop_reason || "No infrastructure mutation was performed.";
+  document.querySelectorAll("[data-goal-tab]").forEach((button) => button.classList.toggle("filter-chip-active", button.dataset.goalTab === state.goalTab));
+  renderGoalTab();
+}
+
+function renderGoalTab() {
+  const node = $("goal-tab-content"); clear(node); const run = state.selectedGoal; if (!run) return;
+  if (state.goalTab === "timeline") { node.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Explanation", render: (event) => event.summary || "Recorded" }], state.goalEvents, "No journey events recorded.")); return; }
+  if (state.goalTab === "evidence") { node.appendChild(responsiveTable([{ label: "Source", render: (item) => labelFor(item.source) }, { label: "Claim", render: (item) => item.claim }, { label: "Freshness", render: (item) => labelFor(item.freshness) }, { label: "Reliability", render: (item) => item.reliability }, { label: "Effect", render: (item) => item.effect_on_decision }], run.evidence_summaries || [], "No evidence recorded.")); return; }
+  if (state.goalTab === "plan") { append(node, el("h3", "card-title", "Original plan"), el("pre", "technical-value", JSON.stringify(run.original_plan || {}, null, 2)), el("h3", "card-title", "Plan revisions"), el("pre", "technical-value", JSON.stringify(run.plan_revisions || [], null, 2))); return; }
+  if (state.goalTab === "alternatives") { node.appendChild(responsiveTable([{ label: "Action", render: (item) => recommendationLabel(item.action) }, { label: "Savings", render: (item) => money(item.estimated_monthly_savings) }, { label: "Eligible", render: (item) => item.eligible ? "Eligible" : "Not eligible" }, { label: "Reason", render: (item) => item.ineligible_reason || item.reason || "Recorded comparison" }], run.decision_record?.alternatives || [], "No alternatives recorded.")); return; }
+  const policy = run.decision_record?.policy_result; append(node, el("p", null, `Passed checks: ${(policy?.evaluated_rules || []).join(", ") || "Not recorded"}`), el("p", null, `Warnings: ${(policy?.warnings || []).join("; ") || "None recorded"}`), el("p", null, `Blocks: ${(policy?.blocking_reasons || []).join("; ") || "None recorded"}`), el("p", null, `Mandatory human approval: ${policy?.requires_human_approval ? "Yes" : "No"}`), el("p", null, `Stop reason: ${run.stop_reason || "Not recorded"}`));
 }
 
 async function refreshPRReviews() {
@@ -2539,7 +2623,7 @@ function renderAll() {
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
+  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
 function renderAssistantTriggers() {
@@ -2554,18 +2638,21 @@ function switchMode(mode) {
   const titles = {
     overview: ["Workspace", "Overview"],
     simple: ["Reviews", "PR Reviews"],
+    goals: ["Orchestration", "Goal Execution"],
     "cloud-hunt": ["Discovery", "Cloud Hunt"],
     "review-queue": ["Human control", "Approvals"],
     technical: ["Audit", "Technical Audit"],
     activity: ["Workspace", "Activity Log"],
     settings: ["Settings", "Members"],
   };
-  ["overview", "simple", "cloud-hunt", "review-queue", "technical", "activity", "settings"].forEach((item) => {
+  ["overview", "simple", "goals", "cloud-hunt", "review-queue", "technical", "activity", "settings"].forEach((item) => {
     const view = item === "simple" ? "simple-view" : `${item}-view`;
     const button = item === "simple" ? "simple-view-button" : `${item}-view-button`;
-    $(view).hidden = item !== mode;
-    $(button).classList.toggle("active", item === mode);
-    $(button).setAttribute("aria-pressed", String(item === mode));
+    const viewNode = $(view); const buttonNode = $(button);
+    if (!viewNode || !buttonNode) return;
+    viewNode.hidden = item !== mode;
+    buttonNode.classList.toggle("active", item === mode);
+    buttonNode.setAttribute("aria-pressed", String(item === mode));
   });
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
@@ -3108,6 +3195,10 @@ if (typeof window !== "undefined") {
     renderReviewQueue,
     loadReviewQueue,
     loadPRReviews,
+    loadGoals,
+    selectGoal,
+    renderGoalExecution,
+    renderGoalTab,
     openPrReviewById,
     backToPrReviewList,
     selectCloudFinding,
@@ -3159,6 +3250,7 @@ function bindEvents() {
   on("pause-button", "click", () => { state.paused = !state.paused; $("pause-button").textContent = state.paused ? "Resume" : "Pause"; });
   on("skip-animation", "change", (event) => { state.skipAnimation = event.target.checked; if (state.run && state.skipAnimation) startAnimation(true); });
   on("simple-view-button", "click", () => switchView(false));
+  on("goals-view-button", "click", () => { switchMode("goals"); loadGoals(); });
   on("cloud-hunt-view-button", "click", () => switchMode("cloud-hunt"));
   on("review-queue-view-button", "click", () => { switchMode("review-queue"); loadReviewQueue(); });
   on("technical-view-button", "click", () => switchView(true));
@@ -3182,6 +3274,12 @@ function bindEvents() {
   on("submit-review-button", "click", submitSelectedReview);
   on("cancel-review-button", "click", closeReviewForm);
   on("start-cloud-hunt-button", "click", startCloudHunt);
+  on("goal-start-button", "click", startGoal);
+  on("goal-refresh-button", "click", refreshGoalJourney);
+  on("goal-cancel-button", "click", cancelSelectedGoal);
+  on("goal-skip-button", "click", () => { state.goalReplayPaused = false; renderGoalExecution(); });
+  on("goal-pause-button", "click", () => { state.goalReplayPaused = !state.goalReplayPaused; $("goal-pause-button").textContent = state.goalReplayPaused ? "Resume Replay" : "Pause Replay"; });
+  document.querySelectorAll("[data-goal-tab]").forEach((button) => button.addEventListener("click", () => { state.goalTab = button.dataset.goalTab || "timeline"; renderGoalExecution(); }));
   on("cloud-new-run-button", "click", () => { state.selectedCloudHuntId = null; state.hunt = null; renderCloudRunHistory(); renderCloudHunt(); $("cloud-hunt-start-panel")?.scrollIntoView({ block: "start" }); });
   on("cloud-run-back-button", "click", backToCloudRunHistory);
   on("cloud-run-status-filter", "change", (event) => { state.cloudHuntFilters.status = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });

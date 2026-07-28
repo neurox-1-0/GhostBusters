@@ -16,6 +16,7 @@ from app.models import (
     AskGhostBustersRequest, AskGhostBustersResponse,
     AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
+    GoalContextRequest, GoalCreateRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -40,6 +41,9 @@ from app.auth import (
     MEMBERS_DISABLE,
     MEMBERS_MANAGE_ROLES,
     PR_REVIEWS_READ,
+    GOALS_READ,
+    GOALS_RUN,
+    GOALS_CANCEL,
     WORKSPACE_READ,
     Principal,
     ROLE_LABELS,
@@ -651,6 +655,8 @@ def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, pr
         run = workflow_service.store.update(run.id, run, principal.organization_id)
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
     except WorkflowConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if maybe_pr_created and (run.mock_pr is not None or run.real_pr is not None):
@@ -666,6 +672,72 @@ def review_run(run_id: UUID, request: HumanReviewRequest, response: Response, pr
         fingerprint=fingerprint,
         correlation_id=correlation_id,
     )
+
+
+@app.post("/api/goals", response_model=WorkflowRun, status_code=201)
+def create_goal(request: GoalCreateRequest, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_RUN)
+    try:
+        run, created = workflow_service.start_run(StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode), principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
+        if not created: response.status_code = 200
+        else: auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)
+        return run
+    except ScenarioNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc: raise HTTPException(status_code=500, detail=f"Goal failed safely: {exc}") from exc
+
+
+@app.get("/api/goals")
+def list_goals(principal: Principal = Depends(principal_dependency)) -> list[dict[str, object]]:
+    require_permission(principal, GOALS_READ)
+    return [{"id": run.id, "goal": run.goal, "scope": run.scope, "status": run.status, "created_at": run.created_at, "updated_at": run.updated_at, "planning_mode": run.decision_record.planning_mode if run.decision_record else "deterministic_only", "data_source_mode": run.data_source_mode, "correlation_id": run.correlation_id} for run in workflow_service.list_runs(principal.organization_id)]
+
+
+@app.get("/api/goals/{goal_id}", response_model=WorkflowRun)
+def get_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_READ)
+    try: return workflow_service.get_run(goal_id, principal.organization_id)
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/{goal_id}/start", response_model=WorkflowRun)
+def start_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_RUN)
+    try: return workflow_service.get_run(goal_id, principal.organization_id)
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/{goal_id}/continue", response_model=WorkflowRun)
+def continue_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_RUN)
+    try: return workflow_service.get_run(goal_id, principal.organization_id)
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/{goal_id}/context", response_model=WorkflowRun)
+def add_goal_context(goal_id: UUID, request: GoalContextRequest, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_RUN)
+    try:
+        run, _ = workflow_service.review_run(goal_id, HumanReviewRequest(action="add_context", reviewer=principal.reviewer_name, human_context=request.context, comment=request.context, expected_version=request.expected_version), principal.organization_id, principal.user.id if principal.user else None, principal.user.email if principal.user else None, principal.membership.role, request.expected_version)
+        return run
+    except (RunNotFoundError, WorkflowConflictError) as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/{goal_id}/cancel", response_model=WorkflowRun)
+def cancel_goal(goal_id: UUID, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    require_permission(principal, GOALS_CANCEL)
+    try:
+        run = workflow_service.cancel_goal(goal_id, principal.organization_id)
+        auth_store.record_activity(principal.organization_id, "goal_canceled", principal.user.id if principal.user else None, {"goal_id": str(goal_id), "correlation_id": run.correlation_id}, actor_type="User", category="System", target_type="goal", target_id=goal_id, target_display_name=run.goal[:120], related_run_id=goal_id)
+        return run
+    except (RunNotFoundError, WorkflowConflictError) as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/goals/{goal_id}/events", response_model=list[AuditEvent])
+def goal_events(goal_id: UUID, since_sequence: int = Query(0, ge=0), principal: Principal = Depends(principal_dependency)) -> list[AuditEvent]:
+    require_permission(principal, GOALS_READ)
+    try: run = workflow_service.get_run(goal_id, principal.organization_id)
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [event for event in run.audit_events if event.sequence_number > since_sequence]
 
 
 @app.post("/api/reset")

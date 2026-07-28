@@ -48,6 +48,9 @@ INTEGRATIONS_MANAGE = "integrations.manage"
 POLICIES_READ = "policies.read"
 POLICIES_MANAGE = "policies.manage"
 PR_REVIEWS_READ = "pr_reviews.read"
+GOALS_READ = "goals.read"
+GOALS_RUN = "goals.run"
+GOALS_CANCEL = "goals.cancel"
 CLOUD_HUNTS_READ = "cloud_hunts.read"
 CLOUD_HUNTS_RUN = "cloud_hunts.run"
 APPROVALS_READ = "approvals.read"
@@ -126,6 +129,9 @@ ROLE_PERMISSIONS = {
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
+        GOALS_READ,
+        GOALS_RUN,
+        GOALS_CANCEL,
         CLOUD_HUNTS_READ,
         CLOUD_HUNTS_RUN,
         APPROVALS_READ,
@@ -154,6 +160,9 @@ ROLE_PERMISSIONS = {
         POLICIES_READ,
         POLICIES_MANAGE,
         PR_REVIEWS_READ,
+        GOALS_READ,
+        GOALS_RUN,
+        GOALS_CANCEL,
         CLOUD_HUNTS_READ,
         CLOUD_HUNTS_RUN,
         APPROVALS_READ,
@@ -171,6 +180,7 @@ ROLE_PERMISSIONS = {
     OrganizationRole.reviewer: {
         WORKSPACE_READ,
         PR_REVIEWS_READ,
+        GOALS_READ,
         CLOUD_HUNTS_READ,
         APPROVALS_READ,
         APPROVALS_DECIDE,
@@ -829,6 +839,7 @@ def make_principal(
         })
     if demo_mode:
         permissions.add(CLOUD_HUNTS_RUN)
+        permissions.update({GOALS_READ, GOALS_RUN, GOALS_CANCEL})
     return Principal(
         user=user,
         organization=organization,

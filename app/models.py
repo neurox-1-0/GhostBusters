@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -96,6 +96,7 @@ class RunStatus(StrEnum):
     remediation_pr_created = "remediation_pr_created"
     pr_created = "pr_created"
     failed_safely = "failed_safely"
+    canceled = "canceled"
 
 
 DEFAULT_DEVELOPMENT_ORGANIZATION_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -554,6 +555,26 @@ class StartRunRequest(AppModel):
     constraints: dict[str, Any] = Field(default_factory=dict)
     human_context: str | None = None
     idempotency_key: str | None = None
+    scope: str | None = None
+    success_criteria: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    data_source_mode: str = "Fixture-backed"
+
+
+class GoalCreateRequest(AppModel):
+    goal: str
+    scenario_name: str = "safe"
+    scope: str | None = None
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    success_criteria: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    idempotency_key: str | None = None
+    data_source_mode: str = "Fixture-backed"
+
+
+class GoalContextRequest(AppModel):
+    context: str
+    expected_version: int | None = None
 
 
 class HumanReviewRequest(AppModel):
@@ -582,12 +603,24 @@ class HumanReviewRecord(AppModel):
 
 
 class AuditEvent(AppModel):
+    event_id: UUID = Field(default_factory=uuid4)
     sequence_number: int
     timestamp: datetime
     event_type: str
     actor: Literal["agent", "human", "policy", "system", "tool"]
     summary: str
     details: dict[str, Any] = Field(default_factory=dict)
+    goal_id: UUID | None = None
+    stage: str | None = None
+    status: str | None = None
+    label: str | None = None
+    tool: str | None = None
+    reason: str | None = None
+    input_summary: str | None = None
+    output_summary: str | None = None
+    decision_impact: str | None = None
+    attempt_number: int | None = None
+    correlation_id: str | None = None
 
 
 class MockPullRequest(AppModel):
@@ -677,6 +710,25 @@ class WorkflowRun(AppModel):
     version: int = 1
     idempotency_key: str | None = None
     error: str | None = None
+    scope: str | None = None
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    success_criteria: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    creator_user_id: UUID | None = None
+    creator_display_name: str | None = None
+    data_source_mode: str = "Fixture-backed"
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
+    original_plan: dict[str, Any] | None = None
+    plan_revisions: list[dict[str, Any]] = Field(default_factory=list)
+    current_step: str | None = None
+    completed_steps: list[str] = Field(default_factory=list)
+    selected_tools: list[str] = Field(default_factory=list)
+    skipped_tools: dict[str, str] = Field(default_factory=dict)
+    tool_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    decision_impacts: list[str] = Field(default_factory=list)
+    stop_reason: str | None = None
+    final_outcome: str | None = None
 
 
 class CloudResource(AppModel):

@@ -68,6 +68,26 @@
 
 * { box-sizing: border-box; }
 
+.goal-create-grid, .goal-summary-grid { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(180px, 1fr) minmax(160px, 0.8fr) auto; gap: var(--space-4); align-items: end; }
+.goal-create-grid label { display: grid; gap: var(--space-2); color: var(--muted); font-size: var(--text-xs); font-weight: 700; }
+.goal-columns { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr); gap: var(--space-4); margin-top: var(--space-4); }
+.goal-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: var(--space-4); }
+.goal-summary-grid div { display: grid; gap: var(--space-1); }
+.goal-summary-grid span, .goal-summary-grid strong { display: block; }
+.goal-summary-grid span { color: var(--muted); font-size: var(--text-xs); }
+.goal-summary-grid strong { color: var(--ink); }
+.goal-timeline { list-style: none; padding: 0 0 0 1.3rem; margin: 0; border-left: 2px solid var(--line); }
+.goal-timeline li { position: relative; padding: 0 0 var(--space-4) var(--space-4); }
+.goal-timeline li::before { content: ""; position: absolute; left: -0.48rem; top: 0.2rem; width: 0.72rem; height: 0.72rem; border-radius: 50%; background: var(--surface-background); border: 2px solid var(--subtle); }
+.goal-timeline li.goal-completed::before { background: var(--green); border-color: var(--green); }
+.goal-timeline li.goal-running::before { background: var(--teal); border-color: var(--teal); box-shadow: 0 0 0 5px rgba(8,125,122,.12); }
+.goal-timeline li.goal-warning::before { background: var(--amber); border-color: var(--amber); }
+.goal-timeline li.goal-failed::before { background: var(--red); border-color: var(--red); }
+.goal-timeline small { display: block; color: var(--muted); margin-top: var(--space-1); }
+.goal-tabs { margin-top: var(--space-4); }
+@media (max-width: 800px) { .goal-create-grid, .goal-summary-grid, .goal-columns { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; } }
+
 html { scroll-behavior: smooth; }
 
 body {
