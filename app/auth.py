@@ -991,7 +991,7 @@ session_store = build_session_store()
 
 
 def set_session_cookies(response: Response, session_id: str, csrf_token: str) -> None:
-    secure = settings.auth_required
+    secure = settings.session_cookie_secure
     response.set_cookie(
         settings.session_cookie_name,
         session_id,

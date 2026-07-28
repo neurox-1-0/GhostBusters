@@ -21,6 +21,8 @@ class Settings:
     auth_persistence_path: Path = Path(os.getenv("AUTH_PERSISTENCE_PATH", ".runtime/auth_store.json"))
     redis_url: str | None = os.getenv("REDIS_URL")
     auth_required: bool = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes"}
+    session_cookie_secure: bool = os.getenv("SESSION_COOKIE_SECURE", "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false").lower() in {"1", "true", "yes"}
+    allow_insecure_http_demo: bool = os.getenv("ALLOW_INSECURE_HTTP_DEMO", "false").lower() in {"1", "true", "yes"}
     demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "true").lower() in {"1", "true", "yes"}
     allow_production_demo_mode: bool = os.getenv("ALLOW_PRODUCTION_DEMO_MODE", "false").lower() in {"1", "true", "yes"}
     secret_key: str | None = os.getenv("SECRET_KEY") or os.getenv("SESSION_SECRET") or None
@@ -119,6 +121,8 @@ def validate_startup_settings(config: Settings = settings) -> None:
     errors: list[str] = []
     if not config.auth_required:
         errors.append("AUTH_REQUIRED=true is required in production.")
+    if not config.session_cookie_secure and not config.allow_insecure_http_demo:
+        errors.append("SESSION_COOKIE_SECURE=true is required in production unless ALLOW_INSECURE_HTTP_DEMO=true.")
     if not config.secret_key or len(config.secret_key) < 32 or config.secret_key.lower() in {"change-me", "development", "dev-secret"}:
         errors.append("SECRET_KEY (or SESSION_SECRET) must be a non-default value of at least 32 characters.")
     if not config.database_url:

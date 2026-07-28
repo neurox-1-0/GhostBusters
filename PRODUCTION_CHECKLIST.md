@@ -2,10 +2,10 @@
 
 ## Required configuration
 
-- Runtime: `APP_ENV=production`, `AUTH_REQUIRED=true`, `SECRET_KEY` or `SESSION_SECRET` with at least 32 non-default characters, `TRUST_PROXY_HEADERS=true`, and `DEMO_MODE_ENABLED=false`.
+- Runtime: `APP_ENV=production`, `AUTH_REQUIRED=true`, `SESSION_COOKIE_SECURE=true`, `SECRET_KEY` or `SESSION_SECRET` with at least 32 non-default characters, `TRUST_PROXY_HEADERS=true`, and `DEMO_MODE_ENABLED=false`. A temporary plain-HTTP test is permitted only with `SESSION_COOKIE_SECURE=false` and explicit `ALLOW_INSECURE_HTTP_DEMO=true`; never use that setting for HTTPS production.
 - PostgreSQL: `DATABASE_URL`; Render runs `python scripts/migrate.py --database-url "$DATABASE_URL"` as the pre-deploy command. A fresh database is initialized from `db/schema.sql` by the versioned baseline runner; existing databases receive only unapplied migrations. Startup does not run migrations. Rollback is forward-only: restore a backup or add a compensating migration.
 - Redis: `REDIS_URL` for distributed deduplication, scheduler state, leases, and safe multi-instance coordination.
-- Session/security: set `AUTH_REQUIRED=true`, a strong persistent secret/session configuration at the deployment layer, HTTPS, secure cookie handling, and the desired session TTL.
+- Session/security: set `AUTH_REQUIRED=true`, `SESSION_COOKIE_SECURE=true`, a strong persistent secret/session configuration at the deployment layer, HTTPS, secure cookie handling, and the desired session TTL. `HttpOnly`, `SameSite=Lax`, CSRF protection, and session expiry remain enabled.
 - GitHub: `GITHUB_INTEGRATION_ENABLED`, `GITHUB_WEBHOOK_SECRET`, token/installation credentials through the existing secret provider, repository allowlist, and webhook URL.
 - AWS: credentials through the runtime identity or secret provider, `AWS_REGION`/`AWS_ALLOWED_REGIONS`, and required read-only permissions.
 - Jira: `JIRA_BASE_URL`, account identity, and API token through the external secret provider; never put tokens in normal tables or logs.
