@@ -1,6 +1,7 @@
 const state = {
   run: null,
   outcome: null,
+  overview: null,
   scenarios: [],
   demoScenarios: [],
   visibleEvents: [],
@@ -1107,6 +1108,7 @@ async function loadInitial() {
   loadGoals();
   loadMembers();
   loadActivity();
+  loadOverview();
   renderAll();
 }
 
@@ -1723,6 +1725,7 @@ async function startRun() {
 }
 
 async function refreshRun() {
+  if (state.activeMode === "overview") return withButtonState("overview-refresh-button", "Refreshing...", async () => { await loadOverview(); showToast("Dashboard refreshed", "Summary data reloaded without starting work.", "success"); });
   await loadPRReviews({ preserveSelection: true, showNotice: true });
   const runId = state.run?.id || localStorage.getItem("ghostbusters:lastRunId");
   if (!runId) {
@@ -1993,6 +1996,12 @@ function allowedReviewActions(status) {
   if (status === "rejected" || status === "approval_revoked") return ["reopen_case", "add_follow_up_context"];
   if (status === "reopened") return ["add_follow_up_context", "request_evidence", "reject"];
   return [];
+}
+
+async function loadOverview() {
+  if (!hasPermission("overview.read")) return;
+  const node = $("overview-summary"); if (node) renderSkeletonList(node, 4);
+  try { state.overview = await api("/api/overview?date_range=30d"); renderOverview(); } catch (error) { state.overview = { partial_data: true, warnings: [friendlyError(error, "Overview could not be loaded.")] }; renderOverview(); }
 }
 
 function activityExactTimestamp(value) {
@@ -2491,6 +2500,11 @@ function renderOverviewSummary() {
   if (!node) return;
   clear(node);
   if (state.loading.initial || state.loading.reviews) return renderSkeletonList(node, 4);
+  const metrics = state.overview?.metrics || {};
+  if (state.overview) {
+    [["PR reviews needing attention", metrics.pr_reviews_needing_attention ?? 0, "Organization-scoped active reviews", "amber"], ["PR reviews in progress", metrics.pr_reviews_in_progress ?? 0, "Analysis still underway", "teal"], ["Pending approvals", metrics.pending_approvals ?? 0, "Authenticated human decisions needed", "amber"], ["Active Cloud Hunt findings", metrics.active_cloud_hunt_findings ?? 0, "Unresolved findings", "green"], ["Predicted monthly savings", metrics.predicted_monthly_savings ? money(metrics.predicted_monthly_savings) : "Unavailable", "Prediction only; not verified savings", "blue"], ["Verified monthly savings", metrics.verified_monthly_savings ? money(metrics.verified_monthly_savings) : "Unavailable", "Evidence-backed outcomes only", "green"]].forEach(([label, value, helper, tone]) => { const card = el("article", "panel summary-card"); card.dataset.tone = tone; append(card, el("span", null, label), el("strong", "metric-value", value), el("small", null, helper)); node.appendChild(card); });
+    return;
+  }
   const rows = overviewReviews();
   const openPrs = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).length;
   const cloudFindings = state.hunt?.summary?.candidates ?? rows.filter((item) => item.source_type === "cloud_hunt").length;
@@ -2520,6 +2534,15 @@ function renderOverviewRows() {
   }
   clear(reviewNode);
   clear(alertsNode);
+  if (state.overview) {
+    const attention = state.overview.needs_attention || [];
+    attention.forEach((item) => { const row = el("article", "alert-row"); const open = el("button", "secondary compact", "Open"); open.type = "button"; open.addEventListener("click", () => switchMode(item.link === "/approvals" ? "review-queue" : "simple")); append(row, append(el("div"), el("strong", "row-title", item.title || "Review item"), el("span", "row-meta", `${labelFor(item.source_type)} · ${runStatusLabel(item.status)}`)), open); alertsNode.appendChild(row); });
+    if (!attention.length) alertsNode.appendChild(el("p", "muted", "No cases currently require attention."));
+    const opportunities = state.overview.top_opportunities || [];
+    opportunities.forEach((item) => { const row = el("article", "compact-row"); append(row, append(el("div"), el("strong", "row-title", item.title), el("span", "row-meta", `${labelFor(item.source_type)} · ${runStatusLabel(item.status)} · ${labelFor(item.data_source_mode)}`)), el("strong", "metric-value-sm", money(item.estimated_monthly_savings) + "/month")); reviewNode.appendChild(row); });
+    if (!opportunities.length) reviewNode.appendChild(el("p", "muted", "No supported opportunities are available."));
+    return;
+  }
   const rows = overviewReviews();
   const prRows = rows.filter((item) => item.source_type === "terraform_pr" || item.repository).slice(0, 5);
   const reviewColumns = [
@@ -2566,6 +2589,7 @@ function renderOverviewSavings() {
   if (!node) return;
   if (state.loading.cloudHunt) return renderSkeletonList(node, 3);
   clear(node);
+  if (state.overview) { node.appendChild(el("p", "muted", "Top opportunities are shown in Needs Attention and ranked from supported estimates.")); return; }
   const candidates = [...(state.hunt?.candidates || [])].sort((a, b) => Number(b.resource?.estimated_monthly_cost || 0) - Number(a.resource?.estimated_monthly_cost || 0)).slice(0, 4);
   if (!candidates.length) return node.appendChild(el("p", "muted", "Run Cloud Hunt to surface highest-value opportunities."));
   candidates.forEach((candidate) => {
@@ -2602,15 +2626,31 @@ function renderOverviewActivity() {
   const node = $("overview-activity-list");
   if (!node) return;
   clear(node);
-  const events = (state.run?.audit_events || []).slice(-5).reverse();
+  const events = state.overview?.recent_activity || (state.run?.audit_events || []).slice(-5).reverse();
   $("overview-activity-count").textContent = `${events.length} event${events.length === 1 ? "" : "s"}`;
   const columns = [
-    { label: "Activity", render: (event) => event.summary || labelFor(event.event_type) },
-    { label: "Stage", priority: "tablet", render: (event) => labelFor(event.event_type) },
-    { label: "Actor", priority: "mobile", render: (event) => labelFor(event.actor) },
-    { label: "Recorded", priority: "mobile", render: (event) => event.timestamp || "Not recorded" },
+    { label: "Activity", render: (event) => event.summary || labelFor(event.action || event.event_type) },
+    { label: "Target", priority: "tablet", render: (event) => event.target || "Workspace" },
+    { label: "Actor", priority: "mobile", render: (event) => event.actor || labelFor(event.actor_type) },
+    { label: "Recorded", priority: "mobile", render: (event) => timestampNode(event.created_at || event.timestamp, "Activity") },
   ];
   node.appendChild(responsiveTable(columns, events, "Waiting for the first review workflow."));
+}
+
+function renderOverviewIntegrations() {
+  const node = $("overview-integrations-list"); if (!node) return; clear(node); const items = Object.entries(state.overview?.integration_health || {});
+  if (!items.length) return node.appendChild(el("p", "muted", "No integration health is visible for this account."));
+  items.forEach(([name, item]) => { const row = el("div", "compact-row"); append(row, el("strong", null, labelFor(name)), statusBadge({ label: labelFor(item.status), className: item.status === "connected" ? "status-approved" : item.status === "unavailable" ? "status-blocked" : "status-neutral" }), el("small", "row-meta", `${item.permission_warning_count || 0} permission warnings`)); node.appendChild(row); });
+}
+function renderOverviewSchedules() {
+  const node = $("overview-schedules-list"); if (!node) return; clear(node); const schedules = state.overview?.scheduled_hunts;
+  if (!schedules) return node.appendChild(el("p", "muted", "Schedule access is not available."));
+  append(node, el("p", "row-detail", `${schedules.enabled} enabled · ${schedules.failed} failed`), el("p", "row-detail", schedules.next ? `Next: ${exactTimestamp(schedules.next)}` : "No upcoming scheduled hunt"), el("p", "row-detail", schedules.last ? `Last: ${exactTimestamp(schedules.last)}` : "No scheduled hunt has run yet"));
+}
+function renderOverviewOutcomes() {
+  const node = $("overview-outcomes-list"); if (!node) return; clear(node); const summary = state.overview?.outcome_summary;
+  if (!summary) return node.appendChild(el("p", "muted", "Outcome verification data is unavailable or not yet recorded."));
+  [["Verified success", summary.verified_success], ["Verified partial", summary.verified_partial], ["Pending", summary.pending], ["Insufficient evidence", summary.insufficient_evidence], ["Regressions", summary.regressions]].forEach(([label, value]) => { const card = el("article", "summary-card compact-summary"); append(card, el("span", null, label), el("strong", null, String(value))); node.appendChild(card); });
 }
 
 function renderOverview() {
@@ -2620,6 +2660,7 @@ function renderOverview() {
   renderOverviewSavings();
   renderOverviewRepositories();
   renderOverviewActivity();
+  renderOverviewIntegrations(); renderOverviewSchedules(); renderOverviewOutcomes();
 }
 
 function renderMembers() {
@@ -2828,6 +2869,7 @@ function switchMode(mode) {
   if (mode === "settings") loadAWSConfig();
   if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); loadCloudSchedules(); }
   if (mode === "activity") loadActivity();
+  if (mode === "overview") loadOverview();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
   window.scrollTo({ top: 0, behavior: "smooth" });

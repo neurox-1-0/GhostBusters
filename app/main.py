@@ -59,6 +59,7 @@ from app.auth import (
     INTEGRATIONS_JIRA_MANAGE,
     BUSINESS_CONTEXT_READ,
     OUTCOMES_READ, OUTCOMES_START, OUTCOMES_REFRESH, OUTCOMES_COMPLETE, OUTCOMES_REOPEN,
+    OVERVIEW_READ,
     REPOSITORY_CONTEXT_READ,
     WORKSPACE_READ,
     Principal,
@@ -807,6 +808,84 @@ def reset_runs() -> dict[str, str]:
     schedule_store.reset()
     outcome_store.reset()
     return result
+
+
+@app.get("/api/overview")
+def overview_dashboard(
+    date_range: str = Query("30d", pattern="^(all|today|7d|30d|custom)$"),
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    principal: Principal = Depends(principal_dependency),
+) -> dict[str, object]:
+    require_permission(principal, OVERVIEW_READ)
+    now = utc_now(); warnings: list[str] = []; unavailable: list[str] = []
+    start = created_from
+    if date_range == "today": start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif date_range == "7d": start = now - timedelta(days=7)
+    elif date_range == "30d": start = now - timedelta(days=30)
+    if start and start.tzinfo is None: start = start.replace(tzinfo=timezone.utc)
+    if created_to and created_to.tzinfo is None: created_to = created_to.replace(tzinfo=timezone.utc)
+    def in_range(value: datetime | None) -> bool:
+        if value is None: return True
+        return (not start or value >= start) and (not created_to or value <= created_to)
+    sections: dict[str, object] = {}
+    try:
+        cases = [case for case in cloud_hunt_service.list_cases(principal.organization_id) if in_range(case.updated_at)]
+        active = {"pending", "pending_human_review", "needs_more_evidence", "reopened"}
+        terminal = {"rejected", "approval_revoked", "waived", "remediation_pr_created", "pr_created"}
+        pr_cases = {case.id: case for case in cases if case.source_type == "terraform_pr"}
+        cloud_cases = {case.id: case for case in cases if case.source_type == "cloud_hunt"}
+        attention = []
+        for case in cases:
+            if case.status in active or case.status in {"blocked", "failed_safely"}:
+                attention.append({"id": case.id, "source_type": case.source_type, "title": case.resource_name, "status": case.status, "risk": case.risk_level, "link": "/approvals" if case.status in active else "/pr-reviews"})
+        sections["needs_attention"] = attention[:12]
+        eligible = [case for case in cases if case.status not in terminal and case.status not in {"blocked", "failed_safely"} and case.estimated_monthly_savings is not None and case.estimated_monthly_savings > 0]
+        sections["top_opportunities"] = [{"id": case.id, "source_type": case.source_type, "title": case.resource_name, "estimated_monthly_savings": case.estimated_monthly_savings, "risk": case.risk_level, "confidence": case.confidence, "status": case.status, "data_source_mode": "Fixture-backed" if case.source_type == "cloud_hunt" else "Connected repository"} for case in sorted(eligible, key=lambda item: item.estimated_monthly_savings, reverse=True)[:8]]
+        predicted = sum(float(case.estimated_monthly_savings or 0) for case in eligible)
+        sections["metrics"] = {"pr_reviews_needing_attention": sum(case.status in active for case in pr_cases.values()), "pr_reviews_in_progress": sum(case.status not in terminal and case.status not in active for case in pr_cases.values()), "pending_approvals": sum(case.status in active for case in cases), "active_cloud_hunt_findings": sum(case.status in active for case in cloud_cases.values()), "predicted_monthly_savings": predicted}
+    except Exception as exc:
+        warnings.append("Some case metrics are temporarily unavailable."); unavailable.extend(["pr_reviews", "cloud_findings", "predicted_savings"]); sections["needs_attention"] = []; sections["top_opportunities"] = []; sections["metrics"] = {}
+    try:
+        hunts = [hunt for hunt in cloud_hunt_service.list_hunts(principal.organization_id) if in_range(hunt.started_at)]
+        sections.setdefault("metrics", {}).update({"cloud_hunt_runs_in_progress": sum(hunt.status in {"created", "scanning"} for hunt in hunts), "failed_safe_runs": sum(hunt.status == "failed" for hunt in hunts)})
+    except Exception:
+        warnings.append("Cloud Hunt run metrics are temporarily unavailable."); unavailable.append("cloud_hunt_runs")
+    if principal.permissions.intersection({OUTCOMES_READ}):
+        try:
+            outcomes = [item for item in outcome_store.list(principal.organization_id) if in_range(item.updated_at)]
+            sections["outcome_summary"] = {"verified_success": sum(item.verification_status == "verified_success" for item in outcomes), "verified_partial": sum(item.verification_status == "verified_partial" for item in outcomes), "pending": sum(item.verification_status in {"pending", "waiting_for_deployment", "observing"} for item in outcomes), "insufficient_evidence": sum(item.verification_status == "insufficient_evidence" for item in outcomes), "regressions": sum(item.verification_status == "regression_detected" for item in outcomes), "verified_monthly_savings": sum(float((item.savings_variance or {}).get("observed_monthly_savings") or 0) for item in outcomes if item.verification_status in {"verified_success", "verified_partial"}), "pending_outcome_verifications": sum(item.verification_status in {"pending", "waiting_for_deployment", "observing"} for item in outcomes)}
+            sections["metrics"]["regressions_detected"] = sections["outcome_summary"]["regressions"]
+        except Exception:
+            warnings.append("Outcome verification metrics are temporarily unavailable."); unavailable.append("outcomes")
+    try:
+        goals = [run for run in workflow_service.list_runs(principal.organization_id) if run.source_type == "manual_demo" and in_range(run.updated_at)]
+        sections["metrics"]["active_goals"] = sum(run.status not in {"completed", "failed_safely", "canceled", "blocked", "approved", "pr_created", "remediation_pr_created"} for run in goals)
+    except Exception:
+        unavailable.append("goals"); warnings.append("Goal metrics are temporarily unavailable.")
+    if principal.permissions.intersection({ACTIVITY_READ}):
+        try:
+            events = [event for event in auth_store.activity_events if event.get("organization_id") == principal.organization_id and in_range(event.get("created_at"))]
+            sections["recent_activity"] = [{"actor": event.get("actor_display_name"), "actor_type": event.get("actor_type"), "action": event.get("action"), "target": event.get("target_display_name"), "result": event.get("result"), "created_at": event.get("created_at"), "summary": event.get("summary"), "related_case_id": event.get("related_case_id"), "related_run_id": event.get("related_run_id")} for event in sorted(events, key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:8]]
+        except Exception:
+            unavailable.append("recent_activity"); warnings.append("Recent activity is temporarily unavailable.")
+    if principal.permissions.intersection({CLOUD_HUNTS_SCHEDULE_READ}):
+        try:
+            schedules = schedule_store.list(principal.organization_id); enabled = [item for item in schedules if item.enabled]
+            sections["scheduled_hunts"] = {"next": min((item.next_run for item in enabled), default=None), "last": max((item.last_run for item in schedules if item.last_run), default=None), "enabled": len(enabled), "failed": sum(bool(item.last_failure) for item in schedules), "items": [{"id": item.id, "name": item.name, "next_run": item.next_run, "last_run": item.last_run, "enabled": item.enabled, "last_failure": item.last_failure} for item in schedules[:8]]}
+        except Exception:
+            unavailable.append("scheduled_hunts"); warnings.append("Schedule metrics are temporarily unavailable.")
+    integrations = {}
+    for name, store, permission in (("aws", aws_integration_store, INTEGRATIONS_AWS_READ), ("github", github_integration_store, INTEGRATIONS_GITHUB_READ), ("jira", jira_integration_store, INTEGRATIONS_JIRA_READ)):
+        if permission not in principal.permissions: continue
+        try:
+            config = store.get(principal.organization_id); checked = getattr(config, "last_validated", None) or getattr(config, "updated_at", None); failure = bool(config.last_failure_summary); integrations[name] = {"status": "disabled" if not config.enabled else "unavailable" if failure else "connected" if checked else "warning", "last_checked": checked, "last_success": config.last_successful_collection, "permission_warning_count": 1 if failure else 0}
+        except Exception:
+            integrations[name] = {"status": "unavailable", "last_checked": None, "last_success": None, "permission_warning_count": 0}; warnings.append(f"{name} integration health is temporarily unavailable.")
+    sections["integration_health"] = integrations
+    sections["metrics"].setdefault("verified_monthly_savings", sections.get("outcome_summary", {}).get("verified_monthly_savings", 0))
+    sections["metrics"].setdefault("pending_outcome_verifications", sections.get("outcome_summary", {}).get("pending_outcome_verifications", 0))
+    return {"generated_at": now, "timezone": principal.organization.timezone, "partial_data": bool(warnings or unavailable), "warnings": warnings, "unavailable_metrics": sorted(set(unavailable)), **sections}
 
 
 def _outcome_audit(outcome, event_type: str, summary: str, principal: Principal, result: str = "success") -> None:
