@@ -676,8 +676,11 @@ function showToast(title, detail = "", type = "success") {
 }
 
 function friendlyError(error, fallback = "Request failed. Try again.") {
-  if (error?.status === 409) return "This case changed while you were deciding. Refresh the case and try again.";
   const message = error?.message || fallback;
+  if (error?.status === 409) {
+    if (/email already registered|organization already exists|registration conflict/i.test(message)) return message;
+    return "This case changed while you were deciding. Refresh the case and try again.";
+  }
   if (/traceback|stack|exception|file "/i.test(message)) return fallback;
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
 }

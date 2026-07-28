@@ -425,7 +425,7 @@ class AuthStore:
             return value.value
         raise TypeError(f"Cannot serialize {type(value).__name__}")
 
-    def _persist(self) -> None:
+    def _persist(self, connection=None) -> None:
         payload = {
             "organizations": [item.model_dump(mode="json") for item in self.organizations.values()],
             "users": [item.model_dump(mode="json") for item in self.users_by_id.values()],
@@ -436,12 +436,19 @@ class AuthStore:
         }
         if settings.database_url:
             try:
-                with psycopg.connect(settings.database_url) as connection:
+                if connection is not None:
                     connection.execute(
                         """INSERT INTO auth_state (id, payload, updated_at) VALUES (1, %s::jsonb, NOW())
                            ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()""",
                         (json.dumps(payload, default=self._json_default),),
                     )
+                else:
+                    with psycopg.connect(settings.database_url) as db_connection:
+                        db_connection.execute(
+                            """INSERT INTO auth_state (id, payload, updated_at) VALUES (1, %s::jsonb, NOW())
+                               ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()""",
+                            (json.dumps(payload, default=self._json_default),),
+                        )
                 return
             except Exception as exc:
                 raise RuntimeError("PostgreSQL auth state could not be persisted.") from exc
@@ -457,7 +464,7 @@ class AuthStore:
     def register_owner(self, email: str, display_name: str, password: str, organization_name: str, timezone_name: str, slug: str | None = None) -> tuple[User, Organization, OrganizationMembership]:
         normalized = normalize_email(email)
         if normalized in self.users_by_email:
-            raise HTTPException(status_code=409, detail="Account already exists.")
+            raise HTTPException(status_code=409, detail="Email already registered.")
         now = utc_now()
         user = User(id=uuid4(), email=normalized, display_name=display_name.strip(), created_at=now, updated_at=now)
         organization = Organization(
@@ -478,14 +485,34 @@ class AuthStore:
             created_at=now,
             updated_at=now,
         )
-        self.users_by_id[user.id] = user
-        self.users_by_email[user.email] = user
-        self.password_hashes[user.id] = hash_password(password)
-        self.organizations[organization.id] = organization
-        self.memberships[membership.id] = membership
-        self.record_activity(organization.id, "user_registered", user.id, {"email": user.email})
-        self.record_activity(organization.id, "workspace_created", user.id, {"name": organization.name})
+        self.users_by_id[user.id] = user; self.users_by_email[user.email] = user
+        self.password_hashes[user.id] = hash_password(password); self.organizations[organization.id] = organization; self.memberships[membership.id] = membership
+        try:
+            if settings.database_url:
+                with psycopg.connect(settings.database_url) as connection:
+                    if connection.execute("SELECT 1 FROM users WHERE email = %s", (user.email,)).fetchone():
+                        raise HTTPException(status_code=409, detail="Email already registered.")
+                    if connection.execute("SELECT 1 FROM organizations WHERE slug = %s", (organization.slug,)).fetchone():
+                        raise HTTPException(status_code=409, detail="Organization already exists.")
+                    connection.execute("INSERT INTO organizations (id,name,slug,status,timezone,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)", (organization.id, organization.name, organization.slug, organization.status.value, organization.timezone, organization.created_at, organization.updated_at))
+                    connection.execute("INSERT INTO users (id,email,display_name,password_hash,status,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)", (user.id, user.email, user.display_name, self.password_hashes[user.id], user.status.value, user.created_at, user.updated_at))
+                    connection.execute("INSERT INTO organization_memberships (id,organization_id,user_id,role,approval_permission_enabled,status,joined_at,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (membership.id, membership.organization_id, membership.user_id, membership.role.value, membership.approval_permission_enabled, membership.status.value, membership.joined_at, membership.created_at, membership.updated_at))
+                    self.record_activity(organization.id, "user_registered", user.id, {"email": user.email}, _connection=connection)
+                    self.record_activity(organization.id, "workspace_created", user.id, {"name": organization.name}, _connection=connection)
+            else:
+                self.record_activity(organization.id, "user_registered", user.id, {"email": user.email})
+                self.record_activity(organization.id, "workspace_created", user.id, {"name": organization.name})
+        except HTTPException:
+            self._remove_registration(user, organization, membership)
+            raise
+        except Exception as exc:
+            self._remove_registration(user, organization, membership)
+            raise HTTPException(status_code=409, detail="Registration conflict.") from exc
         return user, organization, membership
+
+    def _remove_registration(self, user: User, organization: Organization, membership: OrganizationMembership) -> None:
+        self.users_by_id.pop(user.id, None); self.users_by_email.pop(user.email, None); self.password_hashes.pop(user.id, None); self.organizations.pop(organization.id, None); self.memberships.pop(membership.id, None)
+        self.activity_events = [event for event in self.activity_events if event.get("organization_id") != organization.id]
 
     def authenticate(self, email: str, password: str, remote_addr: str = "") -> tuple[User, Organization, OrganizationMembership]:
         key = f"{normalize_email(email)}:{remote_addr}"
@@ -750,6 +777,7 @@ class AuthStore:
         correlation_id: str | None = None,
         related_case_id: str | UUID | None = None,
         related_run_id: str | UUID | None = None,
+        _connection=None,
     ) -> None:
         """Append a workspace event with actor and target snapshots.
 
@@ -788,8 +816,8 @@ class AuthStore:
             "details": dict(details),
         })
         if self.activity_store is not None:
-            self.activity_store.append(self.activity_events[-1])
-        self._persist()
+            self.activity_store.append(self.activity_events[-1], connection=_connection)
+        self._persist(_connection)
 
     def list_activity_events(self, organization_id: UUID) -> list[dict[str, object]]:
         if self.activity_store is not None:

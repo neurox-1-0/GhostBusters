@@ -16,9 +16,9 @@ class PostgresActivityStore:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
 
-    def append(self, event: dict[str, object]) -> None:
+    def append(self, event: dict[str, object], connection=None) -> None:
         metadata = redact_mapping(dict(event.get("metadata") or event.get("details") or {}))
-        with psycopg.connect(self.database_url) as connection:
+        if connection is not None:
             connection.execute(
                 """INSERT INTO activity_events
                 (event_id, organization_id, actor_user_id, event_type, created_at,
@@ -36,6 +36,9 @@ class PostgresActivityStore:
                     event.get("correlation_id"), event.get("related_case_id"), event.get("related_run_id"),
                 ),
             )
+            return
+        with psycopg.connect(self.database_url) as connection:
+            self.append(event, connection=connection)
 
     def list(self, organization_id: UUID) -> list[dict[str, object]]:
         with psycopg.connect(self.database_url, row_factory=dict_row) as connection:

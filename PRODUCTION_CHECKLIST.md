@@ -27,6 +27,6 @@
 
 ## Migration notes
 
-`db/migrations/001_baseline.sql` represents the current `db/schema.sql` baseline. On an existing database, stamp or review the baseline before applying `002_activity_and_scheduler_hardening.sql`. The migration runner does not provide automatic rollback; take a backup and use a forward corrective migration.
+`db/migrations/001_baseline.sql` represents the current `db/schema.sql` baseline. On an existing database, stamp or review the baseline before applying `002_activity_and_scheduler_hardening.sql` and `003_backfill_canonical_organizations.sql`. Run `python scripts/migrate.py --database-url "$DATABASE_URL"` during Render pre-deploy. The migration runner does not provide automatic rollback; take a backup and use a forward corrective migration.
 
 Production must use `AUTO_CREATE_SCHEMA=false`. Local/demo startup may continue using `AUTO_CREATE_SCHEMA=true` and `db/schema.sql`.
