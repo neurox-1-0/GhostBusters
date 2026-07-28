@@ -35,11 +35,11 @@ Local development defaults:
 
 ```dotenv
 AUTH_REQUIRED=false
-DEMO_MODE_ENABLED=true
+DEMO_MODE_ENABLED=false
 SESSION_TTL_SECONDS=28800
 ```
 
-With these defaults, unauthenticated local demo requests run as the explicit development workspace `GhostBusters Development` (`00000000-0000-0000-0000-000000000001`) and demo reviewer identity. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace.
+With these defaults, no demo workspace, fixture inventory, scenario-backed goal, or mock identity is created. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace. To intentionally run the prepared fixture demo, set `DEMO_MODE_ENABLED=true`; fixture files and mock clients remain available only for that explicit mode and automated tests.
 
 Invitation onboarding is available from **Settings -> Members**. Owners can invite Admins, Reviewers, and Viewers; Admins can invite Reviewers and Viewers. Employees create their own passwords from secure single-use invitation links. Invitation tokens are shown only in the development invitation URL and only a SHA-256 token hash is stored. Ordinary invitation list responses do not expose tokens or token hashes. In local development, `INVITATION_EMAIL_ENABLED=false` returns a clearly labeled development link. Production email delivery and billing remain outside this milestone.
 

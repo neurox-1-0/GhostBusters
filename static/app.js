@@ -629,15 +629,15 @@ function roleLabel() {
 }
 
 function userDisplayName() {
-  return state.currentUser?.user?.display_name || "Demo Reviewer";
+  return state.currentUser?.user?.display_name || "Not signed in";
 }
 
 function userEmail() {
-  return state.currentUser?.user?.email || "demo@ghostbusters.local";
+  return state.currentUser?.user?.email || "";
 }
 
 function organizationName() {
-  return state.currentUser?.organization?.name || "GhostBusters Development";
+  return state.currentUser?.organization?.name || "No organization selected";
 }
 
 function renderIdentity() {
@@ -1050,18 +1050,15 @@ function renderPRReviewList() {
   ];
   if (!allRows.length) {
     const empty = el("div", "empty-state-inline");
-    append(empty, el("h3", null, "No PR reviews yet"), el("p", "muted", "Terraform pull-request reviews will appear here after GitHub sends a supported webhook or after a demo case is started."));
+    append(empty, el("h3", null, "No PR reviews yet"), el("p", "muted", "Terraform pull-request reviews will appear here after GitHub sends a supported webhook."));
     const actions = el("div", "empty-actions");
-    const launch = el("button", null, "Launch Demo");
-    launch.type = "button";
-    launch.addEventListener("click", openDemoModal);
     const refresh = el("button", "secondary", "Refresh Reviews");
     refresh.type = "button";
     refresh.addEventListener("click", () => loadPRReviews({ preserveSelection: true }));
     const setup = el("button", "secondary", "View Integration Setup");
     setup.type = "button";
     setup.addEventListener("click", () => switchMode("overview"));
-    append(actions, launch, refresh, setup);
+    append(actions, refresh, setup);
     append(empty, actions);
     node.appendChild(empty);
   } else if (!pageRows.length) {

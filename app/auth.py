@@ -362,7 +362,7 @@ class AuthStore:
         self.activity_events: list[dict[str, object]] = []
         self.login_failures: dict[str, list[datetime]] = {}
         self.activity_store = PostgresActivityStore(settings.database_url) if settings.database_url else None
-        if settings.app_env != "production":
+        if settings.app_env != "production" and settings.demo_mode_enabled:
             self._ensure_development_workspace()
         self._load_persistent_state()
 

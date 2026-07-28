@@ -177,7 +177,7 @@ def invitation_accept_page() -> FileResponse:
 
 @app.get("/api/scenarios")
 def api_scenarios() -> dict[str, list[str]]:
-    return {"scenarios": list_scenarios()}
+    return {"scenarios": list_scenarios() if settings.demo_mode_enabled else []}
 
 
 def principal_dependency(request: Request) -> Principal:
@@ -801,6 +801,8 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
 def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
     rate_limiter.check(fastapi_request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     require_permission(principal, GOALS_RUN)
+    if not settings.demo_mode_enabled:
+        raise HTTPException(status_code=503, detail="Scenario-backed demo goals are disabled. Start from a connected live integration.")
     try:
         run, created = workflow_service.start_run(StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode), principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
         if not created: response.status_code = 200
@@ -885,7 +887,7 @@ def demo_readiness(principal: Principal = Depends(principal_dependency)) -> dict
     if not settings.github_webhook_secret: warnings.append("GitHub webhook signature secret is not configured.")
     if not settings.database_url: warnings.append("Using in-memory workflow storage; configure PostgreSQL for production.")
     if not settings.redis_url: warnings.append("Redis is not configured; distributed delivery/scheduler coordination is limited.")
-    return {"authentication": {"authenticated": principal.authenticated, "organization": principal.organization.name, "role": principal.membership.role}, "health": {"database": "configured" if settings.database_url else "in_memory", "redis": "configured" if settings.redis_url else "not_configured"}, "github_webhook": {"enabled": settings.github_integration_enabled, "signature_ready": bool(settings.github_webhook_secret), "endpoint": "/webhooks/github"}, "integrations": integrations, "data_modes": {"fixtures_available": True, "real_aws_configured": bool(settings.aws_region or settings.aws_allowed_regions), "real_github_configured": bool(settings.github_token), "real_jira_configured": bool(settings.jira_base_url and settings.jira_api_token)}, "scheduler": {"enabled": settings.cloud_hunt_schedule_enabled, "schedule_count": len(schedules), "enabled_schedule_count": sum(item.enabled for item in schedules), "redis_coordination": bool(settings.redis_url)}, "pending_approvals": sum(case.status in {"pending", "pending_human_review", "needs_more_evidence", "reopened"} for case in cases), "recent_successful_run": {"id": recent.id, "updated_at": recent.updated_at, "status": recent.status} if recent else None, "known_warnings": warnings}
+    return {"authentication": {"authenticated": principal.authenticated, "organization": principal.organization.name, "role": principal.membership.role}, "health": {"database": "configured" if settings.database_url else "in_memory", "redis": "configured" if settings.redis_url else "not_configured"}, "github_webhook": {"enabled": settings.github_integration_enabled, "signature_ready": bool(settings.github_webhook_secret), "endpoint": "/webhooks/github"}, "integrations": integrations, "data_modes": {"fixtures_available": settings.demo_mode_enabled, "real_aws_configured": bool(settings.aws_region or settings.aws_allowed_regions), "real_github_configured": bool(settings.github_token), "real_jira_configured": bool(settings.jira_base_url and settings.jira_api_token)}, "scheduler": {"enabled": settings.cloud_hunt_schedule_enabled, "schedule_count": len(schedules), "enabled_schedule_count": sum(item.enabled for item in schedules), "redis_coordination": bool(settings.redis_url)}, "pending_approvals": sum(case.status in {"pending", "pending_human_review", "needs_more_evidence", "reopened"} for case in cases), "recent_successful_run": {"id": recent.id, "updated_at": recent.updated_at, "status": recent.status} if recent else None, "known_warnings": warnings}
 
 
 @app.post("/api/demo/reset")
@@ -1314,12 +1316,16 @@ def validate_aws_connection(request: Request, principal: Principal = Depends(pri
 @app.get("/api/cloud/hunt/fixtures")
 def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: Principal = Depends(principal_dependency)) -> list[object]:
     require_permission(principal, CLOUD_HUNTS_READ)
+    if not settings.demo_mode_enabled:
+        raise HTTPException(status_code=404, detail="Fixture inventory is disabled.")
     return cloud_hunt_service.fixtures(provider_scope)
 
 
 @app.post("/api/cloud/hunts")
 def start_cloud_hunt(request: CloudHuntRequest, fastapi_request: Request, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_RUN)
+    if request.inventory_source == "fixtures" and not settings.demo_mode_enabled:
+        raise HTTPException(status_code=503, detail="Fixture-backed Cloud Hunt is disabled. Connect a cloud account for live inventory.")
     rate_limiter.check(fastapi_request, "cloud_hunt_run", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds)
     try:
         registry_override = None
@@ -1642,10 +1648,10 @@ async def github_webhook(
         webhook_deduplicator.remember(x_github_delivery, run.id)
         response.status_code = 201 if created else 200
         return {"status": "created" if created else "duplicate", "run": run}
-    if repository_delivery:
+    if repository_delivery or not settings.demo_mode_enabled:
         raise HTTPException(
             status_code=503,
-            detail="GitHub integration is disabled. Enable it and restart the API before delivering repository webhooks.",
+            detail="No live GitHub integration is available for this webhook.",
         )
     goal = payload.get("goal") or "Analyze Terraform pull request for safe FinOps remediation."
     scenario_name = payload.get("scenario_name") or "safe"

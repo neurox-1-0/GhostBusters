@@ -23,7 +23,7 @@ class Settings:
     auth_required: bool = os.getenv("AUTH_REQUIRED", "false").lower() in {"1", "true", "yes"}
     session_cookie_secure: bool = os.getenv("SESSION_COOKIE_SECURE", "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false").lower() in {"1", "true", "yes"}
     allow_insecure_http_demo: bool = os.getenv("ALLOW_INSECURE_HTTP_DEMO", "false").lower() in {"1", "true", "yes"}
-    demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "true").lower() in {"1", "true", "yes"}
+    demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "false").lower() in {"1", "true", "yes"}
     allow_production_demo_mode: bool = os.getenv("ALLOW_PRODUCTION_DEMO_MODE", "false").lower() in {"1", "true", "yes"}
     secret_key: str | None = os.getenv("SECRET_KEY") or os.getenv("SESSION_SECRET") or None
     trust_proxy_headers: bool = os.getenv("TRUST_PROXY_HEADERS", "false").lower() in {"1", "true", "yes"}
