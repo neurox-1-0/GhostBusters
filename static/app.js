@@ -9,6 +9,9 @@ const state = {
   selectedReviewAction: null,
   selectedCloudReviewAction: null,
   prReviews: [],
+  prReviewsServerPaged: false,
+  prReviewTotal: 0,
+  prReviewCounts: { all: 0, "needs-attention": 0, "in-progress": 0, completed: 0, blocked: 0 },
   prReviewFilters: {
     group: "needs-attention",
     search: "",
@@ -730,8 +733,14 @@ function relativeTime(value) {
 
 function timestampNode(value, label = "Updated") {
   const node = el("span", "timestamp-value", relativeTime(value));
-  node.title = exactTimestamp(value);
-  node.setAttribute("aria-label", `${label}: ${exactTimestamp(value)}`);
+  const date = parseTime(value);
+  const timezone = state.currentUser?.organization?.timezone;
+  let exact = exactTimestamp(value);
+  if (date && timezone) {
+    try { exact = `${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium", timeZone: timezone }).format(date)} ${timezone}`; } catch { /* fall back to browser time */ }
+  }
+  node.title = exact;
+  node.setAttribute("aria-label", `${label}: ${exact}`);
   return node;
 }
 
@@ -765,6 +774,9 @@ function prChangeSummary(run) {
 }
 
 function prReviewSummary(run) {
+  if (run?.repository && !run.decision_record && Object.prototype.hasOwnProperty.call(run, "savings")) {
+    return { ...run, case_status: run.status, recommendation_key: run.recommendation || "not_recorded", recommendation: recommendationLabel(run.recommendation), estimated_monthly_savings: Number(run.savings || 0), confidence: Number(run.confidence || 0), terraform_resource: run.change || "Not recorded", change_summary: run.change_summary || "Terraform review", received_at: run.received_at || null, updated_at: run.updated_at || null, reviewer: run.reviewer || "Unassigned", branch: run.branch || "Not recorded", title: run.title || "Terraform review", source_type: run.source_type || "terraform_pr" };
+  }
   const decision = run?.decision_record;
   const preferred = (decision?.alternatives || []).find((item) => item.action === decision.preferred_action);
   const change = currentResourceChange(run);
@@ -823,6 +835,11 @@ function prStatusMeta(status) {
     rejected: { label: "Rejected", className: "status-blocked" },
     blocked: { label: "Policy Blocked", className: "status-blocked" },
     pr_created: { label: "Remediation PR Created", className: "status-pr-created" },
+    remediation_pr_created: { label: "Remediation PR Created", className: "status-pr-created" },
+    approval_revoked: { label: "Approval Revoked", className: "status-warning" },
+    reopened: { label: "Reopened", className: "status-awaiting-review" },
+    remediation_proposal_prepared: { label: "Recommendation Ready", className: "status-allowed" },
+    completed: { label: "Completed", className: "status-completed" },
     failed_safely: { label: "Failed Safely", className: "status-neutral" },
   }[status] || { label: runStatusLabel(status), className: "status-neutral" };
 }
@@ -835,7 +852,7 @@ function prStatusBadge(status) {
 function prReviewGroup(row) {
   if (["pending_human_review", "needs_more_evidence", "abstained", "keep"].includes(row.case_status)) return "needs-attention";
   if (["created", "planning", "investigating", "verifying"].includes(row.case_status)) return "in-progress";
-  if (["approved", "rejected", "pr_created"].includes(row.case_status)) return "completed";
+  if (["approved", "rejected", "approval_revoked", "pr_created", "remediation_pr_created", "remediation_proposal_prepared", "completed"].includes(row.case_status)) return "completed";
   if (["blocked", "failed_safely"].includes(row.case_status)) return "blocked";
   return "all";
 }
@@ -862,6 +879,7 @@ function rowMatchesDateFilter(row) {
 
 function filteredPrReviewRows() {
   const filters = state.prReviewFilters;
+  if (state.prReviewsServerPaged) return prReviewRows();
   const search = filters.search.trim().toLowerCase();
   return prReviewRows().filter((row) => {
     const groupMatch = filters.group === "all" || prReviewGroup(row) === filters.group;
@@ -922,7 +940,8 @@ function clearPrFilters() {
   ["pr-search-input", "pr-repository-filter", "pr-status-filter", "pr-recommendation-filter", "pr-reviewer-filter"].forEach((id) => { if ($(id)) $(id).value = ""; });
   $("pr-date-filter").value = "all";
   $("pr-sort-select").value = "updated_desc";
-  renderPRReviewList();
+  if (state.prReviewsServerPaged) loadPRReviews({ preserveSelection: true });
+  else renderPRReviewList();
 }
 
 function openPrReviewDetail(runOrRow) {
@@ -939,7 +958,7 @@ function openPrReviewDetail(runOrRow) {
 
 async function openPrReviewById(runId) {
   const cached = state.prReviews.find((run) => run.id === runId);
-  if (cached) return openPrReviewDetail(cached);
+  if (cached && !state.prReviewsServerPaged) return openPrReviewDetail(cached);
   const run = await api(`/api/runs/${runId}`);
   openPrReviewDetail(run);
 }
@@ -975,10 +994,10 @@ function renderPRReviewList() {
   clear(node);
   const rows = filteredPrReviewRows();
   const pageSize = Number(state.prReviewFilters.pageSize || 20);
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const totalPages = state.prReviewsServerPaged ? Math.max(1, Math.ceil(state.prReviewTotal / pageSize)) : Math.max(1, Math.ceil(rows.length / pageSize));
   state.prReviewFilters.page = Math.min(Math.max(1, state.prReviewFilters.page), totalPages);
   const start = (state.prReviewFilters.page - 1) * pageSize;
-  const pageRows = rows.slice(start, start + pageSize);
+  const pageRows = state.prReviewsServerPaged ? rows : rows.slice(start, start + pageSize);
   const columns = [
     { label: "Repository", render: (row) => append(el("div"), el("strong", "row-title", row.repository), el("span", "row-meta", row.branch)) },
     { label: "Pull Request", render: (row) => append(el("div"), el("strong", "row-title", row.pull_request_number ? `#${row.pull_request_number}` : "Prepared demo"), el("span", "row-meta", row.title)) },
@@ -1023,8 +1042,9 @@ function renderPRReviewList() {
   } else {
     node.appendChild(responsiveTable(columns, pageRows, "No reviews match these filters."));
   }
-  $("pr-pagination-summary").textContent = rows.length
-    ? `Showing ${start + 1}-${Math.min(start + pageSize, rows.length)} of ${rows.length} reviews`
+  const totalRows = state.prReviewsServerPaged ? state.prReviewTotal : rows.length;
+  $("pr-pagination-summary").textContent = totalRows
+    ? `Showing ${start + 1}-${Math.min(start + pageSize, totalRows)} of ${totalRows} reviews`
     : "0 reviews";
   $("pr-prev-page-button").disabled = state.prReviewFilters.page <= 1;
   $("pr-next-page-button").disabled = state.prReviewFilters.page >= totalPages;
@@ -1238,18 +1258,33 @@ async function loadPRReviews({ preserveSelection = true, showNotice = false } = 
   state.loading.prReviews = true;
   renderPRReviewList();
   try {
-    const runs = await api("/api/runs");
+    const filters = state.prReviewFilters;
+    const params = typeof URLSearchParams === "function" ? new URLSearchParams({ source_type: "terraform_pr", group: filters.group, page: String(filters.page), page_size: String(filters.pageSize), sort: filters.sort }) : null;
+    if (params && filters.status) params.set("status", filters.status);
+    if (params && filters.repository) params.set("repository", filters.repository);
+    if (params && filters.reviewer) params.set("reviewer", filters.reviewer);
+    if (params && filters.search.trim()) params.set("search", filters.search.trim());
+    if (filters.dateRange !== "all") {
+      const days = filters.dateRange === "today" ? 1 : Number(filters.dateRange.replace("d", ""));
+      if (params && Number.isFinite(days)) params.set("created_from", new Date(Date.now() - days * 86400000).toISOString());
+    }
+    const previousTotal = state.prReviewTotal || 0;
+    const payload = await api(params ? `/api/runs?${params.toString()}` : "/api/runs");
+    const serverPaged = !Array.isArray(payload) && Array.isArray(payload.items);
+    const runs = serverPaged ? payload.items : (Array.isArray(payload) ? payload : (await api("/api/runs")));
+    state.prReviewsServerPaged = serverPaged;
+    state.prReviewTotal = serverPaged ? payload.total : runs.length;
     state.prReviewError = "";
     const previousIds = state.knownPrReviewIds;
     const nextIds = new Set((runs || []).filter((run) => ["terraform_pr", "manual_demo"].includes(run.source_type)).map((run) => run.id));
     const newIds = [...nextIds].filter((id) => previousIds.size && !previousIds.has(id) && id !== state.run?.id);
     state.prReviews = runs || [];
     state.knownPrReviewIds = nextIds;
-    state.newPrReviewCount = showNotice && preserveSelection && state.run ? newIds.length : 0;
-    if (preserveSelection && state.run?.id) {
-      const updatedSelected = state.prReviews.find((run) => run.id === state.run.id);
-      if (updatedSelected) state.run = updatedSelected;
-    }
+    const countDelta = serverPaged && previousTotal ? (payload.total - previousTotal) : Math.max(0, runs.length - previousIds.size);
+    const hasIncomingReviews = newIds.length > 0 || runs.length > previousIds.size || (showNotice && state.run && runs.length > 1);
+    state.newPrReviewCount = showNotice && preserveSelection && state.run && hasIncomingReviews ? Math.max(1, newIds.length, countDelta) : 0;
+    // Keep the full selected run untouched. List refreshes must not disturb an open
+    // case or any unsent decision form state.
     renderPRReviewList();
   } catch (error) {
     const message = friendlyError(error, "Failed to load PR reviews.");
@@ -3080,7 +3115,7 @@ function bindEvents() {
     state.prReviewFilters.search = event.target.value;
     state.prReviewFilters.page = 1;
     window.clearTimeout(state.prSearchTimer);
-    state.prSearchTimer = window.setTimeout(renderPRReviewList, 180);
+    state.prSearchTimer = window.setTimeout(() => state.prReviewsServerPaged ? loadPRReviews({ preserveSelection: true }) : renderPRReviewList(), 180);
   });
   [
     ["pr-repository-filter", "repository"],
@@ -3094,21 +3129,25 @@ function bindEvents() {
     on(id, "change", (event) => {
       state.prReviewFilters[key] = event.target.value;
       state.prReviewFilters.page = 1;
-      renderPRReviewList();
+      if (state.prReviewsServerPaged) loadPRReviews({ preserveSelection: true });
+      else renderPRReviewList();
     });
   });
   on("pr-prev-page-button", "click", () => {
     state.prReviewFilters.page = Math.max(1, state.prReviewFilters.page - 1);
-    renderPRReviewList();
+    if (state.prReviewsServerPaged) loadPRReviews({ preserveSelection: true });
+    else renderPRReviewList();
   });
   on("pr-next-page-button", "click", () => {
     state.prReviewFilters.page += 1;
-    renderPRReviewList();
+    if (state.prReviewsServerPaged) loadPRReviews({ preserveSelection: true });
+    else renderPRReviewList();
   });
   document.querySelectorAll("[data-pr-filter]").forEach((filter) => filter.addEventListener("click", () => {
     state.prReviewFilters.group = filter.dataset.prFilter || "needs-attention";
     state.prReviewFilters.page = 1;
-    renderPRReviewList();
+    if (state.prReviewsServerPaged) loadPRReviews({ preserveSelection: true });
+    else renderPRReviewList();
   }));
   document.querySelectorAll("[data-hunt-filter]").forEach((filter) => filter.addEventListener("click", () => {
     state.cloudHuntFilter = filter.dataset.huntFilter || "all";

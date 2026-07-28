@@ -138,3 +138,9 @@ def test_viewer_cannot_call_hidden_approval_action_directly() -> None:
     )
 
     assert blocked.status_code in {403, 404}
+
+
+def test_owner_can_start_cloud_hunt() -> None:
+    client, profile = register_client("cloud-owner@example.com")
+    response = client.post("/api/cloud/hunts", headers={"X-CSRF-Token": profile["csrf_token"]}, json={"provider_scope": "aws", "inventory_source": "fixtures"})
+    assert response.status_code == 200

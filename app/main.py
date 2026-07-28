@@ -398,10 +398,91 @@ def create_run(request: StartRunRequest, response: Response, principal: Principa
     return run
 
 
-@app.get("/api/runs", response_model=list[WorkflowRun])
-def list_runs(principal: Principal = Depends(principal_dependency)) -> list[WorkflowRun]:
+def _pr_review_summary(run: WorkflowRun) -> dict[str, object]:
+    decision = run.decision_record
+    source = run.github_source
+    mock = run.mock_pr
+    preferred = next((item for item in (decision.alternatives if decision else []) if item.action == (decision.preferred_action if decision else None)), None)
+    latest_review = run.human_reviews[-1] if run.human_reviews else None
+    risk_values = []
+    if decision:
+        risk_values.extend(item.severity for item in decision.conflicts)
+        risk_values.extend(item.severity for item in decision.verifier_findings if item.status != "passed")
+    risk_order = {"info": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
+    risk = max(risk_values, key=lambda value: risk_order.get(str(value).lower(), 0), default="low")
+    if preferred and preferred.risks and not risk_values:
+        risk = "medium"
+    resource = None
+    if source and source.resource_changes:
+        resource = source.resource_changes[0]
+    return {
+        "id": str(run.id), "source_type": run.source_type, "organization_id": str(run.organization_id),
+        "repository": source.repository if source else (mock.repository if mock else "Demo review"),
+        "pull_request_number": source.pull_request_number if source else (mock.pr_number if mock else None),
+        "title": (source.pull_request_title if source else None) or (mock.title if mock else run.goal),
+        "branch": source.head_branch if source else (mock.branch if mock else None),
+        "base_branch": source.base_branch if source else (mock.base_branch if mock else None),
+        "change": resource.address if resource else (decision.resource_id if decision else (mock.resource_id if mock else None)),
+        "change_summary": (f"{resource.address}: {', '.join(resource.actions)}" if resource else (mock.terraform_patch_preview if mock else "Terraform review")),
+        "recommendation": decision.preferred_action if decision else (mock.chosen_action if mock else None),
+        "savings": float(preferred.estimated_monthly_savings if preferred else (mock.monthly_savings if mock else 0)),
+        "annual_savings": float(preferred.estimated_annual_savings if preferred else (mock.annual_savings if mock else 0)),
+        "risk": str(risk), "confidence": float(decision.confidence.final_confidence if decision else (mock.confidence if mock else 0)),
+        "status": run.status, "reviewer": latest_review.reviewer if latest_review else "Unassigned",
+        "received_at": run.created_at, "updated_at": run.updated_at, "version": run.version,
+    }
+
+
+def _pr_review_group(status: str) -> str:
+    if status in {"pending_human_review", "needs_more_evidence", "reopened", "abstained", "keep"}: return "needs-attention"
+    if status in {"created", "planning", "investigating", "verifying"}: return "in-progress"
+    if status in {"approved", "rejected", "approval_revoked", "pr_created", "remediation_pr_created", "remediation_proposal_prepared", "completed"}: return "completed"
+    if status in {"blocked", "failed_safely"}: return "blocked"
+    return "all"
+
+
+@app.get("/api/runs")
+def list_runs(
+    source_type: str | None = None, status: str | None = None, repository: str | None = None,
+    reviewer: str | None = None, search: str | None = None, created_from: datetime | None = None,
+    created_to: datetime | None = None, sort: str | None = None, group: str | None = None,
+    page: int | None = Query(default=None, ge=1), page_size: int | None = Query(default=None, ge=1, le=100),
+    principal: Principal = Depends(principal_dependency),
+):
     require_permission(principal, PR_REVIEWS_READ)
-    return workflow_service.list_runs(principal.organization_id)
+    runs = workflow_service.list_runs(principal.organization_id)
+    if not any(value is not None for value in (source_type, status, repository, reviewer, search, created_from, created_to, sort, group, page, page_size)):
+        return runs
+    summaries = [_pr_review_summary(run) for run in runs if source_type is None or run.source_type == source_type]
+    needle = (search or "").strip().lower()
+    allowed_sorts = {"newest", "oldest", "updated_desc", "last_updated", "savings_desc", "risk_desc", "confidence_desc"}
+    if sort and sort not in allowed_sorts:
+        raise HTTPException(status_code=422, detail="Unknown PR review sort.")
+    def aware(value: datetime | None) -> datetime | None:
+        return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+    start, end = aware(created_from), aware(created_to)
+    filtered = []
+    for item in summaries:
+        created = item["received_at"]
+        haystack = " ".join(str(item.get(key) or "") for key in ("repository", "pull_request_number", "title", "branch", "base_branch", "change", "reviewer"))
+        if status and str(item["status"]) != status: continue
+        if repository and str(item["repository"]).lower() != repository.lower(): continue
+        if reviewer and str(item["reviewer"]).lower() != reviewer.lower(): continue
+        if group and group != "all" and _pr_review_group(str(item["status"])) != group: continue
+        if needle and needle not in haystack.lower(): continue
+        if start and created < start or end and created > end: continue
+        filtered.append(item)
+    sort_key = sort or "updated_desc"
+    risk_order = {"info": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
+    if sort_key in {"newest", "oldest"}: filtered.sort(key=lambda item: item["received_at"], reverse=sort_key == "newest")
+    elif sort_key in {"savings_desc"}: filtered.sort(key=lambda item: item["savings"], reverse=True)
+    elif sort_key in {"risk_desc"}: filtered.sort(key=lambda item: risk_order.get(str(item["risk"]).lower(), 0), reverse=True)
+    elif sort_key in {"confidence_desc"}: filtered.sort(key=lambda item: item["confidence"], reverse=True)
+    else: filtered.sort(key=lambda item: item["updated_at"], reverse=True)
+    actual_page = page or 1
+    actual_size = page_size or 20
+    offset = (actual_page - 1) * actual_size
+    return {"items": filtered[offset:offset + actual_size], "total": len(filtered), "page": actual_page, "page_size": actual_size, "has_next": offset + actual_size < len(filtered)}
 
 
 @app.get("/api/runs/{run_id}", response_model=WorkflowRun)
