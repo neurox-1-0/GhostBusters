@@ -430,7 +430,14 @@
               <div><p class="kicker">Provider-independent discovery</p><h2 id="cloud-hunt-title" class="section-title">Cloud Hunt</h2><p>Scan fixture-backed AWS, Azure, and Google Cloud inventories for suspicious waste while clearly separating protected resources from likely ghost resources.</p></div>
               <div class="toolbar-actions"><button id="ask-cloud-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><span class="mode-badge">Fixture-backed</span></div>
             </div>
-            <section class="panel hunt-start-panel">
+            <section class="panel" id="cloud-run-history" aria-labelledby="cloud-run-history-title">
+              <div class="section-heading"><div><p class="kicker">History</p><h2 id="cloud-run-history-title" class="section-title">Cloud Hunt Runs</h2><p class="helper">Every hunt is retained with its original findings and data source.</p></div><button id="cloud-new-run-button" type="button">Start New Hunt</button></div>
+              <div class="filter-row cloud-run-filters"><label>Status<select id="cloud-run-status-filter"><option value="">All</option><option value="scanning">Running</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label><label>Provider<select id="cloud-run-provider-filter"><option value="">All providers</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">Google Cloud</option><option value="multi_cloud">Multi-cloud</option></select></label><label>Sort<select id="cloud-run-sort-filter"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="highest_waste">Highest waste</option><option value="most_candidates">Most candidates</option><option value="longest_duration">Longest duration</option></select></label><label>Search<input id="cloud-run-search-input" type="search" placeholder="Run, provider, goal" /></label></div>
+              <div id="cloud-run-history-error" class="message" hidden></div><div id="cloud-run-history-list"></div>
+              <div class="activity-pagination"><span id="cloud-run-pagination-summary">0 runs</span><button id="cloud-run-prev-button" class="secondary compact" type="button">Previous</button><button id="cloud-run-next-button" class="secondary compact" type="button">Next</button><select id="cloud-run-page-size" aria-label="Cloud Hunt page size"><option>20</option><option>50</option><option>100</option></select></div>
+            </section>
+            <section class="panel" id="cloud-run-detail-meta" hidden><div class="section-heading"><div><p class="kicker">Selected run</p><h2 id="cloud-run-detail-title" class="section-title">Cloud Hunt Run</h2></div><button id="cloud-run-back-button" class="secondary compact" type="button">Back to Cloud Hunt History</button></div><div class="summary-metric-row"><div class="summary-card compact-summary"><span>Provider scope</span><strong id="cloud-run-provider-scope">Not recorded</strong></div><div class="summary-card compact-summary"><span>Started by</span><strong id="cloud-run-started-by">Not recorded</strong></div><div class="summary-card compact-summary"><span>Started</span><strong id="cloud-run-started-at">Not recorded</strong></div><div class="summary-card compact-summary"><span>Completed</span><strong id="cloud-run-completed-at">Not recorded</strong></div><div class="summary-card compact-summary"><span>Duration</span><strong id="cloud-run-duration">Not recorded</strong></div><div class="summary-card compact-summary"><span>Data source</span><strong id="cloud-run-data-source">Fixture-backed</strong></div></div></section>
+            <section class="panel hunt-start-panel" id="cloud-hunt-start-panel">
               <div class="hunt-controls"><label for="cloud-provider-scope">Provider scope</label><select id="cloud-provider-scope"><option value="multi_cloud">Multi-cloud</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">Google Cloud</option></select><button id="start-cloud-hunt-button" type="button">Start Cloud Hunt</button></div>
               <div class="filter-row" aria-label="Cloud Hunt filters">
                 <button class="filter-chip filter-chip-active" type="button" data-hunt-filter="all" aria-pressed="true">All <span id="filter-count-all">0</span></button>
@@ -553,6 +560,11 @@
                   <div><dt>Terraform mapping</dt><dd id="cloud-detail-terraform" class="technical-value">Not recorded</dd></div>
                   <div><dt>Provider ID</dt><dd id="cloud-detail-provider-id" class="technical-value">Not recorded</dd></div>
                   <div><dt>Audit reference</dt><dd id="cloud-detail-audit-ref" class="technical-value">Not recorded</dd></div>
+                  <div><dt>First seen</dt><dd id="cloud-detail-first-seen" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Last seen</dt><dd id="cloud-detail-last-seen" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Times detected</dt><dd id="cloud-detail-times-detected" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Latest classification</dt><dd id="cloud-detail-latest-classification" class="technical-value">Not recorded</dd></div>
+                  <div><dt>Latest decision state</dt><dd id="cloud-detail-latest-decision" class="technical-value">Not recorded</dd></div>
                 </dl>
               </details>
               </div>

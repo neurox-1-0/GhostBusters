@@ -35,6 +35,9 @@ class PostgresCloudHuntPersistence:
                 CREATE TABLE IF NOT EXISTS cloud_review_cases (id UUID PRIMARY KEY, organization_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001', updated_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL);
                 CREATE INDEX IF NOT EXISTS cloud_review_cases_status_idx ON cloud_review_cases ((payload->>'status'));
                 CREATE INDEX IF NOT EXISTS cloud_hunts_org_idx ON cloud_hunts(organization_id, created_at);
+                CREATE INDEX IF NOT EXISTS cloud_hunts_status_idx ON cloud_hunts ((payload->>'status'));
+                CREATE INDEX IF NOT EXISTS cloud_hunts_provider_idx ON cloud_hunts ((payload->>'provider_scope'));
+                CREATE INDEX IF NOT EXISTS cloud_hunts_started_by_idx ON cloud_hunts ((payload->>'started_by_user_id'), created_at);
                 CREATE INDEX IF NOT EXISTS cloud_review_cases_org_idx ON cloud_review_cases(organization_id, updated_at);
             """)
 

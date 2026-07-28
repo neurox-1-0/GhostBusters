@@ -22,6 +22,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_uuid(value: str | None) -> UUID | None:
+    try:
+        return UUID(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 class CloudHuntNotFoundError(Exception):
     pass
 
@@ -55,7 +62,13 @@ class CloudHuntService:
     def fixtures(self, scope: str = "multi_cloud") -> list:
         return self.registry.list_resources(scope)
 
-    def start_hunt(self, request: CloudHuntRequest, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> CloudHuntRun:
+    def start_hunt(
+        self,
+        request: CloudHuntRequest,
+        organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
+        started_by_user_id: UUID | None = None,
+        started_by_display_name: str | None = None,
+    ) -> CloudHuntRun:
         if not self.configuration.cloud_hunt_enabled:
             raise CloudHuntConflictError("Cloud Hunt Mode is disabled by CLOUD_HUNT_ENABLED.")
         started = _now()
@@ -64,6 +77,9 @@ class CloudHuntService:
             organization_id=organization_id,
             inventory_source=request.inventory_source, goal=request.goal, started_at=started,
             status="scanning", planning_mode="deterministic_only",
+            started_by_user_id=started_by_user_id,
+            started_by_display_name=started_by_display_name,
+            data_source_mode=self._data_source_mode(request.inventory_source),
         )
         self._audit(hunt, "cloud_hunt_started", "Cloud Hunt started from controlled inventory fixtures.", {"provider_scope": request.provider_scope})
         resources = self.registry.list_resources(request.provider_scope)
@@ -100,7 +116,7 @@ class CloudHuntService:
         hunt.protected_resources = sum(1 for item in active_candidates if self._is_protected(item))
         hunt.summary = self._summary(resources, active_candidates)
         hunt.completed_at = _now()
-        hunt.status = "completed"
+        hunt.status = "completed_with_warnings" if hunt.errors else "completed"
         self._audit(hunt, "cloud_hunt_completed", "Cloud Hunt completed; no provider mutation was performed.", {"candidates": hunt.candidates_found})
         self._hunts[hunt.id] = hunt.model_copy(deep=True)
         if self.persistence is not None:
@@ -160,11 +176,9 @@ class CloudHuntService:
                     terraform_address=terraform_change.address if terraform_change else None,
                     simulated_pr=run.mock_pr,
                 ))
-        return cases
+        return self._add_recurrence(cases)
 
     def get_case(self, case_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> ReviewCase:
-        if case_id in self._cases and self._cases[case_id].organization_id == organization_id:
-            return self._cases[case_id].model_copy(deep=True)
         for case in self.list_cases(organization_id):
             if case.id == case_id:
                 return case
@@ -268,7 +282,41 @@ class CloudHuntService:
             required_reviewer_role="cloud_owner" if protected or (resource.environment or "").lower() == "production" else "application_owner" if not resource.owner else "finops_reviewer",
             created_at=_now(), updated_at=_now(), candidate=candidate, terraform_address=resource.terraform_address,
             status="needs_more_evidence" if recent else "pending",
+            originating_run_id=hunt.id,
         )
+
+    @staticmethod
+    def _data_source_mode(inventory_source: str) -> str:
+        value = (inventory_source or "fixtures").strip().lower().replace("-", "_")
+        if value in {"fixtures", "fixture", "fixture_backed"}:
+            return "Fixture-backed"
+        if value in {"connected", "cloud_account", "connected_cloud_account"}:
+            return "Connected cloud account"
+        if value in {"imported", "imported_inventory"}:
+            return "Imported inventory"
+        return "Mixed"
+
+    @staticmethod
+    def _add_recurrence(cases: list[ReviewCase]) -> list[ReviewCase]:
+        cloud_cases = [item for item in cases if item.source_type == "cloud_hunt"]
+        by_resource: dict[str, list[ReviewCase]] = {}
+        for item in cloud_cases:
+            by_resource.setdefault(item.resource_id, []).append(item)
+        for item in cases:
+            matches = by_resource.get(item.resource_id, []) if item.source_type == "cloud_hunt" else []
+            if not matches:
+                continue
+            first = min(matches, key=lambda value: value.created_at)
+            latest = max(matches, key=lambda value: value.updated_at)
+            item.originating_run_id = item.originating_run_id or _parse_uuid(item.source_reference)
+            item.recurrence = {
+                "first_seen": first.created_at,
+                "last_seen": latest.updated_at,
+                "times_detected": len(matches),
+                "latest_classification": latest.status,
+                "latest_decision_state": latest.human_decision or latest.final_outcome,
+            }
+        return cases
 
     def _simulated_pr(self, case: ReviewCase, reviewer: str) -> MockPullRequest:
         resource = case.candidate.resource if isinstance(case.candidate, GhostCandidate) else None

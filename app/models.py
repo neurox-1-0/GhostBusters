@@ -32,7 +32,7 @@ HumanReviewAction = Literal["approve", "reject", "request_evidence", "modify", "
 CloudProvider = Literal["aws", "azure", "gcp"]
 CloudProviderScope = Literal["aws", "azure", "gcp", "multi_cloud"]
 CloudHuntTrigger = Literal["manual_cloud_hunt", "scheduled_cloud_hunt"]
-CloudHuntStatus = Literal["created", "scanning", "completed", "failed"]
+CloudHuntStatus = Literal["created", "scanning", "completed", "completed_with_warnings", "failed", "canceled"]
 NormalizedResourceType = Literal[
     "virtual_machine", "database", "storage_volume", "load_balancer", "public_ip", "other"
 ]
@@ -741,6 +741,9 @@ class CloudHuntRun(AppModel):
     started_at: datetime
     completed_at: datetime | None = None
     status: CloudHuntStatus
+    started_by_user_id: UUID | None = None
+    started_by_display_name: str | None = None
+    data_source_mode: Literal["Fixture-backed", "Connected cloud account", "Imported inventory", "Mixed"] = "Fixture-backed"
     resources_scanned: int = 0
     candidates_found: int = 0
     investigations_created: int = 0
@@ -784,6 +787,8 @@ class ReviewCase(AppModel):
     simulated_pr: MockPullRequest | None = None
     audit_events: list[AuditEvent] = Field(default_factory=list)
     version: int = 1
+    originating_run_id: UUID | None = None
+    recurrence: dict[str, Any] = Field(default_factory=dict)
 
 
 class CloudHuntRequest(AppModel):

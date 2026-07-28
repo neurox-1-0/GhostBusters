@@ -203,6 +203,9 @@ CREATE TABLE IF NOT EXISTS cloud_hunts (
 
 ALTER TABLE cloud_hunts ADD COLUMN IF NOT EXISTS organization_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES organizations(id);
 CREATE INDEX IF NOT EXISTS cloud_hunts_org_idx ON cloud_hunts(organization_id, created_at);
+CREATE INDEX IF NOT EXISTS cloud_hunts_status_idx ON cloud_hunts((payload->>'status'));
+CREATE INDEX IF NOT EXISTS cloud_hunts_provider_idx ON cloud_hunts((payload->>'provider_scope'));
+CREATE INDEX IF NOT EXISTS cloud_hunts_started_by_idx ON cloud_hunts((payload->>'started_by_user_id'), created_at);
 
 CREATE TABLE IF NOT EXISTS cloud_review_cases (
     id UUID PRIMARY KEY,

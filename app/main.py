@@ -703,7 +703,12 @@ def cloud_hunt_fixtures(provider_scope: str = Query("multi_cloud"), principal: P
 def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(principal_dependency)):
     require_permission(principal, CLOUD_HUNTS_RUN)
     try:
-        hunt = cloud_hunt_service.start_hunt(request, principal.organization_id)
+        hunt = cloud_hunt_service.start_hunt(
+            request,
+            principal.organization_id,
+            principal.user.id if principal.user else None,
+            principal.user.display_name if principal.user else None,
+        )
         auth_store.record_activity(principal.organization_id, "cloud_hunt_started", principal.user.id if principal.user else None, {"hunt_id": str(hunt.id), "provider_scope": request.provider_scope}, actor_type="User" if principal.user else "System", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)
         auth_store.record_activity(principal.organization_id, "cloud_hunt_completed", None, {"hunt_id": str(hunt.id), "candidates": hunt.candidates_found}, actor_type="Agent", category="Cloud Hunt", target_type="hunt", target_id=hunt.id, target_display_name=f"Cloud Hunt {hunt.id}", related_run_id=hunt.id)
         return hunt
@@ -712,9 +717,88 @@ def start_cloud_hunt(request: CloudHuntRequest, principal: Principal = Depends(p
 
 
 @app.get("/api/cloud/hunts")
-def list_cloud_hunts(principal: Principal = Depends(principal_dependency)):
+def list_cloud_hunts(
+    status: str | None = None,
+    provider: str | None = None,
+    started_by: str | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    search: str | None = None,
+    sort: str | None = None,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
+    principal: Principal = Depends(principal_dependency),
+):
     require_permission(principal, CLOUD_HUNTS_READ)
-    return cloud_hunt_service.list_hunts(principal.organization_id)
+    hunts = cloud_hunt_service.list_hunts(principal.organization_id)
+    if not any(value is not None for value in (status, provider, started_by, created_from, created_to, search, sort, page, page_size)):
+        return hunts
+    allowed_sorts = {"newest", "oldest", "highest_waste", "most_candidates", "longest_duration"}
+    if sort and sort not in allowed_sorts:
+        raise HTTPException(status_code=422, detail="Unknown Cloud Hunt sort.")
+
+    def aware(value: datetime | None) -> datetime | None:
+        return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+
+    start, end = aware(created_from), aware(created_to)
+    cases = cloud_hunt_service.list_cases(principal.organization_id)
+    active_statuses = {"pending", "pending_human_review", "needs_more_evidence", "reopened"}
+    case_counts = {
+        str(run.id): sum(1 for case in cases if case.source_type == "cloud_hunt" and case.source_reference == str(run.id) and case.status in active_statuses)
+        for run in hunts
+    }
+    filtered = []
+    for run in hunts:
+        started = run.started_at
+        actor = run.started_by_display_name or "System"
+        run_number = f"CH-{started.year}-{str(run.id)[:8].upper()}"
+        duration = (run.completed_at - started).total_seconds() if run.completed_at else None
+        haystack = " ".join((run_number, run.provider_scope, actor, run.inventory_source, run.goal)).lower()
+        normalized_status = "failed" if status == "failed" and run.status == "failed" else status
+        if normalized_status and run.status != normalized_status:
+            continue
+        if provider and provider.lower() not in run.provider_scope.lower():
+            continue
+        if started_by and started_by.lower() not in f"{actor} {run.started_by_user_id or ''}".lower():
+            continue
+        if (start and started < start) or (end and started > end):
+            continue
+        if search and search.strip().lower() not in haystack:
+            continue
+        filtered.append({
+            "id": run.id,
+            "run_number": run_number,
+            "organization_id": run.organization_id,
+            "provider_scope": run.provider_scope,
+            "started_by_user_id": run.started_by_user_id,
+            "started_by": actor,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "duration_seconds": duration,
+            "resources_scanned": run.resources_scanned,
+            "candidates_found": run.candidates_found,
+            "protected_resources": run.protected_resources,
+            "pending_reviews": case_counts[str(run.id)],
+            "estimated_monthly_waste": run.summary.estimated_monthly_waste,
+            "status": run.status,
+            "data_source_mode": run.data_source_mode,
+            "inventory_source": run.inventory_source,
+            "warnings": run.errors,
+        })
+    sort_key = sort or "newest"
+    if sort_key == "oldest":
+        filtered.sort(key=lambda item: item["started_at"])
+    elif sort_key == "highest_waste":
+        filtered.sort(key=lambda item: item["estimated_monthly_waste"], reverse=True)
+    elif sort_key == "most_candidates":
+        filtered.sort(key=lambda item: item["candidates_found"], reverse=True)
+    elif sort_key == "longest_duration":
+        filtered.sort(key=lambda item: item["duration_seconds"] or 0, reverse=True)
+    else:
+        filtered.sort(key=lambda item: item["started_at"], reverse=True)
+    actual_page, actual_size = page or 1, page_size or 20
+    offset = (actual_page - 1) * actual_size
+    return {"items": filtered[offset:offset + actual_size], "total": len(filtered), "page": actual_page, "page_size": actual_size, "has_next": offset + actual_size < len(filtered)}
 
 
 @app.get("/api/cloud/hunts/{hunt_id}")

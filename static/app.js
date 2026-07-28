@@ -29,6 +29,14 @@ const state = {
   newPrReviewCount: 0,
   prReviewError: "",
   hunt: null,
+  hunts: [],
+  selectedCloudHuntId: null,
+  cloudHuntServerPaged: false,
+  cloudHuntTotal: 0,
+  cloudHuntPage: 1,
+  cloudHuntPageSize: 20,
+  cloudHuntFilters: { status: "", provider: "", search: "", sort: "newest" },
+  cloudHuntError: "",
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -38,6 +46,7 @@ const state = {
     reviews: false,
     prReviews: false,
     cloudHunt: false,
+    cloudHunts: false,
     run: false,
     review: false,
     assistant: false,
@@ -1077,6 +1086,7 @@ async function loadInitial() {
   }
   loadPRReviews();
   loadReviewQueue();
+  loadCloudHunts();
   loadMembers();
   loadActivity();
   renderAll();
@@ -1322,12 +1332,117 @@ async function loadReviewQueue() {
   }
 }
 
+function cloudRunStatusLabel(status) {
+  return ({ created: "Queued", queued: "Queued", scanning: "Running", running: "Running", completed: "Completed", completed_with_warnings: "Completed with Warnings", failed: "Failed Safely", failed_safely: "Failed Safely", canceled: "Canceled" })[status] || "Queued";
+}
+
+function cloudRunDuration(run) {
+  const duration = run.duration_seconds ?? (run.completed_at && run.started_at ? (new Date(run.completed_at) - new Date(run.started_at)) / 1000 : null);
+  if (duration == null || Number.isNaN(duration)) return "Not completed";
+  const seconds = Math.max(0, Math.round(duration));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+async function loadCloudHunts() {
+  state.loading.cloudHunts = true;
+  state.cloudHuntError = "";
+  renderCloudRunHistory();
+  try {
+    const filters = state.cloudHuntFilters;
+    const params = new URLSearchParams({ page: String(state.cloudHuntPage), page_size: String(state.cloudHuntPageSize), sort: filters.sort });
+    if (filters.status) params.set("status", filters.status);
+    if (filters.provider) params.set("provider", filters.provider);
+    if (filters.search.trim()) params.set("search", filters.search.trim());
+    const payload = await api(`/api/cloud/hunts?${params}`);
+    state.hunts = payload.items || [];
+    state.cloudHuntTotal = payload.total || 0;
+    state.cloudHuntServerPaged = true;
+  } catch (error) {
+    state.cloudHuntError = friendlyError(error, "Failed to load Cloud Hunt history.");
+  } finally {
+    state.loading.cloudHunts = false;
+    renderCloudRunHistory();
+  }
+}
+
+async function selectCloudHunt(runId) {
+  try {
+    state.loading.cloudHunt = true;
+    state.selectedCloudHuntId = runId;
+    state.hunt = await api(`/api/cloud/hunts/${runId}`);
+    renderCloudRunHistory();
+    renderCloudHunt();
+  } catch (error) {
+    state.cloudHuntError = friendlyError(error, "Failed to load Cloud Hunt run.");
+    showToast("Run unavailable", state.cloudHuntError, "error");
+  } finally {
+    state.loading.cloudHunt = false;
+    renderCloudRunHistory();
+    renderCloudHunt();
+  }
+}
+
+function backToCloudRunHistory() {
+  state.selectedCloudHuntId = null;
+  state.hunt = null;
+  state.selectedReviewContext = null;
+  renderCloudRunHistory();
+  renderCloudHunt();
+}
+
+function renderCloudRunHistory() {
+  const node = $("cloud-run-history-list");
+  if (!node) return;
+  clear(node);
+  const detail = Boolean(state.selectedCloudHuntId);
+  $("cloud-run-history").hidden = detail;
+  $("cloud-run-detail-meta").hidden = !detail;
+  if (state.loading.cloudHunts) return renderSkeletonList(node, 3);
+  if (state.cloudHuntError) {
+    const retry = el("button", "secondary", "Retry"); retry.type = "button"; retry.addEventListener("click", loadCloudHunts);
+    append(node, el("p", "message", state.cloudHuntError), retry); return;
+  }
+  if (!state.hunts.length) { node.appendChild(el("p", "muted", "No Cloud Hunt runs have been recorded yet.")); return; }
+  const columns = [
+    { label: "Run", priority: "mobile", render: (run) => run.run_number || "Cloud Hunt run" },
+    { label: "Provider scope", render: (run) => labelFor(run.provider_scope) },
+    { label: "Started by", priority: "tablet", render: (run) => run.started_by || "System" },
+    { label: "Started", render: (run) => timestampNode(run.started_at, "Started") },
+    { label: "Duration", priority: "tablet", render: cloudRunDuration },
+    { label: "Resources", priority: "tablet", render: (run) => run.resources_scanned },
+    { label: "Candidates", render: (run) => run.candidates_found },
+    { label: "Waste", priority: "tablet", render: (run) => money(run.estimated_monthly_waste) },
+    { label: "Status", render: (run) => statusBadge({ label: cloudRunStatusLabel(run.status), className: run.status === "failed" ? "status-blocked" : run.status === "completed" ? "status-approved" : "status-awaiting-review" }) },
+    { label: "Action", render: (run) => { const button = el("button", "secondary compact", "View Run"); button.type = "button"; button.addEventListener("click", () => selectCloudHunt(run.id)); return button; } },
+  ];
+  node.appendChild(responsiveTable(columns, state.hunts, "No Cloud Hunt runs match these filters."));
+  const total = state.cloudHuntTotal || state.hunts.length;
+  const start = (state.cloudHuntPage - 1) * state.cloudHuntPageSize;
+  $("cloud-run-pagination-summary").textContent = total ? `Showing ${start + 1}-${Math.min(start + state.hunts.length, total)} of ${total} runs` : "0 runs";
+  $("cloud-run-prev-button").disabled = state.cloudHuntPage <= 1;
+  $("cloud-run-next-button").disabled = start + state.hunts.length >= total;
+}
+
+function renderCloudRunDetailMeta() {
+  const run = state.hunt;
+  if (!run || !state.selectedCloudHuntId) return;
+  $("cloud-run-detail-title").textContent = run.run_number || `Cloud Hunt ${String(run.id).slice(0, 8).toUpperCase()}`;
+  $("cloud-run-provider-scope").textContent = labelFor(run.provider_scope);
+  $("cloud-run-started-by").textContent = run.started_by_display_name || "System";
+  $("cloud-run-started-at").replaceChildren(timestampNode(run.started_at, "Started"));
+  $("cloud-run-completed-at").replaceChildren(run.completed_at ? timestampNode(run.completed_at, "Completed") : el("span", null, "Not completed"));
+  $("cloud-run-duration").textContent = cloudRunDuration(run);
+  $("cloud-run-data-source").textContent = run.data_source_mode || "Fixture-backed";
+}
+
 async function startCloudHunt() {
   return withButtonState("start-cloud-hunt-button", "Scanning...", async () => {
     state.loading.cloudHunt = true;
     renderCloudHunt();
     setMessage("cloud-hunt-message", "Scanning fixture inventory...", true);
     state.hunt = await api("/api/cloud/hunts", { method: "POST", body: JSON.stringify({ provider_scope: $("cloud-provider-scope").value, inventory_source: "fixtures" }) });
+    state.selectedCloudHuntId = state.hunt.id;
+    await loadCloudHunts();
     await loadReviewQueue();
     renderCloudHunt();
     setMessage("cloud-hunt-message", "Cloud Hunt completed. No cloud resource was changed.", true);
@@ -2424,7 +2539,7 @@ function renderAll() {
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
-  renderPRReviewList(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
+  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
 function renderAssistantTriggers() {
@@ -2471,8 +2586,9 @@ function cloudReviewStatusForCandidate(candidate) {
 function cloudCaseForCandidate(candidate) {
   if (!candidate) return null;
   const resource = candidate.resource || {};
+  const selectedRunId = state.selectedReviewContext?.source === "approvals" ? null : state.hunt?.id;
   return (state.reviews || []).find((item) =>
-    item.source_type === "cloud_hunt" && (
+    item.source_type === "cloud_hunt" && (!selectedRunId || item.source_reference === selectedRunId) && (
       item.id === state.selectedReviewContext?.runId ||
       item.candidate?.candidate_id === candidate.candidate_id ||
       item.resource_id === resource.resource_id ||
@@ -2710,6 +2826,12 @@ function renderCloudFindingDetail() {
   $("cloud-detail-run-id").textContent = state.hunt?.id || caseItem?.source_reference || "Not recorded";
   $("cloud-detail-provider-id").textContent = resource.resource_id || caseItem?.resource_id || "Not recorded";
   $("cloud-detail-audit-ref").textContent = caseItem?.source_reference || state.hunt?.trigger_source || "Not recorded";
+  const recurrence = caseItem?.recurrence || {};
+  $("cloud-detail-first-seen").textContent = recurrence.first_seen ? exactTimestamp(recurrence.first_seen) : "Not recorded";
+  $("cloud-detail-last-seen").textContent = recurrence.last_seen ? exactTimestamp(recurrence.last_seen) : "Not recorded";
+  $("cloud-detail-times-detected").textContent = recurrence.times_detected ?? "Not recorded";
+  $("cloud-detail-latest-classification").textContent = recurrence.latest_classification ? labelFor(recurrence.latest_classification) : "Not recorded";
+  $("cloud-detail-latest-decision").textContent = recurrence.latest_decision_state ? labelFor(recurrence.latest_decision_state) : "Not recorded";
   renderSignalBullets("cloud-detail-flagged", signalList(candidate || caseItem?.candidate, true), "No positive waste signals were recorded.");
   renderSignalBullets("cloud-detail-caution", signalList(candidate || caseItem?.candidate, false), "No caution signals were recorded.");
   $("cloud-open-approval-button").hidden = !(caseItem && ["pending", "pending_human_review", "needs_more_evidence"].includes(caseItem.status));
@@ -2792,6 +2914,7 @@ async function submitSelectedCloudReview() {
 function renderCloudHunt() {
   const summary = $("cloud-hunt-summary");
   if (!summary) return;
+  renderCloudRunDetailMeta();
   clear(summary);
   renderCloudJourney();
   renderCloudFindingDetail();
@@ -3059,6 +3182,15 @@ function bindEvents() {
   on("submit-review-button", "click", submitSelectedReview);
   on("cancel-review-button", "click", closeReviewForm);
   on("start-cloud-hunt-button", "click", startCloudHunt);
+  on("cloud-new-run-button", "click", () => { state.selectedCloudHuntId = null; state.hunt = null; renderCloudRunHistory(); renderCloudHunt(); $("cloud-hunt-start-panel")?.scrollIntoView({ block: "start" }); });
+  on("cloud-run-back-button", "click", backToCloudRunHistory);
+  on("cloud-run-status-filter", "change", (event) => { state.cloudHuntFilters.status = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });
+  on("cloud-run-provider-filter", "change", (event) => { state.cloudHuntFilters.provider = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });
+  on("cloud-run-sort-filter", "change", (event) => { state.cloudHuntFilters.sort = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });
+  on("cloud-run-search-input", "change", (event) => { state.cloudHuntFilters.search = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });
+  on("cloud-run-page-size", "change", (event) => { state.cloudHuntPageSize = Number(event.target.value); state.cloudHuntPage = 1; loadCloudHunts(); });
+  on("cloud-run-prev-button", "click", () => { state.cloudHuntPage = Math.max(1, state.cloudHuntPage - 1); loadCloudHunts(); });
+  on("cloud-run-next-button", "click", () => { if (!$("cloud-run-next-button").disabled) { state.cloudHuntPage += 1; loadCloudHunts(); } });
   on("refresh-review-queue-button", "click", loadReviewQueue);
   on("refresh-members-button", "click", loadMembers);
   on("invite-member-button", "click", openInviteModal);
