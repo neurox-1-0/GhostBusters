@@ -70,6 +70,7 @@ class Settings:
     cloud_hunt_schedule_config_path: Path = Path(os.getenv("CLOUD_HUNT_SCHEDULE_CONFIG_PATH", ".runtime/cloud_hunt_schedules.json"))
     cloud_hunt_schedule_interval_seconds: int = int(os.getenv("CLOUD_HUNT_SCHEDULE_INTERVAL_SECONDS", "60"))
     cloud_hunt_schedule_retry_attempts: int = int(os.getenv("CLOUD_HUNT_SCHEDULE_RETRY_ATTEMPTS", "2"))
+    outcome_verification_config_path: Path = Path(os.getenv("OUTCOME_VERIFICATION_CONFIG_PATH", ".runtime/outcome_verifications.json"))
     aws_profile: str | None = os.getenv("AWS_PROFILE") or None
     aws_region: str | None = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None
     aws_allowed_regions: tuple[str, ...] = tuple(item.strip() for item in os.getenv("AWS_ALLOWED_REGIONS", "").split(",") if item.strip())

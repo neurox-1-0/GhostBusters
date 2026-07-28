@@ -282,6 +282,31 @@ CREATE TABLE IF NOT EXISTS jira_integration_configs (
 );
 CREATE INDEX IF NOT EXISTS jira_integration_configs_updated_idx ON jira_integration_configs(organization_id, updated_at);
 
+-- Closed-loop outcome verification. Production deployments need versioned migrations.
+CREATE TABLE IF NOT EXISTS outcome_verifications (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    case_id UUID NOT NULL,
+    source_type TEXT NOT NULL,
+    remediation_reference JSONB NOT NULL,
+    prediction_snapshot JSONB NOT NULL,
+    verification_window JSONB NOT NULL,
+    verification_status TEXT NOT NULL,
+    observed_cost JSONB,
+    observed_utilization JSONB,
+    observed_health_signals JSONB,
+    savings_variance JSONB,
+    risk_outcome TEXT,
+    conclusion TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    correlation_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS outcome_verifications_org_idx ON outcome_verifications(organization_id, updated_at);
+CREATE INDEX IF NOT EXISTS outcome_verifications_case_idx ON outcome_verifications(organization_id, case_id);
+CREATE INDEX IF NOT EXISTS outcome_verifications_status_idx ON outcome_verifications(organization_id, verification_status);
+
 -- Milestone 2 additive schema. Production deployments should replace this
 -- bootstrap file with ordered, versioned migrations before rollout.
 CREATE TABLE IF NOT EXISTS human_decision_events (

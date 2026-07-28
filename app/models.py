@@ -33,6 +33,7 @@ CloudProvider = Literal["aws", "azure", "gcp"]
 CloudProviderScope = Literal["aws", "azure", "gcp", "multi_cloud"]
 CloudHuntTrigger = Literal["manual_cloud_hunt", "scheduled_cloud_hunt"]
 CloudHuntStatus = Literal["created", "scanning", "completed", "completed_with_warnings", "failed", "canceled"]
+OutcomeVerificationStatus = Literal["pending", "waiting_for_deployment", "observing", "verified_success", "verified_partial", "regression_detected", "insufficient_evidence", "reopened", "failed_safely"]
 NormalizedResourceType = Literal[
     "virtual_machine", "database", "storage_volume", "load_balancer", "public_ip", "other"
 ]
@@ -737,6 +738,58 @@ class WorkflowRun(AppModel):
     final_outcome: str | None = None
     github_context: dict[str, Any] | None = None
     jira_context: dict[str, Any] | None = None
+    outcome_verification_id: UUID | None = None
+
+
+class OutcomeVerification(AppModel):
+    id: UUID
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
+    case_id: UUID
+    source_type: ReviewCaseSource
+    remediation_reference: dict[str, Any] = Field(default_factory=dict)
+    prediction_snapshot: dict[str, Any] = Field(default_factory=dict)
+    verification_window: dict[str, Any] = Field(default_factory=dict)
+    verification_status: OutcomeVerificationStatus = "pending"
+    observed_cost: dict[str, Any] | None = None
+    observed_utilization: dict[str, Any] | None = None
+    observed_health_signals: dict[str, Any] | None = None
+    savings_variance: dict[str, Any] | None = None
+    risk_outcome: str | None = None
+    conclusion: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
+    version: int = 1
+    deployment_confirmed_at: datetime | None = None
+    last_idempotency_key: str | None = None
+    last_request_fingerprint: str | None = None
+
+
+class OutcomeStartRequest(AppModel):
+    verification_window_days: int = Field(default=14, ge=1, le=90)
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = None
+
+
+class OutcomeObservationRequest(AppModel):
+    observed_monthly_savings: float | None = None
+    observed_cost: dict[str, Any] | None = None
+    observed_utilization: dict[str, Any] | None = None
+    observed_health_signals: dict[str, Any] | None = None
+    evidence_available: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = None
+
+
+class OutcomeCompleteRequest(OutcomeObservationRequest):
+    pass
+
+
+class OutcomeReopenRequest(AppModel):
+    reason: str
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = None
 
 
 class CloudResource(AppModel):

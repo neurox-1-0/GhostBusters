@@ -21,6 +21,7 @@ from app.models import (
     GitHubIntegrationConfigRequest,
     JiraIntegrationConfigRequest, JiraContextRequest,
     CloudHuntScheduleRequest, CloudHuntScheduleToggleRequest,
+    OutcomeStartRequest, OutcomeObservationRequest, OutcomeCompleteRequest, OutcomeReopenRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -57,6 +58,7 @@ from app.auth import (
     INTEGRATIONS_JIRA_READ,
     INTEGRATIONS_JIRA_MANAGE,
     BUSINESS_CONTEXT_READ,
+    OUTCOMES_READ, OUTCOMES_START, OUTCOMES_REFRESH, OUTCOMES_COMPLETE, OUTCOMES_REOPEN,
     REPOSITORY_CONTEXT_READ,
     WORKSPACE_READ,
     Principal,
@@ -94,6 +96,7 @@ from integrations.github_context import GitHubContextAdapter
 from integrations.jira_client import JiraAPIError, JiraClient
 from integrations.jira_context import JiraContextAdapter, detect_jira_github_conflict
 from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
+from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
@@ -802,7 +805,85 @@ def reset_runs() -> dict[str, str]:
     github_integration_store.reset()
     jira_integration_store.reset()
     schedule_store.reset()
+    outcome_store.reset()
     return result
+
+
+def _outcome_audit(outcome, event_type: str, summary: str, principal: Principal, result: str = "success") -> None:
+    try:
+        run = workflow_service.get_run(outcome.case_id, principal.organization_id)
+        append_audit_event(run, event_type=event_type, actor="tool", summary=summary, correlation_id=outcome.correlation_id, details={"outcome_id": str(outcome.id), "status": outcome.verification_status})
+        workflow_service.store.update(run.id, run, principal.organization_id)
+    except RunNotFoundError:
+        pass
+    auth_store.record_activity(principal.organization_id, event_type, principal.user.id if principal.user else None, {"outcome_id": str(outcome.id), "case_id": str(outcome.case_id), "correlation_id": outcome.correlation_id, "status": outcome.verification_status}, actor_type="User" if principal.user else "System", category="System", result=result, correlation_id=outcome.correlation_id, related_case_id=outcome.case_id)
+
+
+@app.get("/api/outcomes")
+def list_outcomes(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_READ)
+    return {"items": outcome_store.list(principal.organization_id), "summary": {"predicted_savings": sum(float(i.prediction_snapshot.get("predicted_monthly_savings") or 0) for i in outcome_store.list(principal.organization_id)), "verified_savings": sum(float((i.savings_variance or {}).get("observed_monthly_savings") or 0) for i in outcome_store.list(principal.organization_id) if i.verification_status in {"verified_success", "verified_partial"}), "pending_verification": sum(i.verification_status in {"pending", "waiting_for_deployment", "observing"} for i in outcome_store.list(principal.organization_id)), "regressions_detected": sum(i.verification_status == "regression_detected" for i in outcome_store.list(principal.organization_id))}}
+
+
+@app.get("/api/outcomes/{outcome_id}")
+def get_outcome(outcome_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_READ)
+    try: return outcome_store.get(outcome_id, principal.organization_id)
+    except OutcomeNotFoundError as exc: raise HTTPException(status_code=404, detail="Outcome verification not found.") from exc
+
+
+@app.post("/api/runs/{run_id}/outcome-verification")
+def start_outcome_verification(run_id: UUID, request: OutcomeStartRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_START)
+    try:
+        run = workflow_service.get_run(run_id, principal.organization_id)
+        outcome = outcome_verification_service.start(run, request, principal.organization_id)
+        _outcome_audit(outcome, "verification_started", "Outcome verification started; deployment confirmation is still required.", principal)
+        return outcome
+    except RunNotFoundError as exc: raise HTTPException(status_code=404, detail="Case not found.") from exc
+    except OutcomeConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/outcomes/{outcome_id}/deployment-confirmation")
+def confirm_outcome_deployment(outcome_id: UUID, request: OutcomeStartRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_START)
+    try:
+        current = outcome_store.get(outcome_id, principal.organization_id); outcome = outcome_verification_service.confirm_deployment(current, request.expected_version, request.idempotency_key)
+        _outcome_audit(outcome, "deployment_confirmed", "Deployment was confirmed by an authenticated user.", principal); return outcome
+    except OutcomeNotFoundError as exc: raise HTTPException(status_code=404, detail="Outcome verification not found.") from exc
+    except OutcomeConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/outcomes/{outcome_id}/refresh")
+def refresh_outcome(outcome_id: UUID, request: OutcomeObservationRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_REFRESH)
+    try:
+        current = outcome_store.get(outcome_id, principal.organization_id); outcome = outcome_verification_service.observe(current, request)
+        _outcome_audit(outcome, "verification_evidence_collected", "Read-only post-change evidence was refreshed.", principal); return outcome
+    except OutcomeNotFoundError as exc: raise HTTPException(status_code=404, detail="Outcome verification not found.") from exc
+    except OutcomeConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/outcomes/{outcome_id}/complete")
+def complete_outcome(outcome_id: UUID, request: OutcomeCompleteRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_COMPLETE)
+    try:
+        current = outcome_store.get(outcome_id, principal.organization_id); outcome = outcome_verification_service.complete(current, request)
+        _outcome_audit(outcome, "verification_completed" if outcome.verification_status not in {"regression_detected", "insufficient_evidence"} else "verification_result_calculated", "Outcome verification result calculated without infrastructure mutation.", principal)
+        if outcome.verification_status == "regression_detected": _outcome_audit(outcome, "regression_detected", "Regression detected; human review is required and no rollback was performed.", principal, "warning")
+        return outcome
+    except OutcomeNotFoundError as exc: raise HTTPException(status_code=404, detail="Outcome verification not found.") from exc
+    except OutcomeConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/outcomes/{outcome_id}/reopen")
+def reopen_outcome(outcome_id: UUID, request: OutcomeReopenRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, OUTCOMES_REOPEN)
+    try:
+        current = outcome_store.get(outcome_id, principal.organization_id); outcome = outcome_verification_service.reopen(current, request)
+        _outcome_audit(outcome, "case_reopened", "Outcome was routed to human review; no rollback was performed.", principal, "warning"); return outcome
+    except OutcomeNotFoundError as exc: raise HTTPException(status_code=404, detail="Outcome verification not found.") from exc
+    except OutcomeConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/api/assistant/ask", response_model=AskGhostBustersResponse)

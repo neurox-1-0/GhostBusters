@@ -1,5 +1,6 @@
 const state = {
   run: null,
+  outcome: null,
   scenarios: [],
   demoScenarios: [],
   visibleEvents: [],
@@ -971,11 +972,13 @@ function openPrReviewDetail(runOrRow) {
   const run = runOrRow.run || runOrRow;
   state.prReviewListScrollTop = window.scrollY || 0;
   state.run = run;
+  state.outcome = null;
   state.selectedReviewContext = { source: "pr-reviews", type: "terraform_pr", runId: run.id };
   localStorage.setItem("ghostbusters:lastRunId", run.id);
   state.visibleEvents = run.audit_events || [];
   startAnimation(true);
   switchMode("simple");
+  loadOutcomeForRun();
   showToast("Review loaded", "Opened PR review details.", "success");
 }
 
@@ -1335,6 +1338,25 @@ async function loadGoals() {
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
 }
 
+async function loadOutcomeForRun() {
+  if (!state.run) return;
+  try { const data = await api("/api/outcomes"); state.outcome = (data.items || []).find((item) => item.case_id === state.run.id) || null; renderOutcomeVerification(); } catch { state.outcome = null; }
+}
+function renderOutcomeVerification() {
+  const panel = $("outcome-verification-panel"); if (!panel) return;
+  const eligible = ["pr_created", "remediation_pr_created", "approved"].includes(state.run?.status) && (state.run?.real_pr || state.run?.mock_pr);
+  panel.hidden = !eligible; if (!eligible) return;
+  const item = state.outcome; $("outcome-prediction").textContent = item ? money(item.prediction_snapshot?.predicted_monthly_savings) + "/month" : "Not recorded";
+  $("outcome-deployment").textContent = item?.deployment_confirmed_at ? "Confirmed" : "Not confirmed";
+  $("outcome-status").textContent = item ? labelFor(item.verification_status) : "Not started";
+  const observed = item?.savings_variance?.observed_monthly_savings; $("outcome-observed").textContent = observed === null || observed === undefined ? "Not verified" : money(observed) + "/month";
+  $("outcome-conclusion").textContent = item?.conclusion || "Savings remain unverified until deployment and post-change evidence are available.";
+  $("outcome-start-button").hidden = Boolean(item); $("outcome-deploy-button").hidden = !item || Boolean(item.deployment_confirmed_at); $("outcome-human-button").hidden = item?.verification_status !== "regression_detected";
+}
+async function startOutcomeVerification() { try { state.outcome = await api(`/api/runs/${state.run.id}/outcome-verification`, { method: "POST", body: JSON.stringify({ idempotency_key: `outcome-${state.run.id}` }) }); renderOutcomeVerification(); } catch (error) { showToast("Verification unavailable", friendlyError(error), "error"); } }
+async function confirmOutcomeDeployment() { try { state.outcome = await api(`/api/outcomes/${state.outcome.id}/deployment-confirmation`, { method: "POST", body: JSON.stringify({ expected_version: state.outcome.version, idempotency_key: `deploy-${state.outcome.id}` }) }); renderOutcomeVerification(); } catch (error) { showToast("Deployment confirmation failed", friendlyError(error), "error"); } }
+async function refreshOutcomeEvidence() { if (!state.outcome) return; try { state.outcome = await api(`/api/outcomes/${state.outcome.id}/refresh`, { method: "POST", body: JSON.stringify({ expected_version: state.outcome.version, idempotency_key: `refresh-${state.outcome.id}` }) }); renderOutcomeVerification(); } catch (error) { showToast("Evidence refresh failed", friendlyError(error), "error"); } }
+
 async function loadAWSConfig() {
   try { state.awsConfig = await api("/api/integrations/aws/config"); renderAWSConfig(); } catch (error) { setMessage("aws-message", friendlyError(error, "AWS settings unavailable.")); }
 }
@@ -1680,12 +1702,14 @@ async function startRun() {
       }),
     });
     state.run = run;
+    state.outcome = null;
     state.selectedReviewContext = { source: "demo", runId: run.id };
     localStorage.setItem("ghostbusters:lastRunId", run.id);
     state.skipAnimation = $("skip-animation").checked;
     closeDemoModal();
     startAnimation();
     switchMode("simple");
+    loadOutcomeForRun();
     setMessage("ui-message", "Demo case loaded.", true);
     showToast("Demo started", "Prepared review evidence is loaded.", "success");
   }, "Demo loaded").catch((error) => {
@@ -2738,7 +2762,7 @@ function renderAll() {
   $("case-view").hidden = !hasSelectedCase();
   renderIdentity();
   renderAssistantTriggers();
-  renderStatus(); renderSource(); renderGitHubContext(); renderJiraContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderTechnical();
+  renderStatus(); renderSource(); renderGitHubContext(); renderJiraContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderOutcomeVerification(); renderTechnical();
   renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
@@ -3446,6 +3470,9 @@ function bindEvents() {
   on("jira-save-button", "click", saveJiraConfig);
   on("jira-validate-button", "click", validateJiraConnection);
   on("schedule-create-button", "click", createCloudSchedule);
+  on("outcome-start-button", "click", startOutcomeVerification);
+  on("outcome-deploy-button", "click", confirmOutcomeDeployment);
+  on("outcome-refresh-button", "click", refreshOutcomeEvidence);
   on("collect-github-context-button", "click", collectGitHubContext);
   on("invite-member-button", "click", openInviteModal);
   on("invite-close-button", "click", closeInviteModal);
