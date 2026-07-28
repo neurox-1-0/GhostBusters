@@ -96,3 +96,18 @@ class GitHubAppClient:
         response = self._client.get(f"/app/installations/{self.installation_id}", headers={"Authorization": f"Bearer {app_jwt(self.configuration)}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
         if response.status_code >= 400: raise GitHubAPIError("authentication", "GitHub installation could not be resolved safely.")
         return response.json()
+
+    def validate_installation(self, allowed_repositories: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+        """Validate an installation without using the personal-token /user endpoint."""
+        installation = self.installation()
+        repositories = self.api_client().list_installation_repositories()
+        allowed = {item.strip().lower() for item in allowed_repositories if item.strip()}
+        safe_repositories = [item for item in repositories if item.get("full_name") and (not allowed or str(item["full_name"]).lower() in allowed)]
+        permissions = installation.get("permissions") or {}
+        missing_permissions = [name for name in ("metadata", "contents", "pull_requests") if str(permissions.get(name, "")).lower() not in {"read", "write"}]
+        return {
+            "installation": installation,
+            "repositories": safe_repositories,
+            "missing_permissions": missing_permissions,
+            "account_identity": (installation.get("account") or {}).get("login") or (installation.get("account") or {}).get("id"),
+        }

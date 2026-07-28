@@ -1383,7 +1383,8 @@ function renderGitHubConfig() {
   const connected = Boolean(config.installation_id);
   if ($("github-connected-state")) $("github-connected-state").hidden = !connected;
   if ($("github-disconnected-state")) $("github-disconnected-state").hidden = connected;
-  setStatusBadge("github-connection-status", { label: connected ? "Connected" : "Not connected", className: connected ? "status-approved" : "status-neutral" });
+  const validationWarning = connected && config.last_failure_summary;
+  setStatusBadge("github-connection-status", { label: connected ? (validationWarning ? "Connected with warning" : "Connected") : "Not connected", className: connected ? (validationWarning ? "status-warning" : "status-approved") : "status-neutral" });
   renderRepositorySettings();
   const editable = hasPermission("integrations.github.manage"); $("github-save-button").hidden = !editable; $("github-enabled-select").disabled = !editable; $("github-installation-input").readOnly = !editable; $("github-repositories-input").readOnly = !editable;
 }
@@ -1417,12 +1418,10 @@ async function validateGitHubConnection() {
   return withButtonState("github-validate-button", "Validating...", async () => {
     state.githubValidation = await api("/api/integrations/github/validate", { method: "POST", body: "{}" });
     const result = state.githubValidation;
-    setStatusBadge("github-connection-status", { label: result.connected ? "Connected" : "Unavailable", className: result.connected ? "status-approved" : "status-blocked" });
-    $("github-account-id").textContent = result.account_identity || "Not available";
-    $("github-repository-list").textContent = (result.accessible_repositories || []).join(", ") || "None available";
-    $("github-last-checked").textContent = exactTimestamp(result.checked_at);
-    $("github-permission-warnings").textContent = [...(result.permission_warnings || []), ...(result.missing_permissions || [])].join("; ") || "None recorded";
-    setMessage("github-message", result.connected ? "GitHub identity validated for read-only context." : "GitHub validation failed safely.", result.connected);
+    state.githubConfig = await api("/api/integrations/github/config");
+    renderGitHubConfig();
+    if (!result.connected && state.githubConfig.installation_id) setMessage("github-message", "Validation failed; showing last known repository access.");
+    else setMessage("github-message", result.connected ? "GitHub identity validated for read-only context." : "GitHub validation failed safely.", result.connected);
   }, "Validated").catch((error) => setMessage("github-message", friendlyError(error, "GitHub validation failed.")));
 }
 

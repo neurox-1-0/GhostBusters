@@ -1293,12 +1293,38 @@ def validate_github_connection(request: Request, principal: Principal = Depends(
     require_permission(principal, INTEGRATIONS_GITHUB_READ)
     rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = github_integration_store.get(principal.organization_id)
-    github_client = GitHubAppClient(config.installation_id).api_client() if config.installation_id else (workflow_service.github_client if settings.github_development_token_fallback else None)
-    if github_client is None:
-        result = {"connected": False, "account_identity": None, "accessible_repositories": [], "permission_warnings": [], "missing_permissions": ["GitHub credentials are unavailable."], "checked_at": utc_now()}
+    if config.installation_id:
+        stage = "fetch_installation"
+        try:
+            app_client = GitHubAppClient(config.installation_id)
+            stage = "validate_installation"
+            validation = app_client.validate_installation(config.allowed_repositories)
+            stage = "persist_installation"
+            installation = validation["installation"]
+            repositories = validation["repositories"]
+            missing_permissions = [f"{name}: read" for name in validation["missing_permissions"]]
+            github_integration_store.update_installation(
+                principal.organization_id,
+                installation_id=config.installation_id,
+                account_login=validation["account_identity"],
+                account_type=(installation.get("account") or {}).get("type"),
+                repository_selection=str(installation.get("repository_selection") or config.repository_selection),
+                repositories=repositories,
+            )
+            result = {"connected": not missing_permissions, "account_identity": validation["account_identity"], "accessible_repositories": [str(item["full_name"]) for item in repositories], "permission_warnings": [f"Missing GitHub App permissions: {', '.join(missing_permissions)}"] if missing_permissions else [], "missing_permissions": missing_permissions, "checked_at": utc_now()}
+            if missing_permissions:
+                github_integration_store.mark_validation(principal.organization_id, False, "; ".join(missing_permissions))
+        except Exception as exc:
+            logger.exception("GitHub App validation failed", extra={"organization_id": str(principal.organization_id), "installation_id": config.installation_id, "stage": stage, "exception_class": type(exc).__name__})
+            github_integration_store.mark_validation(principal.organization_id, False, "GitHub App installation validation failed safely.")
+            result = {"connected": False, "account_identity": config.account_login, "accessible_repositories": [str(item.get("full_name")) for item in config.connected_repositories if item.get("full_name")], "permission_warnings": ["Validation failed; showing last known repository access."], "missing_permissions": ["GitHub App installation access"], "checked_at": utc_now()}
     else:
-        result = GitHubContextAdapter(github_client, config.allowed_repositories, config.source_mode).validate()
-    github_integration_store.mark_validation(principal.organization_id, bool(result["connected"]), "; ".join(result["missing_permissions"]))
+        github_client = workflow_service.github_client if settings.github_development_token_fallback else None
+        if github_client is None:
+            result = {"connected": False, "account_identity": None, "accessible_repositories": [], "permission_warnings": [], "missing_permissions": ["GitHub credentials are unavailable."], "checked_at": utc_now()}
+        else:
+            result = GitHubContextAdapter(github_client, config.allowed_repositories, config.source_mode).validate()
+        github_integration_store.mark_validation(principal.organization_id, bool(result["connected"]), "; ".join(result["missing_permissions"]))
     if result["connected"]:
         auth_store.record_activity(principal.organization_id, "github_validation_succeeded", principal.user.id if principal.user else None, {"account_identity": result["account_identity"]}, actor_type="Integration", category="Integrations")
     else:
