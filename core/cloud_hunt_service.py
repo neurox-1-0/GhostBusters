@@ -263,6 +263,16 @@ class CloudHuntService:
         if self.persistence is not None:
             self.persistence.clear()
 
+    def reset_demo(self, organization_id: UUID) -> None:
+        """Remove only fixture-backed hunts and cases for one organization."""
+        with self._lock:
+            hunt_ids = {item.id for item in self._hunts.values() if item.organization_id == organization_id and item.data_source_mode == "Fixture-backed"}
+            case_ids = {item.id for item in self._cases.values() if item.organization_id == organization_id and item.source_reference in {str(value) for value in hunt_ids}}
+            self._hunts = {item_id: item for item_id, item in self._hunts.items() if item_id not in hunt_ids}
+            self._cases = {item_id: item for item_id, item in self._cases.items() if item_id not in case_ids}
+            if self.persistence is not None:
+                self.persistence.clear_organization_fixture_data(organization_id)
+
     def _create_case(self, hunt: CloudHuntRun, candidate: GhostCandidate) -> ReviewCase:
         resource = candidate.resource
         protected = self._is_protected(candidate)

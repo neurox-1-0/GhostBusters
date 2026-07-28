@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -23,6 +24,7 @@ from app.models import (
     CloudHuntScheduleRequest, CloudHuntScheduleToggleRequest,
     OutcomeStartRequest, OutcomeObservationRequest, OutcomeCompleteRequest, OutcomeReopenRequest,
     OrganizationUpdateRequest,
+    DemoResetRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -103,6 +105,14 @@ from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
+if settings.cors_allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_allowed_origins),
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-CSRF-Token", "X-Correlation-ID", "X-GitHub-Event", "X-GitHub-Delivery", "X-Hub-Signature-256"],
+    )
 static_path = Path(__file__).resolve().parent.parent / settings.static_dir
 webhook_deduplicator = build_webhook_deduplicator()
 app.mount("/static", StaticFiles(directory=static_path), name="static")
@@ -114,6 +124,16 @@ assistant_service.cloud_hunt = cloud_hunt_service
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service=settings.service_name)
+
+
+@app.get("/live")
+def liveness() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness() -> dict[str, object]:
+    return {"status": "ready", "database": "configured" if settings.database_url else "in_memory", "redis": "configured" if settings.redis_url else "not_configured"}
 
 
 @app.get("/")
@@ -828,6 +848,39 @@ def reset_runs() -> dict[str, str]:
     return result
 
 
+@app.get("/api/demo/readiness")
+def demo_readiness(principal: Principal = Depends(principal_dependency)) -> dict[str, object]:
+    require_permission(principal, OVERVIEW_READ)
+    runs = workflow_service.list_runs(principal.organization_id)
+    hunts = cloud_hunt_service.list_hunts(principal.organization_id)
+    cases = cloud_hunt_service.list_cases(principal.organization_id)
+    schedules = schedule_store.list(principal.organization_id)
+    integrations: dict[str, object] = {}
+    for name, store in (("aws", aws_integration_store), ("github", github_integration_store), ("jira", jira_integration_store)):
+        try:
+            config = store.get(principal.organization_id)
+            integrations[name] = {"enabled": config.enabled, "status": "disabled" if not config.enabled else "warning" if config.last_failure_summary else "ready" if getattr(config, "last_validated", None) or getattr(config, "last_successful_collection", None) else "not_checked", "last_checked": getattr(config, "last_validated", None), "last_success": config.last_successful_collection, "source_mode": getattr(config, "source_mode", "real"), "warnings": [config.last_failure_summary] if config.last_failure_summary else []}
+        except Exception:
+            integrations[name] = {"enabled": False, "status": "unavailable", "warnings": ["Integration status unavailable."]}
+    recent = next((run for run in sorted(runs, key=lambda item: item.updated_at, reverse=True) if run.status in {"completed", "pr_created", "remediation_pr_created", "approved"}), None)
+    warnings = []
+    if not settings.github_webhook_secret: warnings.append("GitHub webhook signature secret is not configured.")
+    if not settings.database_url: warnings.append("Using in-memory workflow storage; configure PostgreSQL for production.")
+    if not settings.redis_url: warnings.append("Redis is not configured; distributed delivery/scheduler coordination is limited.")
+    return {"authentication": {"authenticated": principal.authenticated, "organization": principal.organization.name, "role": principal.membership.role}, "health": {"database": "configured" if settings.database_url else "in_memory", "redis": "configured" if settings.redis_url else "not_configured"}, "github_webhook": {"enabled": settings.github_integration_enabled, "signature_ready": bool(settings.github_webhook_secret), "endpoint": "/webhooks/github"}, "integrations": integrations, "data_modes": {"fixtures_available": True, "real_aws_configured": bool(settings.aws_region or settings.aws_allowed_regions), "real_github_configured": bool(settings.github_token), "real_jira_configured": bool(settings.jira_base_url and settings.jira_api_token)}, "scheduler": {"enabled": settings.cloud_hunt_schedule_enabled, "schedule_count": len(schedules), "enabled_schedule_count": sum(item.enabled for item in schedules), "redis_coordination": bool(settings.redis_url)}, "pending_approvals": sum(case.status in {"pending", "pending_human_review", "needs_more_evidence", "reopened"} for case in cases), "recent_successful_run": {"id": recent.id, "updated_at": recent.updated_at, "status": recent.status} if recent else None, "known_warnings": warnings}
+
+
+@app.post("/api/demo/reset")
+def reset_demo_fixtures(request: DemoResetRequest, principal: Principal = Depends(principal_dependency)) -> dict[str, str]:
+    require_permission(principal, WORKSPACE_MANAGE)
+    if not request.confirm: raise HTTPException(status_code=422, detail="Explicit demo reset confirmation is required.")
+    if not settings.demo_mode_enabled: raise HTTPException(status_code=403, detail="Demo reset is disabled in this environment.")
+    workflow_service.reset_demo(principal.organization_id)
+    cloud_hunt_service.reset_demo(principal.organization_id)
+    auth_store.record_activity(principal.organization_id, "demo_fixtures_reset", principal.user.id if principal.user else None, {"summary": "Demo fixtures and demo runs were reset; integration configuration was preserved."}, actor_type="User" if principal.user else "System", category="Workspace", target_type="workspace", target_id=principal.organization_id, target_display_name=principal.organization.name)
+    return {"status": "ok", "message": "Demo fixtures reset. Organization settings and integration configuration were preserved."}
+
+
 @app.get("/api/overview")
 def overview_dashboard(
     date_range: str = Query("30d", pattern="^(all|today|7d|30d|custom)$"),
@@ -1424,6 +1477,8 @@ async def github_webhook(
     if not x_github_delivery:
         raise HTTPException(status_code=422, detail="X-GitHub-Delivery header is required.")
     raw_body = await request.body()
+    if len(raw_body) > settings.max_request_body_bytes:
+        raise HTTPException(status_code=413, detail="Webhook payload exceeds the configured request size limit.")
     if settings.github_integration_enabled and not verify_signature(raw_body, x_hub_signature_256, settings.github_webhook_secret):
         raise HTTPException(status_code=401, detail="Invalid GitHub webhook signature.")
     if x_github_event != "pull_request":

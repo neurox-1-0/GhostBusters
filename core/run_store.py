@@ -86,5 +86,13 @@ class InMemoryRunStore:
         with self._lock:
             self._runs.clear()
 
+    def delete_fixture_runs(self, organization_id: UUID) -> None:
+        """Remove only fixture-backed runs in one organization for demo reset."""
+        with self._lock:
+            self._runs = {
+                run_id: run for run_id, run in self._runs.items()
+                if run.organization_id != organization_id or run.data_source_mode != "Fixture-backed"
+            }
+
     def _find_by_key_unlocked(self, key: str) -> WorkflowRun | None:
         return next((run for run in self._runs.values() if run.idempotency_key == key), None)

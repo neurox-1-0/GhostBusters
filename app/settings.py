@@ -30,6 +30,8 @@ class Settings:
     invitation_email_enabled: bool = os.getenv("INVITATION_EMAIL_ENABLED", "false").lower() in {"1", "true", "yes"}
     invitation_from_email: str | None = os.getenv("INVITATION_FROM_EMAIL") or None
     app_base_url: str = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+    cors_allowed_origins: tuple[str, ...] = tuple(item.strip() for item in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if item.strip())
+    max_request_body_bytes: int = int(os.getenv("MAX_REQUEST_BODY_BYTES", "1048576"))
     auto_create_schema: bool = os.getenv("AUTO_CREATE_SCHEMA", "true").lower() in {"1", "true", "yes"}
     conftest_enabled: bool = os.getenv("CONFTEST_ENABLED", "true").lower() in {"1", "true", "yes"}
     conftest_executable: str = os.getenv("CONFTEST_EXECUTABLE", "conftest")

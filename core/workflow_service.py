@@ -304,6 +304,12 @@ class WorkflowService:
         self.store.delete_all()
         return {"status": "ok"}
 
+    def reset_demo(self, organization_id: UUID) -> dict[str, str]:
+        delete_fixture_runs = getattr(self.store, "delete_fixture_runs", None)
+        if delete_fixture_runs is not None:
+            delete_fixture_runs(organization_id)
+        return {"status": "ok"}
+
     def review_run(
         self,
         run_id: UUID,

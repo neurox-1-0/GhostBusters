@@ -950,6 +950,10 @@ class OrganizationUpdateRequest(AppModel):
     expected_version: int | None = Field(default=None, ge=1)
 
 
+class DemoResetRequest(AppModel):
+    confirm: bool = False
+
+
 class CloudHuntScheduleRequest(AppModel):
     name: str
     enabled: bool = True

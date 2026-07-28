@@ -18,6 +18,7 @@ class CloudHuntPersistence(Protocol):
     def list_hunts(self, organization_id: UUID | None = None) -> list[CloudHuntRun]: ...
     def list_cases(self, organization_id: UUID | None = None) -> list[ReviewCase]: ...
     def clear(self) -> None: ...
+    def clear_organization_fixture_data(self, organization_id: UUID) -> None: ...
 
 
 class PostgresCloudHuntPersistence:
@@ -64,3 +65,8 @@ class PostgresCloudHuntPersistence:
     def clear(self) -> None:
         with self._connect() as connection:
             connection.execute("TRUNCATE cloud_review_cases, cloud_hunts")
+
+    def clear_organization_fixture_data(self, organization_id: UUID) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM cloud_review_cases WHERE organization_id = %s AND payload->>'data_source_mode' = 'Fixture-backed'", (organization_id,))
+            connection.execute("DELETE FROM cloud_hunts WHERE organization_id = %s AND payload->>'data_source_mode' = 'Fixture-backed'", (organization_id,))

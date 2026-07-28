@@ -3,6 +3,7 @@ const state = {
   outcome: null,
   overview: null,
   workspace: null,
+  demoReadiness: null,
   scenarios: [],
   demoScenarios: [],
   visibleEvents: [],
@@ -1424,6 +1425,8 @@ async function loadCloudSchedules() {
   try { state.cloudSchedules = await api("/api/cloud/schedules"); renderCloudSchedules(); } catch (error) { setMessage("schedule-message", friendlyError(error, "Cloud Hunt schedules unavailable.")); }
 }
 async function loadWorkspaceSettings() { try { state.workspace = await api("/api/workspace"); renderWorkspaceSettings(); } catch (error) { setMessage("workspace-message", friendlyError(error, "Workspace settings unavailable.")); } }
+async function loadDemoReadiness() { try { state.demoReadiness = await api("/api/demo/readiness"); renderDemoReadiness(); } catch (error) { state.demoReadiness = { known_warnings: [friendlyError(error, "Demo readiness unavailable.")] }; renderDemoReadiness(); } }
+function renderDemoReadiness() { const data = state.demoReadiness; if (!data) return; const summary = $("demo-readiness-summary"); clear(summary); [["Authentication", data.authentication?.authenticated ? "Authenticated" : "Demo session"], ["Pending approvals", data.pending_approvals ?? 0], ["Scheduler", data.scheduler?.enabled ? "Enabled" : "Disabled"], ["Recent successful run", data.recent_successful_run ? labelFor(data.recent_successful_run.status) : "None"]].forEach(([label, value]) => summary.appendChild(append(el("article", "panel summary-card"), el("span", null, label), el("strong", "metric-value", String(value))))); const health = $("demo-readiness-health"); clear(health); [data.health && `Database: ${labelFor(data.health.database)}`, data.health && `Redis: ${labelFor(data.health.redis)}`, data.github_webhook && `GitHub webhook: ${data.github_webhook.signature_ready ? "Signature ready" : "Signature not configured"}`, data.data_modes && `Fixtures: ${data.data_modes.fixtures_available ? "Available and labeled" : "Unavailable"}`, data.scheduler && `Scheduler: ${data.scheduler.schedule_count} schedules · ${data.scheduler.redis_coordination ? "distributed coordination" : "single-process coordination"}`].filter(Boolean).forEach((text) => health.appendChild(el("p", "row-detail", text))); const integrations = $("demo-readiness-integrations"); clear(integrations); Object.entries(data.integrations || {}).forEach(([name, item]) => integrations.appendChild(el("p", "row-detail", `${labelFor(name)}: ${labelFor(item.status)}${item.warnings?.length ? ` · ${item.warnings.join("; ")}` : ""}`))); const warnings = $("demo-readiness-warnings"); clear(warnings); (data.known_warnings || []).forEach((warning) => warnings.appendChild(el("p", "row-detail", warning))); if (!(data.known_warnings || []).length) warnings.appendChild(el("p", "muted", "No known warnings recorded.")); }
 function renderWorkspaceSettings() {
   const item = state.workspace; if (!item) return; const organization = item.organization || {};
   $("workspace-name-input").value = organization.name || ""; $("workspace-timezone-input").value = organization.timezone || "UTC"; $("workspace-id-input").value = organization.id || "Not recorded"; $("workspace-created-input").value = exactTimestamp(organization.created_at); $("workspace-settings-status").textContent = "Functional";
@@ -1765,12 +1768,14 @@ async function refreshRun() {
 }
 
 async function resetDemo() {
+  if (!window.confirm("Reset only demo fixtures and demo runs for this organization? Real integration settings and organization data are preserved.")) return;
   try {
-    await api("/api/reset", { method: "POST", body: "{}" });
+    await api("/api/demo/reset", { method: "POST", body: JSON.stringify({ confirm: true }) });
     window.clearInterval(state.animationTimer);
     state.run = null;
     state.selectedReviewContext = null;
     state.visibleEvents = [];
+    state.demoReadiness = null;
     localStorage.removeItem("ghostbusters:lastRunId");
     closeReviewForm();
     closeDemoModal();
@@ -2884,8 +2889,9 @@ function switchMode(mode) {
     technical: ["Audit", "Technical Audit"],
     activity: ["Workspace", "Activity Log"],
     settings: ["Settings", "Members"],
+    "demo-readiness": ["Competition Demo", "Demo Readiness"],
   };
-  ["overview", "simple", "goals", "cloud-hunt", "review-queue", "technical", "activity", "settings"].forEach((item) => {
+  ["overview", "simple", "goals", "cloud-hunt", "review-queue", "technical", "activity", "settings", "demo-readiness"].forEach((item) => {
     const view = item === "simple" ? "simple-view" : `${item}-view`;
     const button = item === "simple" ? "simple-view-button" : `${item}-view-button`;
     const viewNode = $(view); const buttonNode = $(button);
@@ -2900,6 +2906,7 @@ function switchMode(mode) {
   if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); loadCloudSchedules(); }
   if (mode === "activity") loadActivity();
   if (mode === "overview") loadOverview();
+  if (mode === "demo-readiness") loadDemoReadiness();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -3477,6 +3484,9 @@ function bindEvents() {
   on("accept-invitation-form", "submit", submitAcceptInvitation);
   on("overview-view-button", "click", () => switchMode("overview"));
   on("settings-view-button", "click", () => switchMode("settings"));
+  on("demo-readiness-view-button", "click", () => switchMode("demo-readiness"));
+  on("demo-readiness-refresh-button", "click", loadDemoReadiness);
+  on("demo-reset-button", "click", resetDemo);
   on("overview-launch-demo-button", "click", openDemoModal);
   on("overview-refresh-button", "click", refreshRun);
   on("overview-open-prs-button", "click", () => switchMode("simple"));

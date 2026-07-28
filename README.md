@@ -478,3 +478,8 @@ When `DATABASE_URL` is set, workflow snapshots, evidence records, approvals, wai
 
 See `PROJECT_STATUS.md` for the current architecture, complete workflow, implemented features, and remaining limitations.
 
+# Competition and deployment references
+
+- [Demo Guide](DEMO_GUIDE.md)
+- [Capability Summary](CAPABILITIES.md)
+- [Production Checklist](PRODUCTION_CHECKLIST.md)
