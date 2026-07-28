@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -105,6 +106,8 @@ from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
 from core.rate_limit import rate_limiter
 
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
 validate_startup_settings()
@@ -1179,16 +1182,27 @@ def github_callback(state: str, installation_id: int | None = None, setup_action
     except ValueError as exc: return RedirectResponse(url="/?github=error&reason=invalid_state", status_code=303)
     organization_id = UUID(str(payload["organization_id"]))
     if not installation_id: return RedirectResponse(url="/?github=error&reason=missing_installation", status_code=303)
+    stage = "create_client"
     try:
         app_client = GitHubAppClient(installation_id)
-        installation = app_client.installation(); client = app_client.api_client()
+        stage = "fetch_installation"
+        installation = app_client.installation()
+        stage = "create_api_client"
+        client = app_client.api_client()
+        stage = "list_repositories"
         repositories = client.list_installation_repositories()
         safe = [{"full_name": item.get("full_name"), "private": bool(item.get("private")), "archived": bool(item.get("archived")), "default_branch": (item.get("default_branch") or "main"), "installation_access": "available"} for item in repositories if item.get("full_name")]
+        stage = "persist_installation"
         github_integration_store.update_installation(organization_id, installation_id=installation_id, account_login=(installation.get("account") or {}).get("login"), account_type=(installation.get("account") or {}).get("type"), repository_selection=str(installation.get("repository_selection") or "selected"), repositories=safe)
+        stage = "record_activity"
         auth_store.record_activity(organization_id, "github_connection_completed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"installation_id": installation_id, "repository_count": len(safe), "correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations")
         return RedirectResponse(url="/?github=connected", status_code=303)
     except Exception as exc:
-        auth_store.record_activity(organization_id, "github_connection_failed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"reason": "GitHub App connection failed safely.", "correlation_id": state.split(".", 1)[0]}, actor_type="Integration", category="Integrations", result="failure")
+        logger.exception("GitHub App callback failed", extra={"stage": stage, "organization_id": str(organization_id), "installation_id": installation_id, "setup_action": setup_action, "exception_class": type(exc).__name__})
+        try:
+            auth_store.record_activity(organization_id, "github_connection_failed", UUID(str(payload["user_id"])) if payload.get("user_id") else None, {"reason": "GitHub App connection failed safely.", "correlation_id": "github_callback"}, actor_type="Integration", category="Integrations", result="failure")
+        except Exception as activity_exc:
+            logger.warning("GitHub callback failure activity recording failed", extra={"stage": "record_activity", "organization_id": str(organization_id), "installation_id": installation_id, "exception_class": type(activity_exc).__name__})
         return RedirectResponse(url="/?github=error&reason=connection_failed", status_code=303)
 
 
