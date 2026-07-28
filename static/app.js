@@ -49,6 +49,7 @@ const state = {
   githubValidation: null,
   jiraConfig: null,
   jiraValidation: null,
+  cloudSchedules: [],
   reviews: [],
   selectedReviewContext: null,
   assistantContext: "product_help",
@@ -1389,6 +1390,24 @@ async function validateJiraConnection() {
   return withButtonState("jira-validate-button", "Validating...", async () => {
     const result = await api("/api/integrations/jira/validate", { method: "POST", body: "{}" }); state.jiraValidation = result; state.jiraConfig = await api("/api/integrations/jira/config"); renderJiraConfig(); setMessage("jira-message", result.connected ? "Jira identity validated for read-only context." : "Jira validation failed safely.", result.connected);
   }, "Validated").catch((error) => setMessage("jira-message", friendlyError(error, "Jira validation failed.")));
+}
+
+async function loadCloudSchedules() {
+  try { state.cloudSchedules = await api("/api/cloud/schedules"); renderCloudSchedules(); } catch (error) { setMessage("schedule-message", friendlyError(error, "Cloud Hunt schedules unavailable.")); }
+}
+function renderCloudSchedules() {
+  const node = $("schedule-list"); if (!node) return; clear(node);
+  if (!state.cloudSchedules.length) { node.appendChild(el("p", "muted", "No Cloud Hunt schedules yet.")); return; }
+  state.cloudSchedules.forEach((schedule) => {
+    const row = el("div", "list-row");
+    append(row, el("strong", null, schedule.name), el("span", "muted", `${labelFor(schedule.provider_scope)} · ${labelFor(schedule.recurrence)} · ${schedule.timezone}`), timestampNode(schedule.next_run, "Next run"));
+    const toggle = el("button", "secondary compact", schedule.enabled ? "Disable" : "Enable"); toggle.addEventListener("click", async () => { try { await api(`/api/cloud/schedules/${schedule.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !schedule.enabled, expected_version: schedule.version }) }); await loadCloudSchedules(); } catch (error) { setMessage("schedule-message", friendlyError(error, "Schedule update failed.")); } });
+    const run = el("button", "secondary compact", "Run Now"); run.addEventListener("click", async () => { try { await api(`/api/cloud/schedules/${schedule.id}/run-now`, { method: "POST", body: "{}" }); await loadCloudSchedules(); setMessage("schedule-message", "Cloud Hunt started from schedule.", true); } catch (error) { setMessage("schedule-message", friendlyError(error, "Scheduled hunt could not start.")); } });
+    append(row, toggle, run); node.appendChild(row);
+  });
+}
+async function createCloudSchedule() {
+  try { await api("/api/cloud/schedules", { method: "POST", body: JSON.stringify({ name: $("schedule-name-input").value.trim(), provider_scope: $("schedule-provider-select").value, inventory_source: $("schedule-source-select").value, recurrence: $("schedule-recurrence-select").value, timezone: $("schedule-timezone-input").value.trim() || "UTC", hour: Number($("schedule-hour-input").value), minute: Number($("schedule-minute-input").value) }) }); await loadCloudSchedules(); setMessage("schedule-message", "Cloud Hunt schedule created.", true); } catch (error) { setMessage("schedule-message", friendlyError(error, "Schedule could not be created.")); }
 }
 
 async function collectGitHubContext() {
@@ -2783,7 +2802,7 @@ function switchMode(mode) {
   state.activeMode = mode;
   if (mode === "settings") loadMembers();
   if (mode === "settings") loadAWSConfig();
-  if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); }
+  if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); loadCloudSchedules(); }
   if (mode === "activity") loadActivity();
   $("page-kicker").textContent = titles[mode]?.[0] || "Workspace";
   $("page-title").textContent = titles[mode]?.[1] || "Overview";
@@ -3426,6 +3445,7 @@ function bindEvents() {
   on("github-validate-button", "click", validateGitHubConnection);
   on("jira-save-button", "click", saveJiraConfig);
   on("jira-validate-button", "click", validateJiraConnection);
+  on("schedule-create-button", "click", createCloudSchedule);
   on("collect-github-context-button", "click", collectGitHubContext);
   on("invite-member-button", "click", openInviteModal);
   on("invite-close-button", "click", closeInviteModal);

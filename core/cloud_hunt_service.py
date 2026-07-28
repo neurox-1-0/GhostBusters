@@ -69,6 +69,8 @@ class CloudHuntService:
         started_by_user_id: UUID | None = None,
         started_by_display_name: str | None = None,
         registry_override: CloudProviderRegistry | None = None,
+        schedule_id: UUID | None = None,
+        schedule_name: str | None = None,
     ) -> CloudHuntRun:
         if not self.configuration.cloud_hunt_enabled:
             raise CloudHuntConflictError("Cloud Hunt Mode is disabled by CLOUD_HUNT_ENABLED.")
@@ -82,6 +84,7 @@ class CloudHuntService:
             started_by_user_id=started_by_user_id,
             started_by_display_name=started_by_display_name,
             data_source_mode=self._data_source_mode(request.inventory_source),
+            schedule_id=schedule_id, schedule_name=schedule_name,
         )
         source_label = "real AWS inventory" if request.inventory_source == "real_aws" else "controlled inventory fixtures"
         self._audit(hunt, "cloud_hunt_started", f"Cloud Hunt started from {source_label}.", {"provider_scope": request.provider_scope, "source_mode": hunt.data_source_mode})

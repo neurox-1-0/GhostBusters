@@ -20,6 +20,7 @@ from app.models import (
     AWSIntegrationConfigRequest,
     GitHubIntegrationConfigRequest,
     JiraIntegrationConfigRequest, JiraContextRequest,
+    CloudHuntScheduleRequest, CloudHuntScheduleToggleRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -38,6 +39,8 @@ from app.auth import (
     AUDIT_READ,
     CLOUD_HUNTS_READ,
     CLOUD_HUNTS_RUN,
+    CLOUD_HUNTS_SCHEDULE_READ,
+    CLOUD_HUNTS_SCHEDULE_MANAGE,
     MEMBERS_INVITE,
     MEMBERS_READ,
     MEMBERS_CANCEL_INVITATION,
@@ -90,6 +93,7 @@ from integrations.cloud_registry import CloudProviderRegistry
 from integrations.github_context import GitHubContextAdapter
 from integrations.jira_client import JiraAPIError, JiraClient
 from integrations.jira_context import JiraContextAdapter, detect_jira_github_conflict
+from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
@@ -797,6 +801,7 @@ def reset_runs() -> dict[str, str]:
     aws_integration_store.reset()
     github_integration_store.reset()
     jira_integration_store.reset()
+    schedule_store.reset()
     return result
 
 
@@ -815,6 +820,74 @@ def ask_ghostbusters(request: AskGhostBustersRequest, principal: Principal = Dep
 def cloud_providers(principal: Principal = Depends(principal_dependency)) -> list[dict[str, object]]:
     require_permission(principal, CLOUD_HUNTS_READ)
     return cloud_hunt_service.providers()
+
+
+@app.get("/api/cloud/schedules")
+def list_cloud_hunt_schedules(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_READ)
+    return schedule_store.list(principal.organization_id)
+
+
+@app.post("/api/cloud/schedules")
+def create_cloud_hunt_schedule(request: CloudHuntScheduleRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    try:
+        schedule = schedule_store.create(request, principal.organization_id, principal.user.id if principal.user else None, principal.user.display_name if principal.user else "System")
+        auth_store.record_activity(principal.organization_id, "cloud_hunt_schedule_created", principal.user.id if principal.user else None, {"schedule_id": str(schedule.id), "correlation_id": str(schedule.id)}, actor_type="User" if principal.user else "System", category="Cloud Hunt", target_type="schedule", target_id=schedule.id, target_display_name=schedule.name)
+        return schedule
+    except ValueError as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.patch("/api/cloud/schedules/{schedule_id}")
+def update_cloud_hunt_schedule(schedule_id: UUID, request: CloudHuntScheduleRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    try: return schedule_store.update(schedule_id, request, principal.organization_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Schedule not found.") from exc
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/cloud/schedules/{schedule_id}/enabled")
+def toggle_cloud_hunt_schedule(schedule_id: UUID, request: CloudHuntScheduleToggleRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    try: return schedule_store.toggle(schedule_id, request.enabled, principal.organization_id, request.expected_version)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Schedule not found.") from exc
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/cloud/schedules/{schedule_id}")
+def delete_cloud_hunt_schedule(schedule_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    try: schedule_store.delete(schedule_id, principal.organization_id); return {"status": "deleted"}
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Schedule not found.") from exc
+    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/cloud/schedules/{schedule_id}/run-now")
+def run_cloud_hunt_schedule_now(schedule_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    require_permission(principal, CLOUD_HUNTS_RUN)
+    try:
+        schedule = schedule_store.get(schedule_id, principal.organization_id)
+        hunt = CloudHuntScheduler(cloud_hunt_service, schedule_store).trigger(schedule)
+        if hunt is None: raise HTTPException(status_code=409, detail="Schedule is disabled, already running, or already triggered.")
+        auth_store.record_activity(principal.organization_id, "cloud_hunt_schedule_run_triggered", principal.user.id if principal.user else None, {"schedule_id": str(schedule_id), "hunt_id": str(hunt.id), "correlation_id": str(schedule_id)}, actor_type="User", category="Cloud Hunt", target_type="schedule", target_id=schedule_id, target_display_name=schedule.name, related_run_id=hunt.id)
+        return hunt
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Schedule not found.") from exc
+
+
+@app.get("/api/cloud/schedules/{schedule_id}/history")
+def cloud_hunt_schedule_history(schedule_id: UUID, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_READ)
+    try: schedule_store.get(schedule_id, principal.organization_id)
+    except KeyError as exc: raise HTTPException(status_code=404, detail="Schedule not found.") from exc
+    return [hunt for hunt in cloud_hunt_service.list_hunts(principal.organization_id) if hunt.schedule_id == schedule_id]
+
+
+@app.post("/api/cloud/schedules/run-due")
+def run_due_cloud_hunt_schedules(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, CLOUD_HUNTS_SCHEDULE_MANAGE)
+    hunts = CloudHuntScheduler(cloud_hunt_service, schedule_store).run_due(principal.organization_id)
+    return {"items": hunts, "count": len(hunts)}
 
 
 @app.get("/api/integrations/aws/config")

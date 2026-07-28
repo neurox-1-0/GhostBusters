@@ -207,6 +207,29 @@ CREATE INDEX IF NOT EXISTS cloud_hunts_status_idx ON cloud_hunts((payload->>'sta
 CREATE INDEX IF NOT EXISTS cloud_hunts_provider_idx ON cloud_hunts((payload->>'provider_scope'));
 CREATE INDEX IF NOT EXISTS cloud_hunts_started_by_idx ON cloud_hunts((payload->>'started_by_user_id'), created_at);
 
+-- Scheduled Cloud Hunt metadata is additive. Production deployments need versioned migrations.
+CREATE TABLE IF NOT EXISTS cloud_hunt_schedules (
+    id UUID PRIMARY KEY,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    provider_scope TEXT NOT NULL,
+    inventory_source TEXT NOT NULL,
+    recurrence TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    next_run TIMESTAMPTZ NOT NULL,
+    last_run TIMESTAMPTZ,
+    last_success TIMESTAMPTZ,
+    last_failure TEXT,
+    created_by_user_id UUID,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cloud_hunt_schedules_org_next_idx ON cloud_hunt_schedules(organization_id, enabled, next_run);
+CREATE INDEX IF NOT EXISTS cloud_hunt_schedules_org_updated_idx ON cloud_hunt_schedules(organization_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS cloud_review_cases (
     id UUID PRIMARY KEY,
     organization_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000001' REFERENCES organizations(id),

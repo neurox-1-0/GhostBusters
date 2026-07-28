@@ -815,6 +815,8 @@ class CloudHuntRun(AppModel):
     audit_events: list[AuditEvent] = Field(default_factory=list)
     summary: CloudHuntSummary = Field(default_factory=CloudHuntSummary)
     candidates: list[GhostCandidate] = Field(default_factory=list)
+    schedule_id: UUID | None = None
+    schedule_name: str | None = None
 
 
 class ReviewCase(AppModel):
@@ -858,6 +860,55 @@ class CloudHuntRequest(AppModel):
     inventory_source: str = "fixtures"
     goal: str = "Find forgotten cloud resources without disrupting active workloads"
     trigger_source: CloudHuntTrigger = "manual_cloud_hunt"
+
+
+class CloudHuntSchedule(AppModel):
+    id: UUID
+    organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID
+    name: str
+    enabled: bool = True
+    provider_scope: CloudProviderScope = "multi_cloud"
+    inventory_source: str = "fixtures"
+    regions: list[str] = Field(default_factory=list)
+    repositories: list[str] = Field(default_factory=list)
+    recurrence: Literal["daily", "weekly", "monthly"] = "daily"
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    day_of_month: int | None = Field(default=None, ge=1, le=28)
+    hour: int = Field(default=0, ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+    timezone: str = "UTC"
+    next_run: datetime
+    last_run: datetime | None = None
+    last_success: datetime | None = None
+    last_failure: str | None = None
+    created_by_user_id: UUID | None = None
+    created_by_display_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    version: int = 1
+    active_run_id: UUID | None = None
+    last_trigger_key: str | None = None
+
+
+class CloudHuntScheduleRequest(AppModel):
+    name: str
+    enabled: bool = True
+    provider_scope: CloudProviderScope = "multi_cloud"
+    inventory_source: str = "fixtures"
+    regions: list[str] = Field(default_factory=list)
+    repositories: list[str] = Field(default_factory=list)
+    recurrence: Literal["daily", "weekly", "monthly"] = "daily"
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    day_of_month: int | None = Field(default=None, ge=1, le=28)
+    hour: int = Field(default=0, ge=0, le=23)
+    minute: int = Field(default=0, ge=0, le=59)
+    timezone: str = "UTC"
+    expected_version: int | None = Field(default=None, ge=1)
+
+
+class CloudHuntScheduleToggleRequest(AppModel):
+    enabled: bool
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class AWSIntegrationConfig(AppModel):
