@@ -149,6 +149,7 @@ class Organization(AppModel):
     timezone: str = "UTC"
     created_at: datetime
     updated_at: datetime
+    version: int = 1
 
 
 class User(AppModel):
@@ -758,8 +759,8 @@ class OutcomeVerification(AppModel):
     conclusion: str | None = None
     created_at: datetime
     updated_at: datetime
-    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
     version: int = 1
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
     deployment_confirmed_at: datetime | None = None
     last_idempotency_key: str | None = None
     last_request_fingerprint: str | None = None
@@ -941,6 +942,12 @@ class CloudHuntSchedule(AppModel):
     version: int = 1
     active_run_id: UUID | None = None
     last_trigger_key: str | None = None
+
+
+class OrganizationUpdateRequest(AppModel):
+    name: str | None = None
+    timezone: str | None = None
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class CloudHuntScheduleRequest(AppModel):

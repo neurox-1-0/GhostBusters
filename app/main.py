@@ -22,6 +22,7 @@ from app.models import (
     JiraIntegrationConfigRequest, JiraContextRequest,
     CloudHuntScheduleRequest, CloudHuntScheduleToggleRequest,
     OutcomeStartRequest, OutcomeObservationRequest, OutcomeCompleteRequest, OutcomeReopenRequest,
+    OrganizationUpdateRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
     ReviewCase, StartRunRequest, WorkflowRun,
@@ -60,6 +61,7 @@ from app.auth import (
     BUSINESS_CONTEXT_READ,
     OUTCOMES_READ, OUTCOMES_START, OUTCOMES_REFRESH, OUTCOMES_COMPLETE, OUTCOMES_REOPEN,
     OVERVIEW_READ,
+    WORKSPACE_MANAGE,
     REPOSITORY_CONTEXT_READ,
     WORKSPACE_READ,
     Principal,
@@ -295,6 +297,22 @@ def list_members(principal: Principal = Depends(principal_dependency)):
         {"membership": membership, "user": users.get(membership.user_id)}
         for membership in memberships
     ]
+
+
+@app.patch("/api/workspace")
+def update_workspace(request: OrganizationUpdateRequest, principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, WORKSPACE_MANAGE)
+    expected = request.expected_version
+    if expected is not None and expected != principal.organization.version:
+        raise HTTPException(status_code=409, detail="Workspace settings changed elsewhere. Refresh and try again.")
+    return auth_store.update_organization(principal, request.name, request.timezone, expected)
+
+
+@app.get("/api/workspace")
+def get_workspace(principal: Principal = Depends(principal_dependency)):
+    require_permission(principal, WORKSPACE_READ)
+    organization = principal.organization
+    return {"organization": organization, "version": organization.version, "display_preferences": {"currency": "USD", "currency_editable": False, "source": "default"}}
 
 
 def invitation_link(token: str) -> str:

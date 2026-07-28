@@ -2,6 +2,7 @@ const state = {
   run: null,
   outcome: null,
   overview: null,
+  workspace: null,
   scenarios: [],
   demoScenarios: [],
   visibleEvents: [],
@@ -1374,6 +1375,8 @@ function renderGitHubConfig() {
   $("github-repositories-input").value = (config.allowed_repositories || []).join(",");
   $("github-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
   $("github-permission-warnings").textContent = config.last_failure_summary || "None recorded";
+  renderRepositorySettings();
+  const editable = hasPermission("integrations.github.manage"); $("github-save-button").hidden = !editable; $("github-enabled-select").disabled = !editable; $("github-installation-input").readOnly = !editable; $("github-repositories-input").readOnly = !editable;
 }
 
 async function saveGitHubConfig() {
@@ -1406,6 +1409,7 @@ function renderJiraConfig() {
   if ($("jira-project-list")) $("jira-project-list").textContent = (validation.accessible_projects || []).join(", ") || "Not checked";
   if ($("jira-last-checked")) $("jira-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
   if ($("jira-permission-warnings")) $("jira-permission-warnings").textContent = (validation.permission_warnings || []).join("; ") || "None recorded";
+  const editable = hasPermission("integrations.jira.manage"); if ($("jira-save-button")) $("jira-save-button").hidden = !editable; if ($("jira-enabled-select")) $("jira-enabled-select").disabled = !editable; if ($("jira-base-url-input")) $("jira-base-url-input").readOnly = !editable; if ($("jira-projects-input")) $("jira-projects-input").readOnly = !editable;
 }
 async function saveJiraConfig() {
   try { state.jiraConfig = await api("/api/integrations/jira/config", { method: "PATCH", body: JSON.stringify({ enabled: $("jira-enabled-select").value === "true", base_url: $("jira-base-url-input").value.trim() || null, allowed_projects: $("jira-projects-input").value.split(",").map((item) => item.trim()).filter(Boolean) }) }); renderJiraConfig(); setMessage("jira-message", "Jira settings saved. Token material remains server-side.", true); } catch (error) { setMessage("jira-message", friendlyError(error, "Jira settings could not be saved.")); }
@@ -1419,15 +1423,30 @@ async function validateJiraConnection() {
 async function loadCloudSchedules() {
   try { state.cloudSchedules = await api("/api/cloud/schedules"); renderCloudSchedules(); } catch (error) { setMessage("schedule-message", friendlyError(error, "Cloud Hunt schedules unavailable.")); }
 }
+async function loadWorkspaceSettings() { try { state.workspace = await api("/api/workspace"); renderWorkspaceSettings(); } catch (error) { setMessage("workspace-message", friendlyError(error, "Workspace settings unavailable.")); } }
+function renderWorkspaceSettings() {
+  const item = state.workspace; if (!item) return; const organization = item.organization || {};
+  $("workspace-name-input").value = organization.name || ""; $("workspace-timezone-input").value = organization.timezone || "UTC"; $("workspace-id-input").value = organization.id || "Not recorded"; $("workspace-created-input").value = exactTimestamp(organization.created_at); $("workspace-settings-status").textContent = "Functional";
+  const editable = hasPermission("workspace.manage"); $("workspace-save-button").hidden = !editable; $("workspace-name-input").readOnly = !editable; $("workspace-timezone-input").readOnly = !editable;
+}
+async function saveWorkspaceSettings() { try { state.workspace = await api("/api/workspace", { method: "PATCH", body: JSON.stringify({ name: $("workspace-name-input").value.trim(), timezone: $("workspace-timezone-input").value.trim(), expected_version: state.workspace.version }) }); renderWorkspaceSettings(); setMessage("workspace-message", "Workspace settings saved.", true); } catch (error) { setMessage("workspace-message", friendlyError(error, "Workspace settings could not be saved.")); await loadWorkspaceSettings(); } }
+function renderRolesAccess() {
+  const node = $("roles-access-list"); if (!node) return; clear(node); const roles = { OWNER: ["Workspace management", "Members and roles", "Integrations", "Approvals", "Activity and audit"], ADMIN: ["Members and roles", "Integrations", "Approvals", "Activity and audit"], REVIEWER: ["PR Reviews", "Cloud Hunt read", "Approvals when granted", "Activity and audit"], VIEWER: ["Read-only workspace", "PR Reviews read", "Cloud Hunt read", "Overview read"] };
+  Object.entries(roles).forEach(([role, permissions]) => node.appendChild(el("p", "row-detail", `${roleValueLabel(role)}: ${permissions.join(", ")}`)));
+}
+function renderPoliciesSettings() { const node = $("policies-settings-list"); if (!node) return; clear(node); ["Production protection: Functional", "Destructive-action block: Functional", "Mandatory human approval: Functional", "Evidence freshness threshold: Functional", "Confidence threshold: Functional", "Policy editing: Disabled until a safe policy editor is available"].forEach((item) => node.appendChild(el("p", "row-detail", item))); }
+function renderSecuritySettings() { const node = $("security-settings-list"); if (!node) return; clear(node); ["Session security: Functional", "Invitation expiry: Configured server-side", "Webhook signatures: Validated when configured", "Secrets: Kept in server environment; never displayed", "Audit and Activity Log: View in workspace navigation"].forEach((item) => node.appendChild(el("p", "row-detail", item))); }
+function renderRepositorySettings() { const node = $("repositories-settings-list"); if (!node) return; clear(node); const config = state.githubConfig || {}; node.appendChild(el("p", "row-detail", `Allowlist: ${(config.allowed_repositories || []).join(", ") || "All configured repositories"}`)); node.appendChild(el("p", "row-detail", `Validation: ${state.githubValidation?.connected ? "Connected" : config.last_validated ? "Unavailable" : "Not checked"}`)); node.appendChild(el("p", "row-detail", `Last sync: ${exactTimestamp(config.last_successful_collection)}`)); }
 function renderCloudSchedules() {
   const node = $("schedule-list"); if (!node) return; clear(node);
   if (!state.cloudSchedules.length) { node.appendChild(el("p", "muted", "No Cloud Hunt schedules yet.")); return; }
+  const manageable = hasPermission("cloud_hunts.schedule.manage"); $("schedule-create-button").hidden = !manageable;
   state.cloudSchedules.forEach((schedule) => {
     const row = el("div", "list-row");
     append(row, el("strong", null, schedule.name), el("span", "muted", `${labelFor(schedule.provider_scope)} · ${labelFor(schedule.recurrence)} · ${schedule.timezone}`), timestampNode(schedule.next_run, "Next run"));
     const toggle = el("button", "secondary compact", schedule.enabled ? "Disable" : "Enable"); toggle.addEventListener("click", async () => { try { await api(`/api/cloud/schedules/${schedule.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !schedule.enabled, expected_version: schedule.version }) }); await loadCloudSchedules(); } catch (error) { setMessage("schedule-message", friendlyError(error, "Schedule update failed.")); } });
     const run = el("button", "secondary compact", "Run Now"); run.addEventListener("click", async () => { try { await api(`/api/cloud/schedules/${schedule.id}/run-now`, { method: "POST", body: "{}" }); await loadCloudSchedules(); setMessage("schedule-message", "Cloud Hunt started from schedule.", true); } catch (error) { setMessage("schedule-message", friendlyError(error, "Scheduled hunt could not start.")); } });
-    append(row, toggle, run); node.appendChild(row);
+    toggle.hidden = !manageable; run.hidden = !manageable; append(row, toggle, run); node.appendChild(row);
   });
 }
 async function createCloudSchedule() {
@@ -1450,6 +1469,7 @@ function renderAWSConfig() {
   $("aws-lookback-input").value = config.cloudwatch_lookback_days || 14;
   $("aws-last-success").textContent = config.last_successful_collection ? exactTimestamp(config.last_successful_collection) : "Not recorded";
   $("aws-permission-warnings").textContent = config.last_failure_summary || "None recorded";
+  const editable = hasPermission("integrations.aws.manage"); $("aws-save-button").hidden = !editable; $("aws-enabled-select").disabled = !editable; $("aws-regions-input").readOnly = !editable; $("aws-lookback-input").readOnly = !editable; $("aws-validate-button").disabled = !hasPermission("integrations.aws.read");
 }
 
 async function saveAWSConfig() {
@@ -2668,6 +2688,7 @@ function renderMembers() {
   const activeNode = $("active-members-table");
   const inviteNode = $("pending-invitations-table");
   if (!summary || !activeNode || !inviteNode) return;
+  if ($("invite-member-button")) $("invite-member-button").hidden = !hasPermission("members.invite");
   clear(summary);
   clear(activeNode);
   clear(inviteNode);
@@ -2688,7 +2709,7 @@ function renderMembers() {
     { label: "Status", render: (item) => statusBadge({ label: labelFor(item.membership?.status), className: item.membership?.status === "active" ? "status-approved" : "status-neutral" }) },
     { label: "Joined", priority: "mobile", render: (item) => item.membership?.joined_at ? exactTimestamp(item.membership.joined_at) : "Not recorded" },
     { label: "Last Active", priority: "mobile", render: (item) => item.user?.last_login_at ? exactTimestamp(item.user.last_login_at) : "Not recorded" },
-    { label: "Action", render: () => el("span", "muted", "Manage") },
+    { label: "Action", render: (item) => memberActions(item) },
   ];
   activeNode.appendChild(responsiveTable(memberColumns, state.members, "No members found."));
   const invitationColumns = [
@@ -2706,6 +2727,7 @@ function renderMembers() {
 
 function invitationActions(item) {
   const wrap = el("div", "queue-actions");
+  if (!hasPermission("members.invite") && !hasPermission("members.cancel_invitation")) return el("span", "muted", "Read-only");
   if (item.development_invitation_link) {
     const copy = el("button", "secondary compact", "Copy Link");
     copy.type = "button";
@@ -2724,6 +2746,14 @@ function invitationActions(item) {
     cancel.addEventListener("click", () => cancelInvitation(item.id));
     wrap.appendChild(cancel);
   }
+  return wrap;
+}
+
+function memberActions(item) {
+  if (!hasPermission("members.manage_roles") && !hasPermission("members.disable")) return el("span", "muted", "Read-only");
+  const wrap = el("div", "queue-actions");
+  if (hasPermission("members.manage_roles")) { const select = el("select", "compact-select"); ["ADMIN", "REVIEWER", "VIEWER"].forEach((role) => { const option = el("option", null, roleValueLabel(role)); option.value = role; option.selected = item.membership?.role === role; select.appendChild(option); }); select.addEventListener("change", async () => { try { await api(`/api/members/${item.membership.id}`, { method: "PATCH", body: JSON.stringify({ role: select.value }) }); await loadMembers(); } catch (error) { showToast("Role update failed", friendlyError(error), "error"); } }); wrap.appendChild(select); }
+  if (hasPermission("members.disable") && item.membership?.user_id !== state.currentUser?.user?.id) { const button = el("button", "secondary compact", item.membership?.status === "active" ? "Disable" : "Enable"); button.addEventListener("click", async () => { try { await api(`/api/members/${item.membership.id}/${item.membership.status === "active" ? "disable" : "reactivate"}`, { method: "POST", body: "{}" }); await loadMembers(); } catch (error) { showToast("Member update failed", friendlyError(error), "error"); } }); wrap.appendChild(button); }
   return wrap;
 }
 
@@ -2865,7 +2895,7 @@ function switchMode(mode) {
     buttonNode.setAttribute("aria-pressed", String(item === mode));
   });
   state.activeMode = mode;
-  if (mode === "settings") loadMembers();
+  if (mode === "settings") { loadMembers(); loadWorkspaceSettings(); renderRolesAccess(); renderPoliciesSettings(); renderSecuritySettings(); renderRepositorySettings(); }
   if (mode === "settings") loadAWSConfig();
   if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); loadCloudSchedules(); }
   if (mode === "activity") loadActivity();
@@ -3512,6 +3542,7 @@ function bindEvents() {
   on("jira-save-button", "click", saveJiraConfig);
   on("jira-validate-button", "click", validateJiraConnection);
   on("schedule-create-button", "click", createCloudSchedule);
+  on("workspace-save-button", "click", saveWorkspaceSettings);
   on("outcome-start-button", "click", startOutcomeVerification);
   on("outcome-deploy-button", "click", confirmOutcomeDeployment);
   on("outcome-refresh-button", "click", refreshOutcomeEvidence);

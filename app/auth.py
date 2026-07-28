@@ -657,6 +657,25 @@ class AuthStore:
         self.record_activity(principal.organization_id, "member_role_changed", principal.user.id if principal.user else None, {"membership_id": str(updated.id), "role": role})
         return updated
 
+    def update_organization(self, principal: Principal, name: str | None, timezone_name: str | None, expected_version: int | None) -> Organization:
+        current = self.organizations[principal.organization_id]
+        if expected_version is not None and expected_version != current.version:
+            raise HTTPException(status_code=409, detail="Workspace settings changed elsewhere. Refresh and try again.")
+        updates = {"updated_at": utc_now()}
+        if name is not None:
+            if not name.strip(): raise HTTPException(status_code=422, detail="Organization name cannot be empty.")
+            updates["name"] = name.strip()
+        if timezone_name is not None:
+            try: __import__("zoneinfo").ZoneInfo(timezone_name)
+            except Exception as exc: raise HTTPException(status_code=422, detail="Unknown organization timezone.") from exc
+            updates["timezone"] = timezone_name
+        updates["version"] = current.version + 1
+        updated = current.model_copy(update=updates)
+        self.organizations[updated.id] = updated
+        self._persist()
+        self.record_activity(principal.organization_id, "workspace_updated", principal.user.id if principal.user else None, {"organization_id": str(updated.id), "timezone": updated.timezone}, actor_type="User", category="Workspace", target_type="workspace", target_id=updated.id, target_display_name=updated.name)
+        return updated
+
     def disable_member(self, principal: Principal, membership_id: UUID) -> OrganizationMembership:
         membership = self.memberships.get(membership_id)
         if membership is None or membership.organization_id != principal.organization_id:
