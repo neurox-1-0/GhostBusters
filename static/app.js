@@ -1712,6 +1712,7 @@ async function startGoal() {
   } finally {
     state.goalValidationInFlight = false;
   }
+  if (validation.status === "needs_revision" && Array.isArray(validation.clarification_questions) && validation.clarification_questions.length) return showGoalClarifications(goal, validation);
   if (validation.status !== "accepted") return setMessage("goal-message", validation.reason || "This goal needs revision before it can start.");
   state.goalDraft = { goal: validation.normalized_goal || goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
   state.goalCreationStage = "confirm";
@@ -1720,6 +1721,39 @@ async function startGoal() {
   $("goal-interpretation-panel").hidden = false;
   $("goal-create-panel").hidden = true;
   setMessage("goal-message", "Goal understood. Review the investigation boundary before starting.", true);
+}
+
+function showGoalClarifications(goal, validation) {
+  state.goalClarification = { goal, validation, answers: {} };
+  $("goal-create-panel").hidden = true;
+  $("goal-clarification-panel").hidden = false;
+  $("goal-clarification-reason").textContent = validation.reason || "A few details are needed before planning.";
+  $("goal-clarification-progress").textContent = `${validation.clarification_questions.length} details needed before GhostBusters can plan safely`;
+  const questions = $("goal-clarification-questions"); questions.replaceChildren();
+  validation.clarification_questions.forEach((question) => {
+    const card = el("article", "goal-finding-card"); append(card, el("h3", "card-title", question.question), el("p", "muted", question.why_needed || "This affects safe planning."));
+    (question.options || []).forEach((option) => { const label = el("label", "filter-chip"); const input = document.createElement("input"); input.type = question.answer_type === "multiple_choice" ? "checkbox" : "radio"; input.name = `clarification-${question.id}`; input.value = option.value; input.checked = Boolean(option.recommended); input.addEventListener("change", () => { state.goalClarification.answers[question.id] = input.value === "other" || input.value === "custom" ? "" : input.value; renderClarificationOther(question, card, input.value); }); label.append(input, document.createTextNode(` ${option.label}${option.recommended ? " (Recommended)" : ""}`)); card.appendChild(label); if (option.recommended) state.goalClarification.answers[question.id] = option.value; });
+    if (question.answer_type === "text") renderClarificationOther(question, card, "text"); questions.appendChild(card);
+  });
+}
+
+function renderClarificationOther(question, card, value) {
+  card.querySelector(".goal-clarification-other")?.remove();
+  if (!["other", "custom", "text"].includes(value)) return;
+  const input = document.createElement("input"); input.className = "goal-clarification-other"; input.placeholder = question.placeholder || "Provide details"; input.addEventListener("input", () => { state.goalClarification.answers[question.id] = input.value.trim(); }); card.appendChild(input);
+}
+
+async function continueGoalClarifications() {
+  const draft = state.goalClarification; if (!draft) return;
+  const missing = draft.validation.clarification_questions.filter((q) => q.required && !draft.answers[q.id]);
+  if (missing.length) return setMessage("goal-message", "Answer each required detail before continuing.");
+  const validation = await withButtonState("goal-clarification-continue-button", "Reviewing answers…", () => api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal: draft.goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, clarification_answers: draft.answers, clarification_round: 1 }) }));
+  $("goal-clarification-panel").hidden = true;
+  if (validation.status === "needs_revision" && validation.clarification_questions?.length) return showGoalClarifications(draft.goal, validation);
+  if (validation.status !== "accepted") return setMessage("goal-message", validation.reason || "Goal needs revision.");
+  validation.clarification_answers = draft.answers;
+  state.goalDraft = { goal: validation.normalized_goal || draft.goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
+  state.goalCreationStage = "confirm"; $("goal-confirmed-objective").textContent = state.goalDraft.goal; $("goal-confirmed-scope").textContent = state.goalDraft.scope; $("goal-interpretation-panel").hidden = false;
 }
 
 async function confirmGoal() {
@@ -3883,6 +3917,10 @@ function bindEvents() {
   on("start-cloud-hunt-button", "click", startCloudHunt);
   on("goal-start-button", "click", startGoal);
   on("goal-confirm-button", "click", confirmGoal);
+  on("goal-clarification-continue-button", "click", () => continueGoalClarifications().catch((error) => setMessage("goal-message", goalErrorMessage(error))));
+  on("goal-clarification-recommended-button", "click", () => { document.querySelectorAll("#goal-clarification-questions input[type=radio]:checked").forEach((input) => input.dispatchEvent(new Event("change"))); });
+  on("goal-clarification-edit-button", "click", () => { $("goal-clarification-panel").hidden = true; $("goal-create-panel").hidden = false; });
+  on("goal-clarification-cancel-button", "click", () => { $("goal-clarification-panel").hidden = true; $("goal-create-panel").hidden = false; state.goalClarification = null; });
   on("goal-retry-button", "click", retryGoalAction);
   on("goal-edit-button", "click", editGoalDraft);
   on("goal-back-list-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });

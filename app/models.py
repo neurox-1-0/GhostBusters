@@ -615,6 +615,8 @@ class GoalValidationRequest(AppModel):
     require_approval: bool = True
     savings_target: float | None = Field(default=None, ge=0)
     constraints: list[str] = Field(default_factory=list)
+    clarification_answers: dict[str, Any] = Field(default_factory=dict)
+    clarification_round: int = Field(default=0, ge=0, le=2)
 
 
 class GoalValidationResponse(AppModel):
@@ -629,6 +631,7 @@ class GoalValidationResponse(AppModel):
     suggested_capabilities: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     validation_mode: Literal["deterministic", "gemini_assisted"] = "deterministic"
+    clarification_questions: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
 
 
 class GeminiGoalValidation(AppModel):

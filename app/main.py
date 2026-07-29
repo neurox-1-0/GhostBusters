@@ -848,12 +848,13 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             client = build_ai_client(settings)
             if client is None:
                 raise AIClientError("provider_unavailable", "Gemini validation is unavailable.")
-            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
+            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
             semantic = gemini.value
             if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
                 raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
             if semantic.status != "accepted":
-                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": semantic.clarifying_questions}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted")
+                questions = [item for item in semantic.clarifying_questions[:3] if isinstance(item, dict)]
+                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": semantic.clarifying_questions}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted", clarification_questions=questions)
         except AIClientError as exc:
             logger.warning("goal_gemini_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
             detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "gemini_schema_validation_failed" if exc.category == "schema_validation_failed" else "gemini_validation_unavailable"}
@@ -864,12 +865,17 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     interpretation = deterministic_objective_interpretation(goal)
     if not is_supported_goal_domain(goal):
         return GoalValidationResponse(status="rejected", reason="GhostBusters supports cloud-cost, infrastructure, Terraform, ownership, tagging, and governance objectives.", category="unsupported", normalized_goal=goal, suggested_goal="Review non-production cloud waste while protecting production workloads.", constraints=["No direct infrastructure mutation"], risk_level="medium")
-    if has_ambiguous_percentage_target(goal):
+    if has_ambiguous_percentage_target(goal) and not request.clarification_answers:
         questions = [
             "Is the target a 15% reduction in current spending?",
             "Which AWS environment or account is in scope?",
             "What time period should be used?",
             "Must production remain protected?",
+        ]
+        clarification_questions = [
+            {"id": "target_meaning", "question": "What does 15% mean?", "answer_type": "single_choice", "options": [{"value": "spend_reduction", "label": "Reduce current AWS spending by 15%", "recommended": True}, {"value": "potential_savings", "label": "Identify at least 15% potential savings", "recommended": False}, {"value": "other", "label": "Other", "recommended": False}], "placeholder": "Describe the target", "required": True, "why_needed": "This determines how GhostBusters measures the outcome."},
+            {"id": "environment", "question": "Which environment is in scope?", "answer_type": "single_choice", "options": [{"value": "non_production", "label": "Non-production AWS", "recommended": True}, {"value": "production", "label": "Production AWS", "recommended": False}, {"value": "both_protected", "label": "Both, with production protected", "recommended": False}, {"value": "other", "label": "Other", "recommended": False}], "placeholder": "Describe the environment", "required": True, "why_needed": "Production remains protected by policy."},
+            {"id": "baseline", "question": "Which baseline should be used?", "answer_type": "single_choice", "options": [{"value": "current_monthly", "label": "Current monthly spend", "recommended": True}, {"value": "previous_month", "label": "Previous month", "recommended": False}, {"value": "custom", "label": "Custom baseline", "recommended": False}], "placeholder": "Enter the baseline", "required": True, "why_needed": "A baseline is needed to evaluate the target."},
         ]
         return GoalValidationResponse(
             status="needs_revision",
@@ -882,6 +888,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             constraints=["No direct infrastructure mutation", "Protected environments cannot be changed automatically", "Human approval required"],
             suggested_capabilities=["inspect_cloud_inventory", "run_cloud_hunt", "inspect_resource_utilization", "inspect_verified_pricing", "evaluate_policy"],
             risk_level="medium",
+            clarification_questions=clarification_questions,
         )
     missing = []
     if len(goal) < 18: missing.append("A measurable outcome or safety boundary")
