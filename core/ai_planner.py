@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 from app.models import (
@@ -27,18 +28,42 @@ from integrations.registry import ToolRegistry
 
 
 PROHIBITED_OBJECTIVE_TERMS = ("credential", "secret", "token", "password", "terraform apply", "direct aws")
+CLOUD_COST_LANGUAGE = (
+    "cloud bill", "cloud bills", "aws bill", "aws bills", "cloud spending", "aws spending",
+    "cloud expense", "cloud expenses", "infrastructure expense", "reduce spend", "reduce spending",
+    "reduce cost", "save money", "savings", "optimize cost", "lower bill", "cost reduction",
+    "waste reduction", "budget optimization",
+)
+SUPPORTED_GOAL_LANGUAGE = (
+    *CLOUD_COST_LANGUAGE,
+    "cost", "cloud", "aws", "terraform", "repository", "pull request", "resource", "ownership",
+    "tag", "idle", "waste", "policy",
+)
+
+
+def normalized_goal_language(goal: str) -> str:
+    return " ".join(goal.casefold().split())
+
+
+def is_supported_goal_domain(goal: str) -> bool:
+    normalized = normalized_goal_language(goal)
+    return any(term in normalized for term in SUPPORTED_GOAL_LANGUAGE)
+
+
+def has_ambiguous_percentage_target(goal: str) -> bool:
+    return bool(re.search(r"\bup\s+to\s+\d+(?:\.\d+)?\s*%", normalized_goal_language(goal)))
 
 
 def deterministic_objective_interpretation(goal: str) -> ObjectiveInterpretation:
     objective = goal.strip()
-    lowered = objective.lower()
+    lowered = normalized_goal_language(objective)
     if any(word in lowered for word in ("safe", "risk", "production", "protect")):
         objective_type = "safety_review"
     elif any(word in lowered for word in ("refresh", "current", "recent")):
         objective_type = "evidence_refresh"
     elif any(word in lowered for word in ("explain", "understand")):
         objective_type = "explain_change"
-    elif any(word in lowered for word in ("cost", "save", "right", "spend")):
+    elif is_supported_goal_domain(lowered) and any(word in lowered for word in ("cost", "save", "right", "spend", "bill", "expense", "budget", "savings")):
         objective_type = "cost_optimization"
     else:
         objective_type = "unsupported"

@@ -5,7 +5,7 @@ from dataclasses import replace
 from app.models import AgentNextAction, ObjectiveInterpretation
 from app.settings import settings
 from core.ai_client import AICallResult, MockGeminiClient
-from core.ai_planner import AIPlanner, deterministic_objective_interpretation
+from core.ai_planner import AIPlanner, deterministic_objective_interpretation, is_supported_goal_domain
 from integrations.registry import default_registry
 from tests.scenario_helpers import load_resource, load_scenario
 
@@ -15,6 +15,12 @@ def test_deterministic_objective_interpretation_is_explicit() -> None:
     assert result.objective_type == "explain_change"
     assert result.normalized_goal
     assert "deterministic" in result.plain_language_summary.lower()
+
+
+def test_cloud_bill_language_is_a_supported_cost_domain() -> None:
+    result = deterministic_objective_interpretation("Reduce the cloud bills up to 15%")
+    assert result.objective_type == "cost_optimization"
+    assert is_supported_goal_domain("Reduce the cloud bills up to 15%")
 
 
 def test_mock_planner_collects_registered_tools_and_finishes() -> None:

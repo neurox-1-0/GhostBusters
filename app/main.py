@@ -107,7 +107,7 @@ from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
 from core.rate_limit import rate_limiter
 from core.evidence_utils import verified_pricing_item
-from core.ai_planner import deterministic_objective_interpretation
+from core.ai_planner import deterministic_objective_interpretation, has_ambiguous_percentage_target, is_supported_goal_domain
 from core.ai_client import AIClientError, build_ai_client
 
 
@@ -862,9 +862,27 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     if any(term in lowered for term in forbidden):
         return GoalValidationResponse(status="rejected", reason="This objective requests an unsafe or unsupported action.", category="unsupported", normalized_goal=goal, suggested_goal="Investigate the change and prepare a recommendation that requires approval.", constraints=["No direct infrastructure mutation", "Human approval required"], risk_level="high")
     interpretation = deterministic_objective_interpretation(goal)
-    supported_terms = ("cost", "cloud", "aws", "terraform", "repository", "pull request", "resource", "ownership", "tag", "idle", "waste", "policy")
-    if interpretation.objective_type == "unsupported" or not any(term in lowered for term in supported_terms):
+    if not is_supported_goal_domain(goal):
         return GoalValidationResponse(status="rejected", reason="GhostBusters supports cloud-cost, infrastructure, Terraform, ownership, tagging, and governance objectives.", category="unsupported", normalized_goal=goal, suggested_goal="Review non-production cloud waste while protecting production workloads.", constraints=["No direct infrastructure mutation"], risk_level="medium")
+    if has_ambiguous_percentage_target(goal):
+        questions = [
+            "Is the target a 15% reduction in current spending?",
+            "Which AWS environment or account is in scope?",
+            "What time period should be used?",
+            "Must production remain protected?",
+        ]
+        return GoalValidationResponse(
+            status="needs_revision",
+            reason='The meaning of "up to 15%" is ambiguous.',
+            category="cost_optimization",
+            normalized_goal=goal,
+            missing_fields=["Target definition", "AWS environment or account", "Time period"],
+            suggested_goal="Identify safe opportunities to reduce non-production AWS spending by 15%, protect production, and require approval before any change.",
+            requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": questions},
+            constraints=["No direct infrastructure mutation", "Protected environments cannot be changed automatically", "Human approval required"],
+            suggested_capabilities=["inspect_cloud_inventory", "run_cloud_hunt", "inspect_resource_utilization", "inspect_verified_pricing", "evaluate_policy"],
+            risk_level="medium",
+        )
     missing = []
     if len(goal) < 18: missing.append("A measurable outcome or safety boundary")
     if not request.scope: missing.append("Environment or scope")
