@@ -35,6 +35,7 @@ def build_evidence_item(
     freshness_status: str,
     reliability: float,
     metadata: dict[str, Any] | None = None,
+    source_mode: str | None = None,
 ) -> EvidenceItem:
     return EvidenceItem(
         source=source,
@@ -46,6 +47,7 @@ def build_evidence_item(
         freshness_status=freshness_status,  # type: ignore[arg-type]
         reliability=reliability,
         metadata=metadata or {},
+        source_mode=source_mode,
     )
 
 
@@ -57,6 +59,7 @@ def unavailable_item(
     claim: str,
     reason: str,
     metadata: dict[str, Any] | None = None,
+    source_mode: str | None = "unavailable",
 ) -> EvidenceItem:
     details = dict(metadata or {})
     details["reason"] = reason
@@ -69,9 +72,9 @@ def unavailable_item(
         freshness_status="unavailable",
         reliability=0.0,
         metadata=details,
+        source_mode=source_mode,
     )
 
 
 def as_list(values: Iterable[str] | None) -> list[str]:
     return list(values or [])
-

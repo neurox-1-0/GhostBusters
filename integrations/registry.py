@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from integrations.base import EvidenceTool
+from integrations.base import EvidenceTool, unavailable_item
 from integrations.mock_dependencies import MockDependencyTool
 from integrations.mock_git_activity import MockGitActivityTool
 from integrations.mock_jira import MockJiraTool
@@ -36,13 +36,36 @@ class ToolRegistry:
         return tuple(self._tools.items())
 
 
+class UnavailablePricingTool:
+    """Fail-closed pricing capability used when no verified provider is configured."""
+
+    name = "pricing"
+
+    def collect(self, scenario, resource):
+        return [
+            unavailable_item(
+                source=self.name,
+                tool_name=self.name,
+                resource_id=resource.address,
+                claim="Pricing data unavailable",
+                reason="Live pricing evidence was not available for this change.",
+                metadata={"source_mode": "unavailable"},
+                source_mode="unavailable",
+            )
+        ]
+
+
+from app.settings import settings
+
+
+_pricing_tool = MockPricingTool() if settings.app_env != "production" and settings.pricing_provider in {"mock", "fixture", "demo"} else UnavailablePricingTool()
+
 default_registry = ToolRegistry(
     tools=(
-        MockPricingTool(),
+        _pricing_tool,
         MockUtilizationTool(),
         MockJiraTool(),
         MockGitActivityTool(),
         MockDependencyTool(),
     )
 )
-

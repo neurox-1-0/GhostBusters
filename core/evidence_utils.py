@@ -7,6 +7,10 @@ from typing import Any
 from app.models import EvidenceItem
 
 
+VERIFIED_PRICING_MODES = {"live", "verified_cached"}
+REQUIRED_PRICING_FIELDS = ("source", "region", "resource_type", "pricing_model", "checked_at", "assumptions", "currency")
+
+
 def item_by_source(evidence: list[EvidenceItem], source: str) -> EvidenceItem | None:
     return next((item for item in evidence if item.source == source), None)
 
@@ -21,6 +25,26 @@ def value_for(evidence: list[EvidenceItem], source: str) -> dict[str, Any]:
 def source_unavailable(evidence: list[EvidenceItem], source: str) -> bool:
     item = item_by_source(evidence, source)
     return item is None or item.freshness_status == "unavailable"
+
+
+def verified_pricing_item(evidence: list[EvidenceItem]) -> EvidenceItem | None:
+    item = item_by_source(evidence, "pricing")
+    if item is None or item.freshness_status == "unavailable" or item.source_mode not in VERIFIED_PRICING_MODES:
+        return None
+    if not isinstance(item.value, dict):
+        return None
+    if any(item.value.get(field) in (None, "", []) and item.metadata.get(field) in (None, "", []) for field in REQUIRED_PRICING_FIELDS):
+        return None
+    if not isinstance(item.value.get("current_monthly_cost"), int | float) or not isinstance(item.value.get("proposed_monthly_cost"), int | float):
+        return None
+    return item
+
+
+def verified_pricing_values(evidence: list[EvidenceItem]) -> tuple[float | None, float | None]:
+    item = verified_pricing_item(evidence)
+    if item is None:
+        return None, None
+    return float(item.value["current_monthly_cost"]), float(item.value["proposed_monthly_cost"])
 
 
 def utilization_values(evidence: list[EvidenceItem]) -> tuple[float | None, float | None]:
@@ -68,4 +92,3 @@ def monthly_savings(evidence: list[EvidenceItem]) -> float:
     if current is None or proposed is None:
         return 0.0
     return current - proposed
-

@@ -284,6 +284,29 @@ class AgentNextAction(AppModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class PricingProvenance(AppModel):
+    """Structured provenance required before any monetary value is displayed."""
+
+    available: bool = False
+    source: str = "unavailable"
+    source_mode: Literal["live", "verified_cached", "mock", "fixture", "demo", "unavailable"] = "unavailable"
+    provider: str | None = None
+    region: str | None = None
+    resource_type: str | None = None
+    before: str | None = None
+    after: str | None = None
+    pricing_model: str | None = None
+    monthly_hours: float | None = None
+    current_monthly_cost: float | None = None
+    proposed_monthly_cost: float | None = None
+    monthly_delta: float | None = None
+    currency: str | None = None
+    checked_at: datetime | None = None
+    assumptions: list[str] = Field(default_factory=list)
+    excluded_costs: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class AIDecisionRecord(AppModel):
     sequence_number: int
     model: str

@@ -13,6 +13,7 @@
 - Competition demo scenarios, fixture Cloud Hunt inventory, and deterministic fallback evidence.
 - Demo remediation results and Cloud Hunt proposals when real GitHub remediation is disabled.
 - Pricing and utilization values from scenario fixtures are not production billing truth.
+- Production pricing is intentionally unavailable unless a live or verified-cached pricing provider is configured with complete provenance; mock and fixture pricing are restricted to explicit demo/test mode.
 
 ## Unsupported or intentionally disabled
 

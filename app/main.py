@@ -106,6 +106,7 @@ from integrations.jira_context import JiraContextAdapter, detect_jira_github_con
 from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
 from core.rate_limit import rate_limiter
+from core.evidence_utils import verified_pricing_item
 
 
 logger = logging.getLogger(__name__)
@@ -515,6 +516,26 @@ def _pr_review_summary(run: WorkflowRun) -> dict[str, object]:
     resource = None
     if source and source.resource_changes:
         resource = source.resource_changes[0]
+    pricing_item = verified_pricing_item(decision.evidence if decision else [])
+    demo_pricing = settings.demo_mode_enabled and preferred is not None and pricing_item is None
+    if pricing_item is not None:
+        pricing_value = pricing_item.value
+        pricing = {
+            "available": True,
+            "source": pricing_item.source,
+            "source_mode": pricing_item.source_mode,
+            **pricing_value,
+        }
+        savings = float(preferred.estimated_monthly_savings) if preferred else None
+        annual_savings = float(preferred.estimated_annual_savings) if preferred else None
+    elif demo_pricing:
+        savings = float(preferred.estimated_monthly_savings) if preferred else None
+        annual_savings = float(preferred.estimated_annual_savings) if preferred else None
+        pricing = {"available": True, "source": "scenario_fixture", "source_mode": "fixture", "reason": "Demo fixture pricing."}
+    else:
+        savings = None
+        annual_savings = None
+        pricing = {"available": False, "source": "unavailable", "source_mode": "unavailable", "reason": "Live pricing evidence was not available for this change."}
     return {
         "id": str(run.id), "source_type": run.source_type, "organization_id": str(run.organization_id),
         "repository": source.repository if source else (mock.repository if mock else "Demo review"),
@@ -525,8 +546,9 @@ def _pr_review_summary(run: WorkflowRun) -> dict[str, object]:
         "change": resource.address if resource else (decision.resource_id if decision else (mock.resource_id if mock else None)),
         "change_summary": (f"{resource.address}: {', '.join(resource.actions)}" if resource else (mock.terraform_patch_preview if mock else "Terraform review")),
         "recommendation": decision.preferred_action if decision else (mock.chosen_action if mock else None),
-        "savings": float(preferred.estimated_monthly_savings if preferred else (mock.monthly_savings if mock else 0)),
-        "annual_savings": float(preferred.estimated_annual_savings if preferred else (mock.annual_savings if mock else 0)),
+        "savings": savings,
+        "annual_savings": annual_savings,
+        "pricing": pricing,
         "risk": str(risk), "confidence": float(decision.confidence.final_confidence if decision else (mock.confidence if mock else 0)),
         "status": run.status, "reviewer": latest_review.reviewer if latest_review else "Unassigned",
         "received_at": run.created_at, "updated_at": run.updated_at, "version": run.version,

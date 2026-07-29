@@ -24,6 +24,7 @@ class Settings:
     session_cookie_secure: bool = os.getenv("SESSION_COOKIE_SECURE", "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false").lower() in {"1", "true", "yes"}
     allow_insecure_http_demo: bool = os.getenv("ALLOW_INSECURE_HTTP_DEMO", "false").lower() in {"1", "true", "yes"}
     demo_mode_enabled: bool = os.getenv("DEMO_MODE_ENABLED", "false").lower() in {"1", "true", "yes"}
+    pricing_provider: str = os.getenv("PRICING_PROVIDER", "mock" if os.getenv("DEMO_MODE_ENABLED", "false").lower() in {"1", "true", "yes"} else "unavailable").lower()
     allow_production_demo_mode: bool = os.getenv("ALLOW_PRODUCTION_DEMO_MODE", "false").lower() in {"1", "true", "yes"}
     secret_key: str | None = os.getenv("SECRET_KEY") or os.getenv("SESSION_SECRET") or None
     trust_proxy_headers: bool = os.getenv("TRUST_PROXY_HEADERS", "false").lower() in {"1", "true", "yes"}
@@ -145,6 +146,10 @@ def validate_startup_settings(config: Settings = settings) -> None:
         errors.append("TRUST_PROXY_HEADERS=true is required behind an HTTPS-aware proxy.")
     if config.demo_mode_enabled and not config.allow_production_demo_mode:
         errors.append("DEMO_MODE_ENABLED must be false unless ALLOW_PRODUCTION_DEMO_MODE=true.")
+    if config.pricing_provider in {"mock", "fixture", "demo"}:
+        errors.append("Mock or fixture pricing providers are not allowed in production.")
+    if config.pricing_provider not in {"unavailable", "live", "verified_cached"}:
+        errors.append("PRICING_PROVIDER must be unavailable, live, or verified_cached in production.")
     if config.github_integration_enabled and not config.github_webhook_secret:
         errors.append("GITHUB_WEBHOOK_SECRET is required when GitHub webhooks are enabled.")
     if config.github_development_token_fallback:

@@ -94,7 +94,7 @@ def generate_alternatives(
             estimated_annual_savings=max(0.0, savings) * 12,
             supporting_evidence=["pricing", "utilization", "dependencies"],
             risks=["Performance regression if utilization changes after evidence collection."],
-            assumptions=["Fixture pricing represents expected monthly cost."],
+            assumptions=["Verified pricing evidence represents the expected monthly cost."],
             eligible=not downsize_rejections,
             rejection_reasons=downsize_rejections,
             score=0.9 if not downsize_rejections else _score(0.45, len(downsize_rejections)),

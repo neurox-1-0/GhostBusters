@@ -41,6 +41,8 @@ SESSION_TTL_SECONDS=28800
 
 With these defaults, no demo workspace, fixture inventory, scenario-backed goal, or mock identity is created. Set `AUTH_REQUIRED=true` and use `/api/auth/register` for an authenticated workspace. To intentionally run the prepared fixture demo, set `DEMO_MODE_ENABLED=true`; fixture files and mock clients remain available only for that explicit mode and automated tests.
 
+Production pricing is fail-closed by default: `PRICING_PROVIDER=unavailable` means PR Reviews show **Cost estimate unavailable** until a provider returns verified live or verified-cached pricing provenance. Mock and fixture pricing are restricted to explicit demo/test mode.
+
 Invitation onboarding is available from **Settings -> Members**. Owners can invite Admins, Reviewers, and Viewers; Admins can invite Reviewers and Viewers. Employees create their own passwords from secure single-use invitation links. Invitation tokens are shown only in the development invitation URL and only a SHA-256 token hash is stored. Ordinary invitation list responses do not expose tokens or token hashes. In local development, `INVITATION_EMAIL_ENABLED=false` returns a clearly labeled development link. Production email delivery and billing remain outside this milestone.
 
 ## Cloud Hunt Mode (Milestone 7A)
@@ -470,7 +472,7 @@ alternative_evidence_selected
 
 Audit metadata is limited to the tool, attempt number, maximum attempts, safe failure category, retry delay, elapsed time, and run ID. Secrets and raw exception messages are excluded.
 
-All current pricing, utilization, Jira, Git activity, and dependency providers remain mocked fixtures. Redis retry behavior is unit-tested, but a live Redis service has not been tested on this machine.
+Utilization, Jira, Git activity, and dependency providers still have fixture-backed demo adapters. Production pricing is fail-closed unless a live or verified-cached provider supplies complete provenance; it never silently uses scenario pricing. Redis retry behavior is unit-tested, but a live Redis service has not been tested on this machine.
 
 ## Persistence
 

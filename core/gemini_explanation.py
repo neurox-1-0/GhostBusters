@@ -68,6 +68,8 @@ def add_gemini_explanation(
         "evidence_points": [f"{item.source}: {item.claim} = {item.value}" for item in decision.evidence[:8]],
         "uncertainty_points": [item.model_dump(mode="json") for item in decision.missing_evidence[:5]],
         "real_pr_url": None,
+        "pricing_policy": "Do not introduce currency or monetary values. Explain only pricing values present in verified live or verified_cached pricing evidence; otherwise state that pricing is unavailable.",
+        "pricing_available": any(item.source == "pricing" and item.source_mode in {"live", "verified_cached"} and item.freshness_status != "unavailable" for item in decision.evidence),
         "safety_boundaries": [
             "No cloud resource has been changed by GhostBusters.",
             "Terraform apply and pull-request merge are outside GhostBusters automation.",
@@ -108,6 +110,8 @@ def validate_explanation(explanation: GeminiRecommendationExplanation, decision:
         raise AIClientError("unsafe_action_rejected", "Gemini explanation suggested a prohibited action.")
     if "pull request" in text and "http" in text and not payload.get("real_pr_url"):
         raise AIClientError("unsupported_claim", "Gemini claimed a real PR without a confirmed URL.")
+    if not payload.get("pricing_available") and re.search(r"(?:\$|\bUSD\b|\bEUR\b|\bGBP\b)\s*\d", text, re.IGNORECASE):
+        raise AIClientError("unsupported_claim", "Gemini introduced a monetary claim without verified pricing evidence.")
     allowed_numbers = {str(number) for number in NUMBER_PATTERN.findall(str(payload))}
     for number in NUMBER_PATTERN.findall(text):
         if number not in allowed_numbers and number not in {"1", "2", "3", "4", "5"}:

@@ -379,6 +379,27 @@ function runStatusLabel(status) {
   }[status] || labelFor(status || "no_case");
 }
 
+function pricingForRun(run) {
+  if (run?.pricing && typeof run.pricing === "object") return run.pricing;
+  const item = (run?.decision_record?.evidence || []).find((candidate) => candidate.source === "pricing");
+  if (!item || item.freshness_status === "unavailable") return { available: false, source: "unavailable", source_mode: "unavailable", reason: "Live pricing evidence was not available for this change." };
+  if (isDemoRun(run) && item.source_mode !== "live" && item.source_mode !== "verified_cached") return { available: true, source: "scenario_fixture", source_mode: "fixture", ...item.value };
+  if (item.source_mode !== "live" && item.source_mode !== "verified_cached") return { available: false, source: "unavailable", source_mode: "unavailable", reason: "Live pricing evidence was not available for this change." };
+  const value = item.value || {};
+  const required = ["source", "region", "resource_type", "pricing_model", "checked_at", "assumptions", "currency"];
+  if (required.some((field) => value[field] === undefined || value[field] === null || value[field] === "" || Array.isArray(value[field]) && !value[field].length)) return { available: false, source: "unavailable", source_mode: "unavailable", reason: "Live pricing evidence was not available for this change." };
+  return { available: true, source: item.source, source_mode: item.source_mode, ...value };
+}
+
+function pricingAmountLabel(value, suffix = "") {
+  return value === null || value === undefined || !Number.isFinite(Number(value)) ? "Cost estimate unavailable" : `${money(value)}${suffix}`;
+}
+
+function pricingAvailable(run) {
+  const pricing = pricingForRun(run);
+  return Boolean(pricing.available) || isDemoRun(run);
+}
+
 function cloudCandidatePrimaryStatus(candidate) {
   if (!candidate) return { key: "neutral", label: "No action required", className: "status-neutral" };
   if (candidate.exclusion_reason) return { key: "protected", label: "Protected resource", className: "status-protected", icon: "i" };
@@ -536,8 +557,8 @@ function changeTypeLabel(resource) {
 }
 
 function estimatedCostImpact(run) {
-  const pricing = evidenceValue("pricing");
-  if (!pricing) return "Not available";
+  const pricing = pricingForRun(run);
+  if (!pricing.available) return "Cost estimate unavailable";
   const delta = Number(pricing.proposed_monthly_cost || 0) - Number(pricing.current_monthly_cost || 0);
   if (delta === 0) return "$0/month";
   return `${delta > 0 ? "+" : "-"}${money(Math.abs(delta)).replace("$", "$")}/month`;
@@ -806,13 +827,16 @@ function prChangeSummary(run) {
 
 function prReviewSummary(run) {
   if (run?.repository && !run.decision_record && Object.prototype.hasOwnProperty.call(run, "savings")) {
-    return { ...run, case_status: run.status, recommendation_key: run.recommendation || "not_recorded", recommendation: recommendationLabel(run.recommendation), estimated_monthly_savings: Number(run.savings || 0), confidence: Number(run.confidence || 0), terraform_resource: run.change || "Not recorded", change_summary: run.change_summary || "Terraform review", received_at: run.received_at || null, updated_at: run.updated_at || null, reviewer: run.reviewer || "Unassigned", branch: run.branch || "Not recorded", title: run.title || "Terraform review", source_type: run.source_type || "terraform_pr" };
+    const summarySavings = run.pricing && !run.pricing.available ? null : (run.savings === null || run.savings === undefined ? null : Number(run.savings));
+    return { ...run, case_status: run.status, recommendation_key: run.recommendation || "not_recorded", recommendation: recommendationLabel(run.recommendation), estimated_monthly_savings: summarySavings, confidence: Number(run.confidence || 0), terraform_resource: run.change || "Not recorded", change_summary: run.change_summary || "Terraform review", received_at: run.received_at || null, updated_at: run.updated_at || null, reviewer: run.reviewer || "Unassigned", branch: run.branch || "Not recorded", title: run.title || "Terraform review", source_type: run.source_type || "terraform_pr" };
   }
   const decision = run?.decision_record;
   const preferred = (decision?.alternatives || []).find((item) => item.action === decision.preferred_action);
   const change = currentResourceChange(run);
   const source = run?.github_source;
   const latestReview = run?.human_reviews?.[run.human_reviews.length - 1];
+  const pricing = pricingForRun(run);
+  const savings = pricingAvailable(run) ? Number(preferred?.estimated_monthly_savings ?? run?.mock_pr?.monthly_savings ?? 0) : null;
   return {
     id: run.id,
     source_type: run.source_type,
@@ -825,7 +849,8 @@ function prReviewSummary(run) {
     change_summary: prChangeSummary(run),
     recommendation: plainRecommendationTitle(run),
     recommendation_key: decision?.preferred_action || run?.mock_pr?.chosen_action || "not_recorded",
-    estimated_monthly_savings: Number(preferred?.estimated_monthly_savings || run?.mock_pr?.monthly_savings || 0),
+    estimated_monthly_savings: savings,
+    pricing,
     confidence: Number(decision?.confidence?.final_confidence || run?.mock_pr?.confidence || 0),
     risk: riskLevel(decision, preferred),
     policy_status: decision?.policy_result?.status || "not_recorded",
@@ -1036,7 +1061,7 @@ function renderPRReviewList() {
     { label: "Pull Request", render: (row) => append(el("div"), el("strong", "row-title", row.pull_request_number ? `#${row.pull_request_number}` : "Prepared demo"), el("span", "row-meta", row.title)) },
     { label: "Change Summary", priority: "tablet", render: (row) => append(el("div"), el("span", null, row.change_summary), el("span", "row-meta", row.terraform_resource)) },
     { label: "Recommendation", priority: "tablet", render: (row) => row.recommendation },
-    { label: "Potential Savings", priority: "mobile", render: (row) => `${money(row.estimated_monthly_savings)}/month` },
+    { label: "Potential Savings", priority: "mobile", render: (row) => row.estimated_monthly_savings === null ? "Cost estimate unavailable" : `${money(row.estimated_monthly_savings)}/month` },
     { label: "Risk", priority: "mobile", render: (row) => row.risk },
     { label: "Status", render: (row) => prStatusBadge(row.case_status) },
     { label: "Reviewer", priority: "tablet", render: (row) => row.reviewer },
@@ -2029,8 +2054,9 @@ function renderRecommendation() {
   $("recommendation-risk").textContent = decision ? riskLevel(decision, preferred) : "--";
   $("recommendation-policy").textContent = decision ? policyStatusLabel(decision.policy_result?.status) : "--";
   $("recommendation-policy-technical").textContent = "";
-  $("recommendation-savings").textContent = preferred ? `${money(preferred.estimated_monthly_savings)}/month` : "--";
-  $("recommendation-annual-savings").textContent = preferred ? `${money(preferred.estimated_annual_savings)}/year` : "--";
+  const pricing = pricingForRun(state.run);
+  $("recommendation-savings").textContent = preferred && pricingAvailable(state.run) ? `${money(preferred.estimated_monthly_savings)}/month` : "Cost estimate unavailable";
+  $("recommendation-annual-savings").textContent = preferred && pricingAvailable(state.run) ? `${money(preferred.estimated_annual_savings)}/year` : "Cost estimate unavailable";
   $("recommendation-next").textContent = nextHumanAction(state.run);
   const alternativesNode = $("important-alternatives");
   clear(alternativesNode);
@@ -2100,6 +2126,7 @@ function activityQuery() {
     const days = filters.dateRange === "today" ? 1 : Number(filters.dateRange.replace("d", ""));
     params.set("created_from", new Date(Date.now() - days * 86400000).toISOString());
   }
+  if (source === "pricing" && !pricingForRun(state.run).available) return { title: "Pricing", detail: "Cost estimate unavailable", conclusion: "Live pricing evidence was not available for this change." };
   return params;
 }
 
@@ -2390,9 +2417,9 @@ function renderTools() {
 function renderTerraform() {
   const node = $("terraform-view"); clear(node);
   const decision = state.run?.decision_record;
-  const pricing = evidenceValue("pricing") || {};
+  const pricing = pricingForRun(state.run);
   const preferred = preferredAlternative() || {};
-  append(node, dataList([["Resource ID", decision?.resource_id], ["Environment", "Not recorded in run response"], ["Terraform actions", "Not recorded in run response"], ["Destructive flag", "Not recorded in run response"], ["Current instance type", state.run?.mock_pr?.current_instance_type], ["Proposed instance type", preferred.proposed_instance_type], ["Current monthly cost", money(pricing.current_monthly_cost)], ["Proposed monthly cost", money(pricing.proposed_monthly_cost)]]));
+  append(node, dataList([["Resource ID", decision?.resource_id], ["Environment", "Not recorded in run response"], ["Terraform actions", "Not recorded in run response"], ["Destructive flag", "Not recorded in run response"], ["Current instance type", state.run?.mock_pr?.current_instance_type], ["Proposed instance type", preferred.proposed_instance_type], ["Current monthly cost", pricing.available ? money(pricing.current_monthly_cost) : "Cost estimate unavailable"], ["Proposed monthly cost", pricing.available ? money(pricing.proposed_monthly_cost) : "Cost estimate unavailable"], ["Pricing source", pricing.available ? pricing.source : "unavailable"], ["Pricing mode", pricing.available ? pricing.source_mode : "unavailable"], ["Assumptions", pricing.assumptions || "Live pricing evidence was not available for this change."], ["Excluded costs", pricing.excluded_costs]]));
   if (state.run?.mock_pr?.terraform_patch_preview) { const pre = el("pre"); pre.textContent = state.run.mock_pr.terraform_patch_preview; node.appendChild(pre); }
 }
 
@@ -2402,7 +2429,8 @@ function renderEvidence() {
   if (!evidence.length) return node.appendChild(el("p", "muted", "No evidence collected yet."));
   evidence.forEach((item) => {
     const card = el("article", `info-card ${statusClass(item.freshness_status)}`);
-    append(card, el("h3", null, labelFor(item.source)), dataList([["Claim", item.claim], ["Value", item.value], ["Freshness", item.freshness_status], ["Reliability", item.reliability], ["Resource ID", item.resource_id]]), rawDetails("Metadata", item.metadata || {}));
+    const value = item.source === "pricing" && !pricingForRun(state.run).available ? "Live pricing evidence was not available for this change." : item.value;
+    append(card, el("h3", null, labelFor(item.source)), dataList([["Claim", item.claim], ["Value", value], ["Freshness", item.freshness_status], ["Reliability", item.reliability], ["Source mode", item.source_mode || "Not recorded"], ["Resource ID", item.resource_id]]), rawDetails("Metadata", item.metadata || {}));
     node.appendChild(card);
   });
 }
@@ -2423,7 +2451,8 @@ function renderAlternatives() {
   const decision = state.run?.decision_record;
   (decision?.alternatives || []).forEach((item) => {
     const card = el("article", `info-card ${item.action === decision.preferred_action ? "preferred" : ""}`);
-    append(card, el("h3", null, `${labelFor(item.action)}${item.action === decision.preferred_action ? " - preferred" : ""}`), dataList([["Description", item.description], ["Eligible", item.eligible], ["Score", Number(item.score).toFixed(2)], ["Monthly cost", money(item.estimated_monthly_cost)], ["Monthly savings", money(item.estimated_monthly_savings)], ["Annual savings", money(item.estimated_annual_savings)], ["Supporting evidence", item.supporting_evidence], ["Risks", item.risks], ["Assumptions", item.assumptions], ["Rejection reasons", item.rejection_reasons]]));
+    const showPricing = pricingAvailable(state.run);
+    append(card, el("h3", null, `${labelFor(item.action)}${item.action === decision.preferred_action ? " - preferred" : ""}`), dataList([["Description", item.description], ["Eligible", item.eligible], ["Score", Number(item.score).toFixed(2)], ["Monthly cost", showPricing ? money(item.estimated_monthly_cost) : "Cost estimate unavailable"], ["Monthly savings", showPricing ? money(item.estimated_monthly_savings) : "Cost estimate unavailable"], ["Annual savings", showPricing ? money(item.estimated_annual_savings) : "Cost estimate unavailable"], ["Supporting evidence", item.supporting_evidence], ["Risks", item.risks], ["Assumptions", item.assumptions], ["Rejection reasons", item.rejection_reasons]]));
     node.appendChild(card);
   });
   if (!decision?.alternatives?.length) node.appendChild(el("p", "muted", "Not recorded"));
@@ -2468,9 +2497,10 @@ function renderHistory() {
 
 function renderImpact() {
   const node = $("impact-view"); clear(node);
-  const pricing = evidenceValue("pricing") || {};
+  const pricing = pricingForRun(state.run);
   const preferred = preferredAlternative() || {};
-  node.appendChild(dataList([["Current monthly cost", money(pricing.current_monthly_cost)], ["Proposed monthly cost", money(pricing.proposed_monthly_cost || preferred.estimated_monthly_cost)], ["Monthly savings", money(preferred.estimated_monthly_savings)], ["Annual savings", money(preferred.estimated_annual_savings)], ["Confidence", percentage(state.run?.decision_record?.confidence?.final_confidence)], ["Risk", preferred.risks], ["Run status", state.run?.status]]));
+  const showPricing = pricingAvailable(state.run);
+  node.appendChild(dataList([["Current monthly cost", showPricing ? money(pricing.current_monthly_cost) : "Cost estimate unavailable"], ["Proposed monthly cost", showPricing ? money(pricing.proposed_monthly_cost || preferred.estimated_monthly_cost) : "Cost estimate unavailable"], ["Monthly savings", showPricing ? money(preferred.estimated_monthly_savings) : "Cost estimate unavailable"], ["Annual savings", showPricing ? money(preferred.estimated_annual_savings) : "Cost estimate unavailable"], ["Pricing source", pricing.available ? pricing.source : "unavailable"], ["Pricing mode", pricing.available ? pricing.source_mode : "unavailable"], ["Assumptions", pricing.assumptions || "Live pricing evidence was not available for this change."], ["Excluded costs", pricing.excluded_costs], ["Confidence", percentage(state.run?.decision_record?.confidence?.final_confidence)], ["Risk", preferred.risks], ["Run status", state.run?.status]]));
 }
 
 function renderRuntime() {

@@ -31,6 +31,7 @@ class MockPricingTool:
                     claim="Pricing data unavailable",
                     reason=str(pricing.get("reason", "pricing export unavailable")),
                     metadata=metadata,
+                    source_mode="fixture",
                 )
             ]
 
@@ -49,6 +50,6 @@ class MockPricingTool:
                 freshness_status="fresh",
                 reliability=float(pricing.get("reliability", 0.95)),
                 metadata=metadata,
+                source_mode="fixture",
             )
         ]
-

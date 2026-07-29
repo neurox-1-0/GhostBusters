@@ -371,12 +371,13 @@ def sample_run(real_pr: bool = False, demo: bool = False) -> dict[str, object]:
                     "source": "pricing",
                     "tool_name": "pricing",
                     "claim": "Pricing data was collected.",
-                    "value": {"current_monthly_cost": 70, "proposed_monthly_cost": 140},
+                    "value": {"current_monthly_cost": 70, "proposed_monthly_cost": 140, "source": "test-pricing", "region": "us-east-1", "resource_type": "aws_instance", "pricing_model": "on_demand", "currency": "USD", "checked_at": "2026-07-26T00:00:20Z", "assumptions": ["test fixture"]},
                     "resource_id": "aws_instance.app",
                     "collected_at": "2026-07-26T00:00:20Z",
                     "freshness_status": "fresh",
                     "reliability": 1.0,
                     "metadata": {},
+                    "source_mode": "live",
                 },
                 {
                     "source": "utilization",
@@ -645,6 +646,7 @@ def pr_run(
     run["decision_record"]["confidence"]["final_confidence"] = 0.7 + (min(savings, 100) / 500)
     run["mock_pr"]["monthly_savings"] = savings
     run["mock_pr"]["annual_savings"] = savings * 12
+    run["pricing"] = {"available": True, "source": "scenario_fixture", "source_mode": "fixture"}
     if reviewer:
       run["human_reviews"] = [{"reviewer": reviewer, "action": "approve" if status in {"approved", "pr_created"} else "reject", "comment": None, "requested_sources": [], "modified_action": None, "human_context": None, "created_at": "2026-07-26T00:08:00Z"}]
     return run
