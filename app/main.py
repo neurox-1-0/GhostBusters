@@ -848,7 +848,11 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             client = build_ai_client(settings)
             if client is None:
                 raise AIClientError("provider_unavailable", "Gemini validation is unavailable.")
-            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "previous_normalized_goal": request.previous_normalized_goal, "previous_clarification_questions": request.previous_clarification_questions, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
+            aws = aws_integration_store.get(principal.organization_id)
+            github = github_integration_store.get(principal.organization_id)
+            jira = jira_integration_store.get(principal.organization_id)
+            integration_context = {"aws": {"connected": bool(aws.enabled), "regions": aws.regions, "actual_spend_available": False}, "github": {"connected": bool(github.enabled and github.installation_id), "repositories": github.allowed_repositories}, "jira": {"connected": bool(jira.enabled and jira.base_url)}}
+            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "previous_normalized_goal": request.previous_normalized_goal, "previous_clarification_questions": request.previous_clarification_questions, "integration_context": integration_context, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
             semantic = gemini.value
             if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
                 raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
