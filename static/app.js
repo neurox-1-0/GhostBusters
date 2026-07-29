@@ -49,6 +49,8 @@ const state = {
   goalTab: "outcome",
   goalReplayPaused: false,
   goalReplayTimer: null,
+  goalPollTimer: null,
+  goalStartInFlight: false,
   awsConfig: null,
   awsValidation: null,
   githubConfig: null,
@@ -707,6 +709,75 @@ function friendlyError(error, fallback = "Request failed. Try again.") {
   }
   if (/traceback|stack|exception|file "/i.test(message)) return fallback;
   return message.length > 180 ? `${message.slice(0, 177)}...` : message;
+}
+
+function withTimeout(promise, timeoutMs, message = "Request timed out.") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = window.setTimeout(() => {
+      const error = new Error(message);
+      error.code = "TIMEOUT";
+      reject(error);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
+}
+
+function normalizeGoalResponse(payload) {
+  if (!payload || typeof payload !== "object" || !payload.id) {
+    const error = new Error("The investigation returned an invalid response.");
+    error.code = "MALFORMED_RESPONSE";
+    throw error;
+  }
+  return {
+    ...payload,
+    goal: payload.goal || payload.title || "Untitled goal",
+    scope: payload.scope || "Workspace scope",
+    status: payload.status || "created",
+    data_source_mode: payload.data_source_mode || "Connected evidence",
+    created_at: payload.created_at || new Date().toISOString(),
+    updated_at: payload.updated_at || payload.created_at || new Date().toISOString(),
+  };
+}
+
+function goalErrorMessage(error) {
+  if (error?.code === "TIMEOUT") return "The investigation did not start. Retry.";
+  if (error?.status === 401) return "Authentication required.";
+  if (error?.status === 403) return "You do not have permission to start this investigation.";
+  if (error?.status === 409) return "This goal conflicts with a newer workspace state or safety policy.";
+  if (error?.status === 422) return error.message || "This goal is not valid for a safe investigation.";
+  if (error?.status >= 500) return "The investigation service is temporarily unavailable. Retry.";
+  if (error?.code === "MALFORMED_RESPONSE") return "The investigation returned an invalid response. Retry.";
+  return "The investigation could not start. Retry.";
+}
+
+function logGoalDiagnostic(message, error) {
+  const hostname = typeof window !== "undefined" ? window.location?.hostname : "";
+  if (["localhost", "127.0.0.1"].includes(hostname)) console.debug(`[GhostBusters Goals] ${message}`, { endpoint: error?.endpoint, status: error?.status, code: error?.code });
+}
+
+function showGoalError(error) {
+  logGoalDiagnostic("Goal start failed", error);
+  setMessage("goal-message", goalErrorMessage(error));
+  const retry = $("goal-retry-button");
+  if (retry) {
+    $("goal-confirm-button")?.parentNode?.appendChild(retry);
+    retry.hidden = false;
+  }
+}
+
+function stopGoalPolling() {
+  if (state.goalPollTimer) window.clearTimeout(state.goalPollTimer);
+  state.goalPollTimer = null;
+}
+
+function beginGoalPolling(goalId) {
+  stopGoalPolling();
+  const terminal = ["completed", "approved", "pr_created", "remediation_pr_created", "failed_safely", "canceled", "blocked"];
+  if (terminal.includes(state.selectedGoal?.status)) return;
+  state.goalPollTimer = window.setTimeout(() => {
+    if (state.selectedGoal?.id === goalId) void selectGoal(goalId, false);
+  }, 5000);
 }
 
 function decisionIdempotencyKey(caseId, action) {
@@ -1561,24 +1632,46 @@ async function validateAWSConnection() {
   }, "Validated").catch((error) => setMessage("aws-message", friendlyError(error, "AWS validation failed.")));
 }
 
-async function selectGoal(goalId, switchToView = true) {
+async function selectGoal(goalId, switchToView = true, seed = null) {
+  stopGoalPolling();
+  const summary = seed || state.goals.find((goal) => String(goal.id) === String(goalId));
+  if (summary) {
+    state.selectedGoal = normalizeGoalResponse(summary);
+    state.goalEvents = [];
+    state.goalTab = "plan";
+    localStorage.setItem("ghostbusters:lastGoalId", goalId);
+    if (switchToView) switchMode("goals");
+    renderGoalExecution();
+  }
   try {
-    state.selectedGoal = await api(`/api/goals/${goalId}`);
-    state.goalEvents = await api(`/api/goals/${goalId}/events`);
+    const [goal, events] = await withTimeout(Promise.all([
+      api(`/api/goals/${goalId}`),
+      api(`/api/goals/${goalId}/events`),
+    ]), 10000, "Goal progress is temporarily unavailable.");
+    state.selectedGoal = normalizeGoalResponse(goal);
+    state.goalEvents = Array.isArray(events) ? events : [];
     state.goalTab = ["completed", "approved", "pr_created", "remediation_pr_created"].includes(state.selectedGoal.status) ? "outcome" : "plan";
     localStorage.setItem("ghostbusters:lastGoalId", goalId);
     if (switchToView) switchMode("goals");
     renderGoalExecution();
-  } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goal journey.")); }
+    beginGoalPolling(goalId);
+    return state.selectedGoal;
+  } catch (error) {
+    logGoalDiagnostic("Goal progress refresh failed", error);
+    setMessage("goal-message", error?.code === "TIMEOUT" ? "Goal progress is temporarily unavailable. Retry refresh." : friendlyError(error, "Goal progress is temporarily unavailable."));
+    renderGoalExecution();
+    return null;
+  }
 }
 
 async function refreshGoalJourney() { return state.selectedGoal ? selectGoal(state.selectedGoal.id, false) : loadGoals(); }
 
 async function startGoal() {
   const goal = $("goal-input").value.trim();
+  if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
   if (goal.length < 12) return setMessage("goal-message", "This goal is too broad to execute safely. Add an outcome, scope, or safety boundary.");
   if (/delete all|destroy everything|make everything cheaper/i.test(goal)) return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes.");
-  state.goalDraft = { goal, scope: $("goal-scope-input").value || "Workspace scope" };
+  state.goalDraft = { goal, scope: $("goal-scope-input").value || "Workspace scope", idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
   state.goalCreationStage = "confirm";
   $("goal-confirmed-objective").textContent = goal;
   $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · connected systems where available`;
@@ -1588,14 +1681,32 @@ async function startGoal() {
 }
 
 async function confirmGoal() {
-  if (!state.goalDraft) return;
-  return withButtonState("goal-confirm-button", "Starting...", async () => {
-    const created = await api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, scenario_name: "safe", data_source_mode: "Connected evidence" }) });
+  if (!state.goalDraft || state.goalStartInFlight) return;
+  state.goalStartInFlight = true;
+  if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
+  try {
+    await withButtonState("goal-confirm-button", "Starting investigation…", async () => {
+    const created = normalizeGoalResponse(await withTimeout(api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, scenario_name: "safe", data_source_mode: "Connected evidence", idempotency_key: state.goalDraft.idempotencyKey }) }), 15000, "The investigation did not start. Retry."));
     state.goalCreationStage = "started";
     state.selectedGoal = created;
-    await selectGoal(created.id);
-    setMessage("goal-message", "Investigation started. No infrastructure was changed.", true);
-  }, "Started").catch((error) => setMessage("goal-message", friendlyError(error, "Goal failed safely.")));
+    state.goalEvents = [];
+    state.goalTab = "plan";
+    localStorage.setItem("ghostbusters:lastGoalId", created.id);
+    switchMode("goals");
+    renderGoalExecution();
+    $("goal-agent-state").textContent = "Interpreting scope";
+    $("goal-agent-narration").textContent = "Goal received. Selecting the safest investigation path…";
+    $("goal-current-action").textContent = "Interpreting scope";
+    setMessage("goal-message", "Goal received. Interpreting scope…", true);
+    void selectGoal(created.id, false, created).then((loaded) => {
+      if (loaded && state.selectedGoal?.id === created.id) setMessage("goal-message", "Investigation is live. Evidence updates will appear here.", true);
+    });
+    });
+  } catch (error) {
+    showGoalError(error);
+  } finally {
+    state.goalStartInFlight = false;
+  }
 }
 
 function editGoalDraft() {
@@ -1666,7 +1777,7 @@ function renderGoalExecution() {
   const completedUntil = run.status === "pending_human_review" || ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? 5 : Math.min(3, Math.max(1, state.goalEvents.length ? 2 : 1));
   stages.forEach((stage, index) => { const item = el("li", `goal-map-node ${index < completedUntil ? "complete" : index === completedUntil ? "active" : "waiting"}`); const stateLabel = index < completedUntil ? "Complete" : index === completedUntil ? "In progress" : "Waiting"; append(item, el("span", "goal-map-number", index < completedUntil ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
   const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
-  $("goal-current-action").textContent = latest?.label || runStatusLabel(run.status);
+  $("goal-current-action").textContent = latest?.label || (state.goalEvents.length ? runStatusLabel(run.status) : "Interpreting scope");
   $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
   $("goal-current-reason").textContent = latest?.reason || latest?.summary || "Recorded by the execution plan.";
   $("goal-current-input").textContent = latest?.input_summary || "Sanitized execution context";
@@ -3597,6 +3708,10 @@ if (typeof window !== "undefined") {
     selectGoal,
     renderGoalExecution,
     renderGoalTab,
+    confirmGoal,
+    normalizeGoalResponse,
+    goalErrorMessage,
+    withTimeout,
     openPrReviewById,
     backToPrReviewList,
     selectCloudFinding,
@@ -3677,9 +3792,10 @@ function bindEvents() {
   on("start-cloud-hunt-button", "click", startCloudHunt);
   on("goal-start-button", "click", startGoal);
   on("goal-confirm-button", "click", confirmGoal);
+  on("goal-retry-button", "click", confirmGoal);
   on("goal-edit-button", "click", editGoalDraft);
-  on("goal-back-list-button", "click", () => { state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
-  on("goal-workspace-back-button", "click", () => { state.selectedGoal = null; state.goalEvents = []; renderAll(); });
+  on("goal-back-list-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
+  on("goal-workspace-back-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
   on("goal-refresh-button", "click", refreshGoalJourney);
   on("goal-cancel-button", "click", cancelSelectedGoal);
   on("goal-skip-button", "click", () => { state.goalReplayPaused = false; renderGoalExecution(); });
