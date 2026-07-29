@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 FreshnessStatus = Literal["fresh", "stale", "unavailable", "unknown"]
@@ -631,7 +631,36 @@ class GoalValidationResponse(AppModel):
     suggested_capabilities: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     validation_mode: Literal["deterministic", "gemini_assisted"] = "deterministic"
-    clarification_questions: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
+    clarification_questions: list["GeminiClarificationQuestion"] = Field(default_factory=list, max_length=3)
+    question_generation_mode: Literal["gemini_generated", "deterministic_fallback"] | None = None
+
+
+class GeminiClarificationOption(AppModel):
+    value: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=240)
+    recommended: bool = False
+
+
+class GeminiClarificationQuestion(AppModel):
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    question: str = Field(min_length=1, max_length=360)
+    answer_type: Literal["single_choice", "multiple_choice", "text"]
+    options: list[GeminiClarificationOption] = Field(default_factory=list, max_length=8)
+    placeholder: str | None = Field(default=None, max_length=240)
+    required: bool = True
+    why_needed: str = Field(min_length=1, max_length=360)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "GeminiClarificationQuestion":
+        if self.answer_type == "text" and self.options:
+            raise ValueError("text clarification questions cannot define options")
+        if self.answer_type != "text" and not self.options:
+            raise ValueError("choice clarification questions require options")
+        if len({option.value for option in self.options}) != len(self.options):
+            raise ValueError("clarification option values must be unique")
+        if self.answer_type == "single_choice" and sum(option.recommended for option in self.options) > 1:
+            raise ValueError("single-choice clarification questions allow one recommended option")
+        return self
 
 
 class GeminiGoalValidation(AppModel):
@@ -640,7 +669,7 @@ class GeminiGoalValidation(AppModel):
     normalized_goal: str = Field(max_length=1200)
     category: str = Field(max_length=80)
     missing_fields: list[str] = Field(default_factory=list, max_length=8)
-    clarifying_questions: list[str] = Field(default_factory=list, max_length=6)
+    clarifying_questions: list[GeminiClarificationQuestion] = Field(default_factory=list, max_length=3)
     suggested_goal: str | None = Field(default=None, max_length=1200)
     constraints: list[str] = Field(default_factory=list, max_length=10)
     success_criteria: list[str] = Field(default_factory=list, max_length=8)

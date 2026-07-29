@@ -67,7 +67,7 @@ def test_gemini_supported_needs_revision_is_preserved(monkeypatch) -> None:  # t
                     reason="Need the target period.",
                     normalized_goal="Reduce cloud bills safely.",
                     category="cost_optimization",
-                    clarifying_questions=["What time period should be used?"],
+                    clarifying_questions=[{"id": "time_period", "question": "What time period should be used?", "answer_type": "text", "options": [], "placeholder": "Enter a period", "required": True, "why_needed": "The target needs a measurement period."}],
                     risk_level="medium",
                 ),
                 model="test-gemini",

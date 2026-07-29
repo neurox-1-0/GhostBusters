@@ -195,7 +195,7 @@ class GeminiAIClient:
             },
             GeminiGoalValidation: {
                 "status": "accepted | needs_revision | rejected", "reason": "string", "normalized_goal": "string", "category": "string",
-                "missing_fields": ["string"], "clarifying_questions": ["string"], "suggested_goal": "string or null",
+                "missing_fields": ["string"], "clarifying_questions": [{"id": "string", "question": "string", "answer_type": "single_choice | multiple_choice | text", "options": [{"value": "string", "label": "string", "recommended": "boolean"}], "placeholder": "string or null", "required": "boolean", "why_needed": "string"}], "suggested_goal": "string or null",
                 "constraints": ["string"], "success_criteria": ["string"], "stop_conditions": ["string"],
                 "suggested_capabilities": ["string"], "risk_level": "low | medium | high",
             },
@@ -313,7 +313,7 @@ class GeminiAIClient:
         return self._call(ObjectiveInterpretation, prompt)
 
     def validate_goal(self, payload: dict[str, Any]) -> AICallResult:
-        prompt = json.dumps({"task": "validate_cloud_cost_goal", "instructions": "Return only the schema. Assess relevance and ambiguity; do not authorize mutation, invent facts, tools, or permissions.", "input": redact_model_payload(payload)}, sort_keys=True)
+        prompt = json.dumps({"task": "validate_cloud_cost_goal", "instructions": "Return only the schema. Ask at most three material clarification questions. Prefer safe choice options, at most one recommended single-choice option, and no questions about standard read-only, production-protection, or approval boundaries. Assess relevance and ambiguity; do not authorize mutation, invent facts, tools, or permissions.", "input": redact_model_payload(payload)}, sort_keys=True)
         return self._call(GeminiGoalValidation, prompt)
 
     def plan_goal(self, payload: dict[str, Any]) -> AICallResult:
@@ -386,7 +386,8 @@ class MockGeminiClient:
         lowered = goal.lower()
         ambiguous = "15%" in lowered and not any(term in lowered for term in ("spend", "waste", "cost reduction"))
         status = "needs_revision" if ambiguous else "accepted"
-        return self._result(GeminiGoalValidation(status=status, reason="The percentage target needs a spending baseline and environment." if ambiguous else "The goal is relevant to cloud-cost investigation.", normalized_goal=goal, category="cost_optimization", missing_fields=["Spending baseline", "Environment"] if ambiguous else [], clarifying_questions=["Should the 15% target apply to spend or waste?", "Which environment is in scope?"] if ambiguous else [], suggested_goal="Identify safe opportunities to reduce non-production AWS spending by 15%, while protecting production and requiring approval before changes." if ambiguous else goal, constraints=["No direct infrastructure mutation", "Human approval required"], success_criteria=["Produce evidence-grounded opportunities or a safe abstention"], stop_conditions=["Evidence is insufficient", "Human approval is required"], suggested_capabilities=["inspect_github_repository", "load_cloud_hunt_evidence", "evaluate_policy"], risk_level="medium"), "validate_goal")
+        questions = [{"id": "target", "question": "Should the 15% target apply to spending or waste?", "answer_type": "text", "options": [], "placeholder": "Describe the target", "required": True, "why_needed": "The target needs a measurable meaning."}, {"id": "environment", "question": "Which environment is in scope?", "answer_type": "text", "options": [], "placeholder": "Describe the environment", "required": True, "why_needed": "Scope affects safety and planning."}] if ambiguous else []
+        return self._result(GeminiGoalValidation(status=status, reason="The percentage target needs a spending baseline and environment." if ambiguous else "The goal is relevant to cloud-cost investigation.", normalized_goal=goal, category="cost_optimization", missing_fields=["Spending baseline", "Environment"] if ambiguous else [], clarifying_questions=questions, suggested_goal="Identify safe opportunities to reduce non-production AWS spending by 15%, while protecting production and requiring approval before changes." if ambiguous else goal, constraints=["No direct infrastructure mutation", "Human approval required"], success_criteria=["Produce evidence-grounded opportunities or a safe abstention"], stop_conditions=["Evidence is insufficient", "Human approval is required"], suggested_capabilities=["inspect_github_repository", "load_cloud_hunt_evidence", "evaluate_policy"], risk_level="medium"), "validate_goal")
 
     def plan_goal(self, payload: dict[str, Any]) -> AICallResult:
         allowed = set(payload.get("allowed_capabilities", []))

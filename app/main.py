@@ -853,8 +853,13 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
                 raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
             if semantic.status != "accepted":
-                questions = [item for item in semantic.clarifying_questions[:3] if isinstance(item, dict)]
-                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": semantic.clarifying_questions}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted", clarification_questions=questions)
+                questions = semantic.clarifying_questions[:3]
+                question_mode = "gemini_generated"
+                if semantic.status == "needs_revision" and not questions:
+                    fallback_text = semantic.missing_fields[:3] or ["What additional scope or success measure is needed?"]
+                    questions = [{"id": f"detail_{index + 1}", "question": text, "answer_type": "text", "options": [], "placeholder": "Enter your answer", "required": True, "why_needed": "This information is required before planning can continue."} for index, text in enumerate(fallback_text)]
+                    question_mode = "deterministic_fallback"
+                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": [item.model_dump() if hasattr(item, "model_dump") else item for item in questions]}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted", clarification_questions=questions, question_generation_mode=question_mode)
         except AIClientError as exc:
             logger.warning("goal_gemini_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
             detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "gemini_schema_validation_failed" if exc.category == "schema_validation_failed" else "gemini_validation_unavailable"}
@@ -889,6 +894,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             suggested_capabilities=["inspect_cloud_inventory", "run_cloud_hunt", "inspect_resource_utilization", "inspect_verified_pricing", "evaluate_policy"],
             risk_level="medium",
             clarification_questions=clarification_questions,
+            question_generation_mode="deterministic_fallback",
         )
     missing = []
     if len(goal) < 18: missing.append("A measurable outcome or safety boundary")
