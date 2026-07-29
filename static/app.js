@@ -1505,7 +1505,7 @@ async function loadAWSConfig() {
 }
 
 async function loadGitHubConfig() {
-  try { state.githubConfig = await api("/api/integrations/github/config"); renderGitHubConfig(); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub settings unavailable.")); }
+  try { state.githubConfig = await api("/api/integrations/github/config"); renderGitHubConfig(); renderGoalRepositoryScope(); } catch (error) { setMessage("github-message", friendlyError(error, "GitHub settings unavailable.")); }
 }
 
 function renderGitHubConfig() {
@@ -1732,7 +1732,7 @@ async function startGoal() {
   if (/delete all|destroy everything|make everything cheaper/i.test(goal)) { state.goalValidationInFlight = false; return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes."); }
   let validation;
   try {
-    validation = await withButtonState("goal-start-button", "Gemini is reviewing the goal...", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out."));
+    validation = await withButtonState("goal-start-button", "Gemini is reviewing the goal...", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out."));
   } catch (error) {
     setMessage("goal-message", error?.status === 503 ? "Goal analysis is temporarily unavailable. Retry once." : goalErrorMessage(error));
     return;
@@ -1741,7 +1741,7 @@ async function startGoal() {
   }
   if (validation.status === "needs_revision" && Array.isArray(validation.clarification_questions) && validation.clarification_questions.length) return showGoalClarifications(goal, validation);
   if (validation.status !== "accepted") return setMessage("goal-message", validation.reason || "This goal needs revision before it can start.");
-  state.goalDraft = { goal: validation.normalized_goal || goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
+  state.goalDraft = { goal: validation.normalized_goal || goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
   state.goalCreationStage = "confirm";
   $("goal-confirmed-objective").textContent = state.goalDraft.goal;
   $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · ${validation.validation_mode === "gemini_assisted" ? "Gemini-assisted validation" : "Deterministic validation"}`;
@@ -1776,7 +1776,7 @@ async function continueGoalClarifications() {
   if (missing.length) { $("goal-clarification-reason").textContent = "Answer each required detail before continuing."; return; }
   let validation;
   try {
-    validation = await withButtonState("goal-clarification-continue-button", "Reviewing answers…", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal: draft.goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, clarification_answers: draft.answers, clarification_round: Math.min(draft.round + 1, 2), previous_normalized_goal: draft.validation.normalized_goal || draft.goal, previous_clarification_questions: draft.validation.clarification_questions || [] }) }), 10000, "Goal revalidation timed out."));
+    validation = await withButtonState("goal-clarification-continue-button", "Reviewing answers…", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal: draft.goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), require_approval: true, clarification_answers: draft.answers, clarification_round: Math.min(draft.round + 1, 2), previous_normalized_goal: draft.validation.normalized_goal || draft.goal, previous_clarification_questions: draft.validation.clarification_questions || [] }) }), 10000, "Goal revalidation timed out."));
   } catch (error) {
     $("goal-clarification-reason").textContent = goalErrorMessage(error);
     return;
@@ -1784,7 +1784,7 @@ async function continueGoalClarifications() {
   if (validation.status === "needs_revision" && validation.clarification_questions?.length) return showGoalClarifications(draft.goal, validation);
   if (validation.status !== "accepted") { $("goal-clarification-reason").textContent = validation.reason || "Goal needs revision. Edit the original goal and try again."; return; }
   validation.clarification_answers = draft.answers;
-  state.goalDraft = { goal: validation.normalized_goal || draft.goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
+  state.goalDraft = { goal: validation.normalized_goal || draft.goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
   state.goalCreationStage = "confirm";
   $("goal-clarification-panel").hidden = true;
   $("goal-confirmed-objective").textContent = state.goalDraft.goal;
@@ -1800,7 +1800,7 @@ async function confirmGoal() {
   if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
   try {
     await withButtonState("goal-confirm-button", "Starting investigation…", async () => {
-    const created = normalizeGoalResponse(await withTimeout(api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, scenario_name: "safe", constraints: { validation: state.goalDraft.validation }, data_source_mode: "Connected evidence", idempotency_key: state.goalDraft.idempotencyKey }) }), 15000, "The investigation did not start. Retry."));
+    const created = normalizeGoalResponse(await withTimeout(api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, repositories: state.goalDraft.repositories, scenario_name: "safe", constraints: { validation: state.goalDraft.validation, repositories: state.goalDraft.repositories }, data_source_mode: "Connected evidence", idempotency_key: state.goalDraft.idempotencyKey }) }), 15000, "The investigation did not start. Retry."));
     state.goalCreationStage = "started";
     const initialGoal = { ...created, status: "created", current_stage: "goal_received" };
     state.selectedGoal = initialGoal;
@@ -2926,10 +2926,37 @@ function overviewReviews() {
 
 function connectedRepositories() {
   const repos = new Set();
+  (state.githubConfig?.connected_repositories || []).forEach((item) => { if (item?.full_name) repos.add(item.full_name); });
+  (state.githubConfig?.allowed_repositories || []).forEach((item) => { if (item) repos.add(item); });
   state.reviews.forEach((item) => { if (item.repository) repos.add(item.repository); });
   if (state.run?.github_source?.repository) repos.add(state.run.github_source.repository);
   if (state.run?.mock_pr?.repository) repos.add(state.run.mock_pr.repository);
   return [...repos];
+}
+
+function selectedGoalRepositories() {
+  const select = $("goal-repositories-input");
+  return select ? [...select.selectedOptions].map((option) => option.value).filter(Boolean) : [];
+}
+
+function renderGoalRepositoryScope() {
+  const select = $("goal-repositories-input");
+  const help = $("goal-repositories-help");
+  if (!select || !help) return;
+  const selected = new Set(selectedGoalRepositories());
+  const repositories = connectedRepositories().sort((left, right) => left.localeCompare(right));
+  select.replaceChildren();
+  repositories.forEach((repository) => {
+    const option = document.createElement("option");
+    option.value = repository;
+    option.textContent = repository;
+    option.selected = selected.has(repository);
+    select.appendChild(option);
+  });
+  select.disabled = repositories.length === 0;
+  help.textContent = repositories.length
+    ? "Choose the repositories GhostBusters may inspect. Leave none selected for an AWS-only investigation."
+    : "No GitHub repositories are connected. You can still run an AWS-only investigation.";
 }
 
 function setupSteps() {
@@ -3285,7 +3312,7 @@ function renderAll() {
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderGitHubContext(); renderJiraContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderOutcomeVerification(); renderTechnical();
-  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalList(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
+  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalRepositoryScope(); renderGoalList(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
 function renderGitHubContext() {
@@ -3350,6 +3377,7 @@ function switchMode(mode) {
   if (mode === "settings") { loadMembers(); loadWorkspaceSettings(); renderRolesAccess(); renderPoliciesSettings(); renderSecuritySettings(); renderRepositorySettings(); }
   if (mode === "settings") loadAWSConfig();
   if (mode === "settings") { loadGitHubConfig(); loadJiraConfig(); loadCloudSchedules(); }
+  if (mode === "goals") loadGitHubConfig();
   if (mode === "activity") loadActivity();
   if (mode === "overview") loadOverview();
   if (mode === "demo-readiness") loadDemoReadiness();

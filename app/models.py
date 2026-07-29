@@ -599,6 +599,7 @@ class GoalCreateRequest(AppModel):
     goal: str
     scenario_name: str = "safe"
     scope: str | None = None
+    repositories: list[str] = Field(default_factory=list)
     constraints: dict[str, Any] = Field(default_factory=dict)
     success_criteria: list[str] = Field(default_factory=list)
     stop_conditions: list[str] = Field(default_factory=list)

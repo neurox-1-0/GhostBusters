@@ -936,7 +936,17 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
     require_permission(principal, GOALS_RUN)
     logger.info("goal_request_received organization_id=%s user_id=%s", principal.organization_id, principal.user.id if principal.user else None)
     try:
-        start_request = StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode)
+        selected_repositories = sorted(set(item.strip() for item in request.repositories if item.strip()))
+        github_config = github_integration_store.get(principal.organization_id)
+        accessible_repositories = {
+            str(item.get("full_name")).lower()
+            for item in github_config.connected_repositories
+            if item.get("full_name")
+        } | {item.lower() for item in github_config.allowed_repositories}
+        if selected_repositories and (not accessible_repositories or any(item.lower() not in accessible_repositories for item in selected_repositories)):
+            raise HTTPException(status_code=422, detail="Select only repositories connected to this organization.")
+        constraints = {**request.constraints, "repositories": selected_repositories}
+        start_request = StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode)
         if settings.demo_mode_enabled:
             run, created = workflow_service.start_run(start_request, principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
         else:
@@ -990,9 +1000,10 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                     client = GitHubAppClient(config.installation_id).api_client()
                     repositories = client.list_installation_repositories()
                     allowed = {item.lower() for item in config.allowed_repositories}
-                    repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed)), None)
+                    selected = {str(item).lower() for item in goal_run.constraints.get("repositories", [])}
+                    repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed) and (not selected or str(item.get("full_name")).lower() in selected)), None)
                     if not repository:
-                        raise RuntimeError("No allowed GitHub repository is available.")
+                        raise RuntimeError("No selected GitHub repository is available.")
                     owner, name = repository.split("/", 1)
                     metadata = client.get_repository(owner, name)
                     commits = client.list_commits(owner, name)
@@ -1025,6 +1036,8 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
             auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id, "execution_mode": run.execution_mode}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)
         logger.info("goal_created organization_id=%s goal_id=%s status=%s correlation_id=%s", principal.organization_id, run.id, run.status, run.correlation_id)
         return run
+    except HTTPException:
+        raise
     except ScenarioNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("goal_creation_failed organization_id=%s exception_class=%s", principal.organization_id, type(exc).__name__)
