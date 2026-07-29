@@ -1468,9 +1468,17 @@ async function loadGoals() {
     state.goals = await api("/api/goals");
     if (state.selectedGoal && !state.goals.some((goal) => goal.id === state.selectedGoal.id)) state.selectedGoal = null;
     renderGoalList();
-    const savedGoalId = localStorage.getItem("ghostbusters:lastGoalId");
-    if (!state.selectedGoal && savedGoalId && state.goals.some((goal) => String(goal.id) === savedGoalId)) void selectGoal(savedGoalId, false);
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
+}
+
+function openGoalsHome() {
+  stopGoalPolling();
+  state.selectedGoal = null;
+  state.goalEvents = [];
+  state.goalCreationStage = "idle";
+  switchMode("goals");
+  renderGoalExecution();
+  void loadGoals();
 }
 
 async function loadOutcomeForRun() {
@@ -1847,13 +1855,27 @@ function goalSourceLabel(run) {
 }
 
 function goalStageIndex(run) {
-  if (run?.status === "created") return 0;
-  if (run?.status === "planning") return 1;
-  if (["investigating", "needs_more_evidence"].includes(run?.status)) return 2;
-  if (run?.status === "verifying") return 4;
-  if (run?.status === "pending_human_review") return 6;
-  if (["completed", "approved", "pr_created", "remediation_pr_created", "keep", "abstained"].includes(run?.status)) return 6;
-  return 0;
+  const states = goalRoadmapStates(run, state.goalEvents);
+  const current = states.findIndex((item) => item !== "complete");
+  return current < 0 ? states.length - 1 : current;
+}
+
+function goalRoadmapStates(run, events) {
+  const eventTypes = new Set((events || []).map((event) => event.event_type));
+  const has = (...types) => types.some((type) => eventTypes.has(type));
+  const attempts = run.tool_attempts || [];
+  const toolRunning = attempts.some((attempt) => attempt.status === "running");
+  const toolCompleted = attempts.some((attempt) => attempt.status === "completed");
+  const terminal = ["completed", "approved", "pr_created", "remediation_pr_created", "rejected", "canceled", "abstained"].includes(run.status);
+  return [
+    has("goal_received", "scope_resolved") ? "complete" : run.status === "created" ? "active" : "waiting",
+    has("gemini_planning_completed", "plan_validated", "plan_created") ? "complete" : has("gemini_planning_started") ? "active" : "waiting",
+    run.status === "needs_more_evidence" ? "warning" : toolRunning || run.status === "investigating" ? "active" : toolCompleted ? "complete" : "waiting",
+    has("evidence_threshold_evaluated", "alternatives_compared") ? "complete" : toolCompleted ? "active" : "waiting",
+    has("policy_evaluated") ? "complete" : has("evidence_threshold_evaluated") ? "active" : "waiting",
+    has("recommendation_created", "recommendation_prepared") ? "complete" : has("policy_evaluated") ? "active" : "waiting",
+    run.status === "pending_human_review" ? "warning" : terminal && has("human_review_required", "approval_requested") ? "complete" : has("recommendation_created", "recommendation_prepared") ? "active" : "waiting",
+  ];
 }
 
 function renderGoalList() {
@@ -3913,7 +3935,7 @@ function bindEvents() {
   on("pause-button", "click", () => { state.paused = !state.paused; $("pause-button").textContent = state.paused ? "Resume" : "Pause"; });
   on("skip-animation", "change", (event) => { state.skipAnimation = event.target.checked; if (state.run && state.skipAnimation) startAnimation(true); });
   on("simple-view-button", "click", () => switchView(false));
-  on("goals-view-button", "click", () => { switchMode("goals"); loadGoals(); });
+  on("goals-view-button", "click", openGoalsHome);
   on("cloud-hunt-view-button", "click", () => switchMode("cloud-hunt"));
   on("review-queue-view-button", "click", () => { switchMode("review-queue"); loadReviewQueue(); });
   on("technical-view-button", "click", () => switchView(true));
