@@ -1109,6 +1109,11 @@ class AWSIntegrationConfig(AppModel):
     regions: list[str] = Field(default_factory=list)
     cloudwatch_lookback_days: int = Field(default=14, ge=1, le=90)
     low_cpu_threshold: float = Field(default=10.0, ge=0, le=100)
+    connection_status: Literal["not_connected", "onboarding_pending", "connected", "failed"] = "not_connected"
+    account_id: str | None = None
+    role_arn: str | None = None
+    onboarding_correlation_id: str | None = None
+    last_validated: datetime | None = None
     created_at: datetime
     updated_at: datetime
     last_successful_collection: datetime | None = None

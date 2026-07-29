@@ -81,11 +81,14 @@ class RealAWSCloudAdapter(CloudProviderAdapter):
     display_name = "AWS"
     fixture_backed = False
 
-    def __init__(self, regions: list[str], lookback_days: int = 14, low_cpu_threshold: float = 10.0, session_factory=None) -> None:
+    def __init__(self, regions: list[str], lookback_days: int = 14, low_cpu_threshold: float = 10.0, session_factory=None, role_arn: str | None = None, external_id: str | None = None) -> None:
         self.regions = list(dict.fromkeys(regions))
         self.lookback_days = lookback_days
         self.low_cpu_threshold = low_cpu_threshold
         self._session_factory = session_factory
+        self.role_arn = role_arn
+        self.external_id = external_id
+        self._assumed_session = None
         self.account_id: str | None = None
         self.collection_warnings: list[str] = []
 
@@ -94,7 +97,22 @@ class RealAWSCloudAdapter(CloudProviderAdapter):
             return self._session_factory()
         try:
             import boto3
-            return boto3.Session()
+            base_session = boto3.Session()
+            if not self.role_arn:
+                return base_session
+            if self._assumed_session is not None:
+                return self._assumed_session
+            credentials = base_session.client("sts", region_name=self.regions[0] if self.regions else None).assume_role(
+                RoleArn=self.role_arn,
+                RoleSessionName="ghostbusters-readonly",
+                ExternalId=self.external_id,
+            )["Credentials"]
+            self._assumed_session = boto3.Session(
+                aws_access_key_id=credentials["AccessKeyId"],
+                aws_secret_access_key=credentials["SecretAccessKey"],
+                aws_session_token=credentials["SessionToken"],
+            )
+            return self._assumed_session
         except ImportError as exc:
             raise RuntimeError("boto3 is not installed; real AWS mode is unavailable.") from exc
 

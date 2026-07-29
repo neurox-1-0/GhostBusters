@@ -94,6 +94,11 @@ class Settings:
     aws_allowed_regions: tuple[str, ...] = tuple(item.strip() for item in os.getenv("AWS_ALLOWED_REGIONS", "").split(",") if item.strip())
     aws_cloudwatch_lookback_days: int = int(os.getenv("AWS_CLOUDWATCH_LOOKBACK_DAYS", "14"))
     aws_integration_config_path: Path = Path(os.getenv("AWS_INTEGRATION_CONFIG_PATH", ".runtime/aws_integrations.json"))
+    # Cross-account onboarding is optional. The trusted principal is the role
+    # used by this GhostBusters deployment to assume customer read-only roles.
+    aws_onboarding_trusted_principal_arn: str | None = os.getenv("AWS_ONBOARDING_TRUSTED_PRINCIPAL_ARN") or None
+    aws_onboarding_role_name: str = os.getenv("AWS_ONBOARDING_ROLE_NAME", "GhostBustersReadOnlyRole")
+    aws_onboarding_state_ttl_seconds: int = int(os.getenv("AWS_ONBOARDING_STATE_TTL_SECONDS", "900"))
     github_integration_enabled: bool = os.getenv("GITHUB_INTEGRATION_ENABLED", "false").lower() in {"1", "true", "yes"}
     github_token: str | None = os.getenv("GITHUB_TOKEN") or None
     github_webhook_secret: str | None = os.getenv("GITHUB_WEBHOOK_SECRET") or None

@@ -15,6 +15,7 @@ from app.settings import Settings, settings
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntService
 from core.postgres_json_store import PostgresJsonStore
 from core.aws_integration import aws_integration_store
+from core.aws_onboarding import AWSOnboardingState
 from integrations.cloud_adapters import RealAWSCloudAdapter
 from integrations.cloud_registry import CloudProviderRegistry
 
@@ -158,9 +159,16 @@ class CloudHuntScheduler:
             registry_override = None
             if claimed.inventory_source == "real_aws":
                 config = aws_integration_store.get(claimed.organization_id)
-                if not config.enabled: raise CloudHuntConflictError("Real AWS mode is disabled for this organization.")
+                if not config.enabled or config.connection_status != "connected" or not config.role_arn:
+                    raise CloudHuntConflictError("A verified AWS account connection is required for real AWS mode; scheduled hunt did not use fixtures.")
                 regions = config.regions or list(settings.aws_allowed_regions)
-                adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
+                adapter = RealAWSCloudAdapter(
+                    regions,
+                    config.cloudwatch_lookback_days,
+                    config.low_cpu_threshold,
+                    role_arn=config.role_arn,
+                    external_id=AWSOnboardingState(settings.secret_key, settings.aws_onboarding_state_ttl_seconds).external_id(config.organization_id),
+                )
                 if not adapter.validate()["connected"]: raise CloudHuntConflictError("AWS validation failed safely; scheduled hunt did not use fixtures.")
                 registry_override = CloudProviderRegistry([adapter])
             hunt = self.service.start_hunt(request, claimed.organization_id, None, "System", registry_override, schedule_id=claimed.id, schedule_name=claimed.name)

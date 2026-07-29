@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import (
@@ -91,6 +92,7 @@ from core.workflow_service import (
 )
 from core.cloud_hunt_service import CloudHuntConflictError, CloudHuntNotFoundError, cloud_hunt_service
 from core.aws_integration import aws_integration_store
+from core.aws_onboarding import AWSOnboardingState
 from core.github_integration import github_integration_store
 from core.jira_integration import jira_integration_store
 from core.assistant_service import AssistantValidationError, assistant_service
@@ -131,11 +133,24 @@ if settings.cors_allowed_origins:
         allow_headers=["Content-Type", "X-CSRF-Token", "X-Correlation-ID", "X-GitHub-Event", "X-GitHub-Delivery", "X-Hub-Signature-256"],
     )
 static_path = Path(__file__).resolve().parent.parent / settings.static_dir
+aws_onboarding_template_path = Path(__file__).resolve().parent.parent / "templates" / "aws_read_only_onboarding.yaml"
+aws_onboarding_state = AWSOnboardingState(settings.secret_key, settings.aws_onboarding_state_ttl_seconds)
 webhook_deduplicator = build_webhook_deduplicator()
 app.mount("/static", StaticFiles(directory=static_path), name="static")
 cloud_hunt_service.workflow_service = workflow_service
 assistant_service.workflow = workflow_service
 assistant_service.cloud_hunt = cloud_hunt_service
+
+
+def aws_adapter_for_config(config) -> RealAWSCloudAdapter:
+    regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
+    return RealAWSCloudAdapter(
+        regions,
+        config.cloudwatch_lookback_days,
+        config.low_cpu_threshold,
+        role_arn=config.role_arn,
+        external_id=aws_onboarding_state.external_id(config.organization_id) if config.role_arn else None,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -1396,6 +1411,90 @@ def get_aws_config(principal: Principal = Depends(principal_dependency)):
     return aws_integration_store.get(principal.organization_id)
 
 
+@app.get("/api/integrations/aws/onboarding-template")
+def aws_onboarding_template() -> PlainTextResponse:
+    """Public CloudFormation template. It contains no customer credentials."""
+    if not aws_onboarding_template_path.is_file():
+        raise HTTPException(status_code=503, detail="AWS onboarding template is unavailable.")
+    return PlainTextResponse(
+        aws_onboarding_template_path.read_text(encoding="utf-8"),
+        media_type="text/yaml",
+    )
+
+
+@app.get("/api/integrations/aws/connect")
+def connect_aws(principal: Principal = Depends(principal_dependency)) -> RedirectResponse:
+    require_permission(principal, INTEGRATIONS_AWS_MANAGE)
+    if not settings.aws_onboarding_trusted_principal_arn:
+        raise HTTPException(status_code=503, detail="AWS account onboarding is not configured for this deployment. Configure AWS_ONBOARDING_TRUSTED_PRINCIPAL_ARN first.")
+    if not settings.app_base_url.lower().startswith("https://"):
+        raise HTTPException(status_code=503, detail="AWS account onboarding requires a public HTTPS APP_BASE_URL.")
+    state, correlation_id = aws_onboarding_state.create(principal.organization_id, principal.user.id if principal.user else None)
+    aws_integration_store.begin_onboarding(principal.organization_id, correlation_id)
+    auth_store.record_activity(
+        principal.organization_id,
+        "aws_connection_started",
+        principal.user.id if principal.user else None,
+        {"correlation_id": correlation_id, "connection_type": "cloudformation_cross_account_role"},
+        actor_type="Integration",
+        category="Integrations",
+    )
+    callback_url = f"{settings.app_base_url.rstrip('/')}/api/integrations/aws/callback"
+    template_url = f"{settings.app_base_url.rstrip('/')}/api/integrations/aws/onboarding-template"
+    parameters = {
+        "templateURL": template_url,
+        "stackName": f"GhostBustersReadOnly-{str(principal.organization_id)[:8]}",
+        "param_RoleName": settings.aws_onboarding_role_name,
+        "param_TrustedPrincipalArn": settings.aws_onboarding_trusted_principal_arn,
+        "param_ExternalId": aws_onboarding_state.external_id(principal.organization_id),
+        "param_CallbackUrl": callback_url,
+        "param_CallbackState": state,
+    }
+    region = settings.aws_region or "us-east-1"
+    url = f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}#/stacks/quickcreate?{urlencode(parameters)}"
+    return RedirectResponse(url=url, status_code=307)
+
+
+@app.post("/api/integrations/aws/callback")
+async def aws_onboarding_callback(request: Request) -> dict[str, object]:
+    """Receives the signed, one-way completion callback from the CFN stack."""
+    state = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        payload = aws_onboarding_state.consume(state)
+        body = await request.json()
+        organization_id = UUID(str(payload["organization_id"]))
+        role_arn = str(body.get("role_arn") or "")
+        if not role_arn.startswith("arn:aws:iam::") or ":role/" not in role_arn:
+            raise ValueError("invalid role ARN")
+        config = aws_integration_store.get(organization_id)
+        adapter = RealAWSCloudAdapter(
+            config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions)),
+            config.cloudwatch_lookback_days,
+            config.low_cpu_threshold,
+            role_arn=role_arn,
+            external_id=aws_onboarding_state.external_id(organization_id),
+        )
+        validation = adapter.validate()
+        if not validation["connected"] or not validation.get("account_id"):
+            raise ValueError("read-only role validation failed")
+        correlation_id = str(payload["correlation_id"])
+        was_connected = config.connection_status == "connected" and config.onboarding_correlation_id == correlation_id
+        aws_integration_store.complete_onboarding(organization_id, role_arn, str(validation["account_id"]), correlation_id)
+        if not was_connected:
+            auth_store.record_activity(
+                organization_id,
+                "aws_connection_completed",
+                UUID(str(payload["user_id"])) if payload.get("user_id") else None,
+                {"account_id": validation["account_id"], "correlation_id": correlation_id, "connection_type": "cloudformation_cross_account_role"},
+                actor_type="Integration",
+                category="Integrations",
+            )
+        return {"connected": True, "account_id": validation["account_id"]}
+    except Exception as exc:
+        logger.warning("AWS onboarding callback failed", extra={"stage": "validate_role", "exception_class": type(exc).__name__})
+        raise HTTPException(status_code=403, detail="AWS onboarding could not be verified safely.") from exc
+
+
 @app.get("/api/integrations/github/config")
 def get_github_config(principal: Principal = Depends(principal_dependency)):
     require_permission(principal, INTEGRATIONS_GITHUB_READ)
@@ -1587,13 +1686,23 @@ def validate_aws_connection(request: Request, principal: Principal = Depends(pri
     require_permission(principal, INTEGRATIONS_AWS_READ)
     rate_limiter.check(request, "integration_validation", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     config = aws_integration_store.get(principal.organization_id)
-    regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
-    adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
+    if not config.role_arn:
+        result = {
+            "connected": False,
+            "account_id": None,
+            "allowed_regions": config.regions or list(settings.aws_allowed_regions),
+            "permission_warnings": [],
+            "missing_permissions": ["Connect an AWS account before validation."],
+            "checked_at": utc_now(),
+        }
+        aws_integration_store.mark_validation(principal.organization_id, False, result["missing_permissions"][0])
+        return result
+    adapter = aws_adapter_for_config(config)
     result = adapter.validate()
     if result["connected"]:
-        aws_integration_store.mark_collection(principal.organization_id, True)
+        aws_integration_store.mark_validation(principal.organization_id, True)
     else:
-        aws_integration_store.mark_collection(principal.organization_id, False, "; ".join(result["missing_permissions"]))
+        aws_integration_store.mark_validation(principal.organization_id, False, "; ".join(result["missing_permissions"]))
     return result
 
 
@@ -1615,10 +1724,9 @@ def start_cloud_hunt(request: CloudHuntRequest, fastapi_request: Request, princi
         registry_override = None
         if request.inventory_source == "real_aws":
             config = aws_integration_store.get(principal.organization_id)
-            if not config.enabled:
-                raise CloudHuntConflictError("Real AWS mode is disabled for this organization.")
-            regions = config.regions or ([settings.aws_region] if settings.aws_region else list(settings.aws_allowed_regions))
-            adapter = RealAWSCloudAdapter(regions, config.cloudwatch_lookback_days, config.low_cpu_threshold)
+            if not config.enabled or config.connection_status != "connected" or not config.role_arn:
+                raise CloudHuntConflictError("A verified AWS account connection is required for real AWS mode; it did not fall back to fixtures.")
+            adapter = aws_adapter_for_config(config)
             validation = adapter.validate()
             if not validation["connected"]:
                 raise CloudHuntConflictError("AWS validation failed safely; real AWS mode did not fall back to fixtures.")

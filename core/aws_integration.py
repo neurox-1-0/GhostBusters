@@ -53,6 +53,53 @@ class AWSIntegrationStore:
             self._persist()
             return self._configs[organization_id].model_copy(deep=True)
 
+    def begin_onboarding(self, organization_id: UUID, correlation_id: str) -> AWSIntegrationConfig:
+        with self._lock:
+            current = self.get(organization_id)
+            updated = current.model_copy(update={
+                "connection_status": "onboarding_pending",
+                "onboarding_correlation_id": correlation_id,
+                "last_failure_summary": None,
+                "updated_at": utc_now(),
+            })
+            self._configs[organization_id] = updated
+            self._persist()
+            return updated.model_copy(deep=True)
+
+    def complete_onboarding(self, organization_id: UUID, role_arn: str, account_id: str, correlation_id: str) -> AWSIntegrationConfig:
+        with self._lock:
+            current = self.get(organization_id)
+            if current.onboarding_correlation_id == correlation_id and current.connection_status == "connected":
+                return current.model_copy(deep=True)
+            updated = current.model_copy(update={
+                "enabled": True,
+                "connection_status": "connected",
+                "account_id": account_id,
+                "role_arn": role_arn,
+                "onboarding_correlation_id": correlation_id,
+                "last_validated": utc_now(),
+                "last_successful_collection": utc_now(),
+                "last_failure_summary": None,
+                "updated_at": utc_now(),
+            })
+            self._configs[organization_id] = updated
+            self._persist()
+            return updated.model_copy(deep=True)
+
+    def mark_validation(self, organization_id: UUID, success: bool, summary: str | None = None) -> AWSIntegrationConfig:
+        with self._lock:
+            current = self.get(organization_id)
+            updated = current.model_copy(update={
+                "connection_status": "connected" if success and current.role_arn else ("failed" if not success and current.role_arn else current.connection_status),
+                "last_validated": utc_now(),
+                "last_successful_collection": utc_now() if success else current.last_successful_collection,
+                "last_failure_summary": None if success else (summary or "AWS validation failed safely."),
+                "updated_at": utc_now(),
+            })
+            self._configs[organization_id] = updated
+            self._persist()
+            return updated.model_copy(deep=True)
+
     def reset(self) -> None:
         with self._lock:
             self._configs.clear()

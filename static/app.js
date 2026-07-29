@@ -1637,6 +1637,11 @@ function renderAWSConfig() {
   $("aws-enabled-select").value = String(Boolean(config.enabled));
   $("aws-regions-input").value = (config.regions || []).join(",");
   $("aws-lookback-input").value = config.cloudwatch_lookback_days || 14;
+  const status = config.connection_status || "not_connected";
+  const statusLabels = { not_connected: "Not connected", onboarding_pending: "Setup in progress", connected: "Connected", failed: "Connection needs attention" };
+  setStatusBadge("aws-connection-status", { label: statusLabels[status] || "Not checked", className: status === "connected" ? "status-approved" : status === "failed" ? "status-blocked" : "status-neutral" });
+  $("aws-account-id").textContent = config.account_id || (status === "onboarding_pending" ? "Awaiting AWS setup" : "Not connected");
+  $("aws-last-checked").textContent = config.last_validated ? exactTimestamp(config.last_validated) : "Not checked";
   $("aws-last-success").textContent = config.last_successful_collection ? exactTimestamp(config.last_successful_collection) : "Not recorded";
   $("aws-permission-warnings").textContent = config.last_failure_summary || "None recorded";
   const editable = hasPermission("integrations.aws.manage"); $("aws-save-button").hidden = !editable; $("aws-connect-button").hidden = !editable; $("aws-connect-button").disabled = !editable; $("aws-enabled-select").disabled = !editable; $("aws-regions-input").readOnly = !editable; $("aws-lookback-input").readOnly = !editable; $("aws-validate-button").disabled = !hasPermission("integrations.aws.read");
@@ -1659,11 +1664,17 @@ async function validateAWSConnection() {
 }
 
 async function connectAWSAccount() {
-  return withButtonState("aws-connect-button", "Connecting...", async () => {
-    state.awsConfig = await api("/api/integrations/aws/config", { method: "PATCH", body: JSON.stringify({ enabled: true, regions: $("aws-regions-input").value.split(",").map((item) => item.trim()).filter(Boolean), cloudwatch_lookback_days: Number($("aws-lookback-input").value) }) });
-    renderAWSConfig();
-    await validateAWSConnection();
-  }, "Connected").catch((error) => setMessage("aws-message", friendlyError(error, "AWS account could not be connected. Check the server credential chain and read-only permissions.")));
+  const button = $("aws-connect-button");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "Opening AWS...";
+  try { window.location.assign("/api/integrations/aws/connect"); }
+  catch (error) {
+    button.disabled = false;
+    button.textContent = originalLabel;
+    setMessage("aws-message", friendlyError(error, "AWS setup could not be opened."));
+  }
 }
 
 async function selectGoal(goalId, switchToView = true, seed = null) {

@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: GhostBusters read-only cross-account connection. This stack never changes customer resources.
+Parameters:
+  RoleName:
+    Type: String
+    Default: GhostBustersReadOnlyRole
+  TrustedPrincipalArn:
+    Type: String
+  ExternalId:
+    Type: String
+    NoEcho: true
+  CallbackUrl:
+    Type: String
+  CallbackState:
+    Type: String
+    NoEcho: true
+Resources:
+  GhostBustersReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Read-only role used by GhostBusters for inventory and CloudWatch evidence.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+  CallbackExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  ConnectionCallbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt CallbackExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def respond(event, status, data=None, reason=None):
+              body = json.dumps({"Status": status, "Reason": reason or "See CloudWatch Logs", "PhysicalResourceId": event.get("PhysicalResourceId", "ghostbusters-connection"), "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"], "Data": data or {}}).encode()
+              urllib.request.urlopen(urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": ""}), timeout=10)
+          def handler(event, context):
+              props = event["ResourceProperties"]
+              try:
+                  if event["RequestType"] in ("Create", "Update"):
+                      payload = json.dumps({"role_arn": props["RoleArn"]}).encode()
+                      req = urllib.request.Request(props["CallbackUrl"], data=payload, method="POST", headers={"Content-Type": "application/json", "Authorization": "Bearer " + props["CallbackState"]})
+                      urllib.request.urlopen(req, timeout=15)
+                  respond(event, "SUCCESS", {"RoleArn": props["RoleArn"]})
+              except Exception as exc:
+                  respond(event, "FAILED", reason="GhostBusters connection verification failed safely.")
+                  raise exc
+  ConnectionCallback:
+    Type: Custom::GhostBustersConnection
+    Properties:
+      ServiceToken: !GetAtt ConnectionCallbackFunction.Arn
+      CallbackUrl: !Ref CallbackUrl
+      CallbackState: !Ref CallbackState
+      RoleArn: !GetAtt GhostBustersReadOnlyRole.Arn
+Outputs:
+  GhostBustersRoleArn:
+    Value: !GetAtt GhostBustersReadOnlyRole.Arn
+  AccountId:
+    Value: !Ref AWS::AccountId
