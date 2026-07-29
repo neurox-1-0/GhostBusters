@@ -43,6 +43,10 @@ class AIClientError(Exception):
         self.model = model
 
 
+class EmptyGeminiResponseError(ValueError):
+    """Raised when Gemini returns no structured content to validate."""
+
+
 @dataclass(frozen=True, slots=True)
 class AICallResult:
     value: BaseModel
@@ -125,7 +129,6 @@ class GeminiAIClient:
                 config=self._types.GenerateContentConfig(
                     temperature=self.configuration.gemini_temperature,
                     response_mime_type="application/json",
-                    response_schema=schema,
                 ),
             )
             parsed = getattr(response, "parsed", None)
@@ -135,13 +138,14 @@ class GeminiAIClient:
             if candidates:
                 finish_reason = str(getattr(candidates[0], "finish_reason", "") or "")
             logger.info("gemini_structured_response endpoint=generate model=%s schema=%s parsed_present=%s text_length=%s candidates=%s finish_reason=%s", model, schema.__name__, parsed is not None, len(text or ""), len(candidates), finish_reason or "unknown")
-            raw = parsed if parsed is not None else self._parse_json_text(text)
+            raw = parsed if isinstance(parsed, dict) else self._parse_json_text(text)
             value = schema.model_validate(self._normalize_structured_payload(schema, raw))
         except Exception as exc:
-            category = _safe_category(exc)
+            category = "provider_error" if isinstance(exc, EmptyGeminiResponseError) else _safe_category(exc)
             fields = []
             if isinstance(exc, ValidationError): fields = [".".join(str(part) for part in item.get("loc", ())) for item in exc.errors()]
-            logger.warning("gemini_structured_response_failed endpoint=generate model=%s schema=%s parse_stage=structured_validation exception_class=%s validation_fields=%s", model, schema.__name__, type(exc).__name__, fields)
+            parse_stage = "pydantic_validation" if isinstance(exc, ValidationError) else "response_parsing"
+            logger.warning("gemini_structured_response_failed endpoint=generate model=%s schema=%s parse_stage=%s exception_class=%s validation_fields=%s", model, schema.__name__, parse_stage, type(exc).__name__, fields)
             message = "Gemini response did not match the goal-validation schema." if schema is GeminiGoalValidation else "Gemini returned an unusable response."
             raise AIClientError(category, message, model=model) from exc
         return AICallResult(
@@ -155,7 +159,7 @@ class GeminiAIClient:
     @staticmethod
     def _parse_json_text(text: Any) -> dict[str, Any]:
         if not isinstance(text, str) or not text.strip():
-            raise ValueError("empty structured response")
+            raise EmptyGeminiResponseError("empty structured response")
         cleaned = text.strip()
         fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.IGNORECASE | re.DOTALL)
         if fenced:
@@ -164,6 +168,52 @@ class GeminiAIClient:
         if not isinstance(value, dict):
             raise ValueError("structured response was not an object")
         return value
+
+    @staticmethod
+    def _response_contract(schema: type[BaseModel]) -> dict[str, Any]:
+        """Compact prompt contracts; Pydantic remains the response authority."""
+        contracts: dict[type[BaseModel], dict[str, Any]] = {
+            ObjectiveInterpretation: {
+                "original_objective": "string", "objective_type": "string", "normalized_goal": "string",
+                "constraints": ["string"], "assumptions": ["string"], "ambiguities": ["string"], "plain_language_summary": "string",
+            },
+            AgentNextAction: {
+                "action": "string", "tool_name": "string or null", "reason": "string", "question_being_answered": "string",
+                "expected_information": "string", "human_question": "string or null", "confidence": "number from 0 to 1",
+            },
+            GeminiInvestigationPlan: {
+                "summary": "string", "questions": [{"id": "string", "question": "string", "required_evidence_sources": ["string"], "reason": "string"}],
+                "selected_tools": ["string"], "skipped_tools": ["string"], "planning_notes": ["string"], "uncertainties": ["string"],
+            },
+            GeminiRecommendationExplanation: {
+                "headline": "string", "summary": "string", "evidence_points": ["string"], "uncertainty_points": ["string"],
+                "safety_points": ["string"], "next_step": "string",
+            },
+            AskGhostBustersResponse: {
+                "answer": "string", "answer_type": "string", "supporting_sections": ["string"], "evidence_sources": ["string"],
+                "limitations": ["string"], "provider": "string", "fallback_used": "boolean",
+            },
+            GeminiGoalValidation: {
+                "status": "accepted | needs_revision | rejected", "reason": "string", "normalized_goal": "string", "category": "string",
+                "missing_fields": ["string"], "clarifying_questions": ["string"], "suggested_goal": "string or null",
+                "constraints": ["string"], "success_criteria": ["string"], "stop_conditions": ["string"],
+                "suggested_capabilities": ["string"], "risk_level": "low | medium | high",
+            },
+            GeminiGoalPlan: {
+                "decision_summary": "string",
+                "selected_capabilities": [{"capability": "string", "reason": "string", "expected_evidence": "string"}],
+            },
+        }
+        return contracts.get(schema, {name: "value" for name in schema.model_fields})
+
+    @classmethod
+    def _prompt_with_response_contract(cls, schema: type[BaseModel], prompt: str) -> str:
+        contract = json.dumps(cls._response_contract(schema), separators=(",", ":"), sort_keys=True)
+        return (
+            f"{prompt}\nReturn one JSON object only, matching this response contract: {contract}. "
+            "Do not use markdown or include text outside the JSON. "
+            "Do not invent tools, permissions, accounts, resources, costs, or evidence."
+        )
 
     @staticmethod
     def _normalize_structured_payload(schema: type[T], raw: Any) -> Any:
@@ -175,9 +225,6 @@ class GeminiAIClient:
         for field in ("missing_fields", "clarifying_questions", "constraints", "success_criteria", "stop_conditions", "suggested_capabilities"):
             if normalized.get(field) is None:
                 normalized[field] = []
-        for field in ("reason", "normalized_goal", "category"):
-            if normalized.get(field) is None:
-                normalized[field] = ""
         if normalized.get("suggested_goal") is None:
             normalized["suggested_goal"] = None
         return normalized
@@ -185,6 +232,7 @@ class GeminiAIClient:
     def _call(self, schema: type[T], prompt: str) -> AICallResult:
         primary_model = self.configuration.gemini_model
         fallback_model = self.configuration.gemini_fallback_model
+        prompt = self._prompt_with_response_contract(schema, prompt)
         # Keep a successful model preferred, but retain the configured fallback for
         # transient failures so an overloaded active primary cannot trap requests.
         models = [self.active_model or primary_model, fallback_model]
