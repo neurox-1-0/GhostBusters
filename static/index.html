@@ -175,6 +175,7 @@
               </div>
               <p class="timezone-note" id="pr-timezone-note">Times shown in browser timezone</p>
               <div id="pr-review-error" class="error-callout" hidden><span>Could not load PR reviews.</span><button id="pr-retry-button" class="secondary compact" type="button">Retry</button></div>
+              <p class="message" id="pr-auxiliary-message" role="status"></p><button id="pr-auxiliary-retry-button" class="secondary compact" type="button" hidden>Retry approval metadata</button>
               <div id="pr-review-list" class="responsive-table pr-review-table"></div>
               <div class="pagination-row">
                 <span id="pr-pagination-summary">0 reviews</span>
@@ -601,6 +602,7 @@
               <div class="toolbar-actions"><button id="invite-member-button" type="button">Invite Member</button><button id="refresh-members-button" class="secondary" type="button">Refresh</button></div>
             </div>
             <section class="panel" aria-labelledby="workspace-settings-title"><div class="section-heading"><div><p class="kicker">Workspace</p><h2 id="workspace-settings-title" class="section-title">Workspace Settings</h2><p>Organization identity and display timezone. Changes are version checked.</p></div><span id="workspace-settings-status" class="status-badge status-neutral">Not loaded</span></div><div class="goal-create-grid"><label>Organization name<input id="workspace-name-input" /></label><label>Timezone<input id="workspace-timezone-input" placeholder="Asia/Colombo" /></label><label>Organization ID<input id="workspace-id-input" readonly /></label><label>Created date<input id="workspace-created-input" readonly /></label><button id="workspace-save-button" type="button">Save Workspace</button></div><p id="workspace-message" class="message" role="status"></p></section>
+            <p class="message" id="members-message" role="status"></p>
             <section class="summary-grid" id="members-summary" aria-label="Members summary"></section>
             <section class="panel" aria-labelledby="active-members-title"><div class="section-heading"><div><p class="kicker">Active Members</p><h2 id="active-members-title" class="section-title">Workspace Access</h2></div></div><div id="active-members-table"></div></section>
             <section class="panel" aria-labelledby="pending-invitations-title"><div class="section-heading"><div><p class="kicker">Pending Invitations</p><h2 id="pending-invitations-title" class="section-title">Invitations</h2></div></div><div id="pending-invitations-table"></div></section>

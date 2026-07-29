@@ -590,6 +590,7 @@ async function api(path, options = {}) {
     const detail = payload.detail || `${response.status} ${response.statusText}`;
     const error = new Error(typeof detail === "string" ? detail : prettyValue(detail));
     error.status = response.status;
+    error.endpoint = path;
     throw error;
   }
   return payload;
@@ -1281,8 +1282,11 @@ async function loadMembers() {
     state.members = members;
     state.invitations = invitations;
     renderMembers();
+    setMessage("members-message", "");
   } catch (error) {
-    setMessage("ui-message", friendlyError(error, "Failed to load members."));
+    const message = error?.status === 401 ? "Reviewer details are unavailable. Retry." : friendlyError(error, "Members are unavailable. Retry.");
+    setMessage("members-message", message);
+    showToast("Member details unavailable", message, "error");
   }
 }
 
@@ -1315,10 +1319,22 @@ async function loadPRReviews({ preserveSelection = true, showNotice = false } = 
     const countDelta = serverPaged && previousTotal ? (payload.total - previousTotal) : Math.max(0, runs.length - previousIds.size);
     const hasIncomingReviews = newIds.length > 0 || runs.length > previousIds.size || (showNotice && state.run && runs.length > 1);
     state.newPrReviewCount = showNotice && preserveSelection && state.run && hasIncomingReviews ? Math.max(1, newIds.length, countDelta) : 0;
+    if (state.currentUser?.authenticated && $("ui-message")?.textContent === "Authentication required.") setMessage("ui-message", "");
+    setMessage("pr-auxiliary-message", "");
+    if ($("pr-auxiliary-retry-button")) $("pr-auxiliary-retry-button").hidden = true;
     // Keep the full selected run untouched. List refreshes must not disturb an open
     // case or any unsent decision form state.
     renderPRReviewList();
   } catch (error) {
+    if (error?.status === 401) {
+      state.authRequired = true;
+      state.currentUser = null;
+      renderIdentity();
+      openAuthModal("signin");
+      setMessage("ui-message", "Authentication required.");
+      state.prReviewError = "";
+      return;
+    }
     const message = friendlyError(error, "Failed to load PR reviews.");
     state.prReviewError = message;
     setMessage("ui-message", message);
@@ -1598,7 +1614,10 @@ async function loadReviewQueue() {
     renderReviewQueue();
   } catch (error) {
     const message = friendlyError(error, "Failed to load approval queue.");
-    setMessage("cloud-hunt-message", message);
+    const auxiliaryMessage = error?.status === 401 ? "Approval metadata unavailable." : message;
+    const target = state.activeMode === "simple" ? "pr-auxiliary-message" : "cloud-hunt-message";
+    setMessage(target, auxiliaryMessage);
+    if (state.activeMode === "simple" && $("pr-auxiliary-retry-button")) $("pr-auxiliary-retry-button").hidden = false;
     showToast("Review load failed", message, "error");
   } finally {
     state.loading.reviews = false;
@@ -3638,6 +3657,7 @@ function bindEvents() {
   on("assistant-backdrop", "click", (event) => { if (event.target.id === "assistant-backdrop") closeAssistant(); });
   on("pr-notice-refresh-button", "click", () => { state.newPrReviewCount = 0; loadPRReviews({ preserveSelection: true }); });
   on("pr-retry-button", "click", () => loadPRReviews({ preserveSelection: true }));
+  on("pr-auxiliary-retry-button", "click", loadReviewQueue);
   on("pr-search-input", "input", (event) => {
     state.prReviewFilters.search = event.target.value;
     state.prReviewFilters.page = 1;
