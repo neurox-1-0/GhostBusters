@@ -198,6 +198,127 @@ class WorkflowService:
 
         return self.store.update(run.id, execute, organization_id), True
 
+    def start_connected_goal(
+        self,
+        request: StartRunRequest,
+        organization_id: UUID,
+        creator_user_id: UUID | None = None,
+        creator_display_name: str | None = None,
+        connected_sources: list[str] | None = None,
+        reference_run: WorkflowRun | None = None,
+        linked_pr_review_id: UUID | None = None,
+        linked_cloud_hunt_id: UUID | None = None,
+        linked_approval_id: UUID | None = None,
+    ) -> tuple[WorkflowRun, bool]:
+        """Create a truthful production goal without falling back to a scenario fixture.
+
+        A free-form goal has no safe resource target until connected evidence is
+        collected.  It is therefore persisted and surfaced as needing evidence,
+        rather than pretending a Terraform fixture or pricing result was real.
+        """
+        if request.idempotency_key:
+            existing = self.store.find_by_idempotency_key(request.idempotency_key, organization_id)
+            if existing is not None:
+                return existing, False
+
+        now = utc_now()
+        sources = list(dict.fromkeys(connected_sources or []))
+        if reference_run is not None:
+            sources.append("Recorded PR Review")
+            sources = list(dict.fromkeys(sources))
+        run = WorkflowRun(
+            id=uuid4(),
+            organization_id=organization_id,
+            goal=request.goal,
+            scenario_name="connected_goal",
+            source_type="autonomous_goal",
+            status=RunStatus.planning,
+            created_at=now,
+            updated_at=now,
+            idempotency_key=request.idempotency_key,
+            scope=request.scope,
+            constraints=request.constraints,
+            success_criteria=request.success_criteria,
+            stop_conditions=request.stop_conditions,
+            creator_user_id=creator_user_id,
+            creator_display_name=creator_display_name,
+            data_source_mode="Connected evidence" if sources else "Not connected",
+            execution_mode="connected_read_only",
+            current_step="scope_resolved",
+            selected_tools=sources,
+            linked_pr_review_id=linked_pr_review_id,
+            linked_cloud_hunt_id=linked_cloud_hunt_id,
+            linked_approval_id=linked_approval_id,
+        )
+        append_audit_event(run, event_type="run_created", actor="system", summary="Autonomous goal created.", stage="goal", status="completed")
+        append_audit_event(run, event_type="goal_received", actor="agent", summary="Goal received and scoped for read-only investigation.", stage="goal", status="completed")
+        append_audit_event(
+            run,
+            event_type="investigation_plan_created",
+            actor="agent",
+            summary="Connected evidence sources selected without infrastructure mutation.",
+            stage="planning",
+            status="completed",
+            details={"connected_sources": sources},
+        )
+        try:
+            run = self.store.create(run)
+        except DuplicateIdempotencyKeyError:
+            if request.idempotency_key:
+                existing = self.store.find_by_idempotency_key(request.idempotency_key, organization_id)
+                if existing is not None:
+                    return existing, False
+            raise
+
+        def await_evidence(current: WorkflowRun) -> WorkflowRun:
+            if reference_run is not None and reference_run.decision_record is not None:
+                current.decision_record = reference_run.decision_record.model_copy(deep=True)
+                current.original_plan = reference_run.original_plan
+                current.plan_revisions = list(reference_run.plan_revisions)
+                current.completed_steps = list(reference_run.completed_steps)
+                current.current_step = reference_run.current_step or "recommendation"
+                current.selected_tools = list(reference_run.selected_tools)
+                current.skipped_tools = dict(reference_run.skipped_tools)
+                current.tool_attempts = list(reference_run.tool_attempts)
+                current.evidence_summaries = list(reference_run.evidence_summaries)
+                current.decision_impacts = list(reference_run.decision_impacts)
+                current.status = reference_run.status
+                current.stop_reason = reference_run.stop_reason
+                current.final_outcome = reference_run.final_outcome
+                append_audit_event(
+                    current,
+                    event_type="existing_pr_evidence_linked",
+                    actor="agent",
+                    summary="Verified evidence and recommendation from the linked PR Review were added to this goal.",
+                    stage="evidence",
+                    status="completed",
+                    details={"linked_pr_review_id": str(reference_run.id)},
+                    decision_impact="No additional infrastructure mutation was performed.",
+                )
+                current.updated_at = utc_now()
+                return current
+            current.status = RunStatus.needs_more_evidence
+            current.current_step = "collect_evidence"
+            current.completed_steps = ["scope_resolved", "plan_created"]
+            current.stop_reason = (
+                "No verified resource-level evidence has been collected yet. "
+                "GhostBusters will not fabricate a finding, savings estimate, or remediation recommendation."
+            )
+            current.final_outcome = "needs_human_context"
+            append_audit_event(
+                current,
+                event_type="evidence_collection_pending",
+                actor="agent",
+                summary="Waiting for verified connected evidence before producing a recommendation.",
+                stage="evidence",
+                status="waiting",
+                decision_impact="No infrastructure mutation was performed.",
+            )
+            current.updated_at = utc_now()
+            return current
+
+        return self.store.update(run.id, await_evidence, organization_id), True
+
     def cancel_goal(self, run_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> WorkflowRun:
         def cancel(current: WorkflowRun) -> WorkflowRun:
             if current.status in {RunStatus.approved, RunStatus.pr_created, RunStatus.remediation_pr_created}:

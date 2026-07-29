@@ -9,7 +9,7 @@ def test_goal_start_has_bounded_creation_and_progress_requests() -> None:
     assert 'withTimeout(api("/api/goals"' in APP_JS
     assert 'api(`/api/goals/${goalId}/events`)' in APP_JS
     assert '"The investigation did not start. Retry."' in APP_JS
-    assert '"Goal progress is temporarily unavailable. Retry refresh."' in APP_JS
+    assert '"Live updates temporarily unavailable. Showing last known state."' in APP_JS
 
 
 def test_goal_start_transitions_immediately_and_normalizes_workflow_runs() -> None:
@@ -20,12 +20,14 @@ def test_goal_start_transitions_immediately_and_normalizes_workflow_runs() -> No
 
 
 def test_goal_start_maps_errors_and_prevents_duplicate_requests() -> None:
-    for status in (401, 403, 409, 422):
+    for status in (401, 403, 409, 422, 429):
         assert f"error?.status === {status}" in APP_JS
     assert "state.goalStartInFlight" in APP_JS
     assert "idempotency_key: state.goalDraft.idempotencyKey" in APP_JS
     assert 'id="goal-retry-button"' in INDEX_HTML
-    assert 'on("goal-retry-button", "click", confirmGoal)' in APP_JS
+    assert 'on("goal-retry-button", "click", retryGoalAction)' in APP_JS
+    assert "goalPollFailures" in APP_JS
+    assert "beginGoalPolling" in APP_JS
 
 
 def test_goal_start_handler_is_exposed_for_dynamic_frontend_tests() -> None:

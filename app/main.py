@@ -827,15 +827,43 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
 def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: Response, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
     rate_limiter.check(fastapi_request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
     require_permission(principal, GOALS_RUN)
-    if not settings.demo_mode_enabled:
-        raise HTTPException(status_code=503, detail="Scenario-backed demo goals are disabled. Start from a connected live integration.")
+    logger.info("goal_request_received organization_id=%s user_id=%s", principal.organization_id, principal.user.id if principal.user else None)
     try:
-        run, created = workflow_service.start_run(StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode), principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
+        start_request = StartRunRequest(goal=request.goal, scenario_name=request.scenario_name, constraints=request.constraints, idempotency_key=request.idempotency_key, scope=request.scope, success_criteria=request.success_criteria, stop_conditions=request.stop_conditions, data_source_mode=request.data_source_mode)
+        if settings.demo_mode_enabled:
+            run, created = workflow_service.start_run(start_request, principal.organization_id, principal.user.id if principal.user else None, principal.reviewer_name)
+        else:
+            github = github_integration_store.get(principal.organization_id)
+            aws = aws_integration_store.get(principal.organization_id)
+            jira = jira_integration_store.get(principal.organization_id)
+            connected_sources = [
+                name for name, enabled in (("GitHub", github.enabled and bool(github.installation_id)), ("AWS", aws.enabled), ("Jira", jira.enabled and bool(jira.base_url))) if enabled
+            ]
+            existing_prs = [run for run in workflow_service.list_runs(principal.organization_id) if run.source_type == "terraform_pr"]
+            existing_cases = cloud_hunt_service.list_cases(principal.organization_id)
+            latest_pr = max(existing_prs, key=lambda item: item.updated_at, default=None)
+            latest_case = max(existing_cases, key=lambda item: item.updated_at, default=None)
+            if latest_pr and latest_pr.data_source_mode in {"Fixture-backed", "fixtures", "demo"}:
+                latest_pr = None
+            run, created = workflow_service.start_connected_goal(
+                start_request,
+                principal.organization_id,
+                principal.user.id if principal.user else None,
+                principal.reviewer_name,
+                connected_sources=connected_sources,
+                reference_run=latest_pr,
+                linked_pr_review_id=latest_pr.id if latest_pr else None,
+                linked_cloud_hunt_id=latest_case.id if latest_case else None,
+            )
         if not created: response.status_code = 200
-        else: auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)
+        else:
+            auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id, "execution_mode": run.execution_mode}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)
+        logger.info("goal_created organization_id=%s goal_id=%s status=%s correlation_id=%s", principal.organization_id, run.id, run.status, run.correlation_id)
         return run
     except ScenarioNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc: raise HTTPException(status_code=500, detail=f"Goal failed safely: {exc}") from exc
+    except Exception as exc:
+        logger.exception("goal_creation_failed organization_id=%s exception_class=%s", principal.organization_id, type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Goal failed safely. No infrastructure changes were made.") from exc
 
 
 @app.get("/api/goals")

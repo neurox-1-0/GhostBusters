@@ -47,9 +47,8 @@ const state = {
   goalCreationStage: "idle",
   goalEvents: [],
   goalTab: "outcome",
-  goalReplayPaused: false,
-  goalReplayTimer: null,
   goalPollTimer: null,
+  goalPollFailures: 0,
   goalStartInFlight: false,
   awsConfig: null,
   awsValidation: null,
@@ -737,6 +736,17 @@ function normalizeGoalResponse(payload) {
     data_source_mode: payload.data_source_mode || "Connected evidence",
     created_at: payload.created_at || new Date().toISOString(),
     updated_at: payload.updated_at || payload.created_at || new Date().toISOString(),
+    current_stage: payload.current_stage || payload.current_step || "waiting",
+    planning_mode: payload.planning_mode || payload.decision_record?.planning_mode || "deterministic_only",
+    execution_mode: payload.execution_mode || "Not available",
+    findings: Array.isArray(payload.findings) ? payload.findings : (payload.decision_record?.verifier_findings || []),
+    evidence: Array.isArray(payload.evidence) ? payload.evidence : (payload.evidence_summaries || payload.decision_record?.evidence || []),
+    recommendation: payload.recommendation || payload.decision_record?.preferred_alternative || null,
+    approval_required: payload.approval_required ?? payload.status === "pending_human_review",
+    linked_pr_review_id: payload.linked_pr_review_id || null,
+    linked_cloud_hunt_id: payload.linked_cloud_hunt_id || null,
+    linked_approval_id: payload.linked_approval_id || null,
+    version: payload.version || null,
   };
 }
 
@@ -746,6 +756,7 @@ function goalErrorMessage(error) {
   if (error?.status === 403) return "You do not have permission to start this investigation.";
   if (error?.status === 409) return "This goal conflicts with a newer workspace state or safety policy.";
   if (error?.status === 422) return error.message || "This goal is not valid for a safe investigation.";
+  if (error?.status === 429) return "Goal requests are temporarily rate limited. Retry shortly.";
   if (error?.status >= 500) return "The investigation service is temporarily unavailable. Retry.";
   if (error?.code === "MALFORMED_RESPONSE") return "The investigation returned an invalid response. Retry.";
   return "The investigation could not start. Retry.";
@@ -758,26 +769,31 @@ function logGoalDiagnostic(message, error) {
 
 function showGoalError(error) {
   logGoalDiagnostic("Goal start failed", error);
+  const message = $("goal-message");
+  $("goal-confirm-button")?.parentNode?.parentNode?.appendChild(message);
   setMessage("goal-message", goalErrorMessage(error));
   const retry = $("goal-retry-button");
   if (retry) {
     $("goal-confirm-button")?.parentNode?.appendChild(retry);
     retry.hidden = false;
   }
+  if ($("goal-edit-button")) $("goal-edit-button").textContent = "Return to goal form";
 }
 
 function stopGoalPolling() {
   if (state.goalPollTimer) window.clearTimeout(state.goalPollTimer);
   state.goalPollTimer = null;
+  state.goalPollFailures = 0;
 }
 
 function beginGoalPolling(goalId) {
-  stopGoalPolling();
-  const terminal = ["completed", "approved", "pr_created", "remediation_pr_created", "failed_safely", "canceled", "blocked"];
+  if (state.goalPollTimer) window.clearTimeout(state.goalPollTimer);
+  state.goalPollTimer = null;
+  const terminal = ["completed", "approved", "pr_created", "remediation_pr_created", "failed_safely", "canceled", "blocked", "pending_human_review", "needs_more_evidence", "rejected", "abstained", "keep"];
   if (terminal.includes(state.selectedGoal?.status)) return;
   state.goalPollTimer = window.setTimeout(() => {
     if (state.selectedGoal?.id === goalId) void selectGoal(goalId, false);
-  }, 5000);
+  }, Math.min(15000, 3000 * (2 ** state.goalPollFailures)));
 }
 
 function decisionIdempotencyKey(caseId, action) {
@@ -1451,7 +1467,8 @@ async function loadGoals() {
     state.goals = await api("/api/goals");
     if (state.selectedGoal && !state.goals.some((goal) => goal.id === state.selectedGoal.id)) state.selectedGoal = null;
     renderGoalList();
-    if (!state.goalReplayTimer) state.goalReplayTimer = window.setInterval(() => { if (state.selectedGoal && state.activeMode === "goals" && !state.goalReplayPaused) refreshGoalJourney(); }, 2500);
+    const savedGoalId = localStorage.getItem("ghostbusters:lastGoalId");
+    if (!state.selectedGoal && savedGoalId && state.goals.some((goal) => String(goal.id) === savedGoalId)) void selectGoal(savedGoalId, false);
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
 }
 
@@ -1633,7 +1650,8 @@ async function validateAWSConnection() {
 }
 
 async function selectGoal(goalId, switchToView = true, seed = null) {
-  stopGoalPolling();
+  if (state.goalPollTimer) window.clearTimeout(state.goalPollTimer);
+  state.goalPollTimer = null;
   const summary = seed || state.goals.find((goal) => String(goal.id) === String(goalId));
   if (summary) {
     state.selectedGoal = normalizeGoalResponse(summary);
@@ -1650,6 +1668,7 @@ async function selectGoal(goalId, switchToView = true, seed = null) {
     ]), 10000, "Goal progress is temporarily unavailable.");
     state.selectedGoal = normalizeGoalResponse(goal);
     state.goalEvents = Array.isArray(events) ? events : [];
+    state.goalPollFailures = 0;
     state.goalTab = ["completed", "approved", "pr_created", "remediation_pr_created"].includes(state.selectedGoal.status) ? "outcome" : "plan";
     localStorage.setItem("ghostbusters:lastGoalId", goalId);
     if (switchToView) switchMode("goals");
@@ -1657,16 +1676,26 @@ async function selectGoal(goalId, switchToView = true, seed = null) {
     beginGoalPolling(goalId);
     return state.selectedGoal;
   } catch (error) {
+    state.goalPollFailures += 1;
     logGoalDiagnostic("Goal progress refresh failed", error);
-    setMessage("goal-message", error?.code === "TIMEOUT" ? "Goal progress is temporarily unavailable. Retry refresh." : friendlyError(error, "Goal progress is temporarily unavailable."));
+    setMessage("goal-message", "Live updates temporarily unavailable. Showing last known state.");
+    if ($("goal-retry-button")) $("goal-retry-button").hidden = false;
     renderGoalExecution();
+    if (state.selectedGoal?.id === goalId) beginGoalPolling(goalId);
     return null;
   }
 }
 
 async function refreshGoalJourney() { return state.selectedGoal ? selectGoal(state.selectedGoal.id, false) : loadGoals(); }
 
+async function retryGoalAction() {
+  if (state.selectedGoal) return refreshGoalJourney();
+  return confirmGoal();
+}
+
 async function startGoal() {
+  $("goal-create-panel")?.appendChild($("goal-message"));
+  if ($("goal-edit-button")) $("goal-edit-button").textContent = "Edit Goal";
   const goal = $("goal-input").value.trim();
   if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
   if (goal.length < 12) return setMessage("goal-message", "This goal is too broad to execute safely. Add an outcome, scope, or safety boundary.");
@@ -1688,7 +1717,8 @@ async function confirmGoal() {
     await withButtonState("goal-confirm-button", "Starting investigation…", async () => {
     const created = normalizeGoalResponse(await withTimeout(api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, scenario_name: "safe", data_source_mode: "Connected evidence", idempotency_key: state.goalDraft.idempotencyKey }) }), 15000, "The investigation did not start. Retry."));
     state.goalCreationStage = "started";
-    state.selectedGoal = created;
+    const initialGoal = { ...created, status: "created", current_stage: "goal_received" };
+    state.selectedGoal = initialGoal;
     state.goalEvents = [];
     state.goalTab = "plan";
     localStorage.setItem("ghostbusters:lastGoalId", created.id);
@@ -1698,7 +1728,7 @@ async function confirmGoal() {
     $("goal-agent-narration").textContent = "Goal received. Selecting the safest investigation path…";
     $("goal-current-action").textContent = "Interpreting scope";
     setMessage("goal-message", "Goal received. Interpreting scope…", true);
-    void selectGoal(created.id, false, created).then((loaded) => {
+    void selectGoal(created.id, false, initialGoal).then((loaded) => {
       if (loaded && state.selectedGoal?.id === created.id) setMessage("goal-message", "Investigation is live. Evidence updates will appear here.", true);
     });
     });
@@ -1713,6 +1743,9 @@ function editGoalDraft() {
   state.goalCreationStage = "idle";
   $("goal-interpretation-panel").hidden = true;
   $("goal-create-panel").hidden = false;
+  $("goal-create-panel")?.appendChild($("goal-message"));
+  if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
+  $("goal-edit-button").textContent = "Edit Goal";
   $("goal-input").focus?.();
 }
 
@@ -1733,9 +1766,25 @@ function goalDuration(run) {
   const start = parseTime(run?.created_at); const end = parseTime(run?.updated_at);
   if (!start || !end) return "Not recorded";
   const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 60) return "Less than a minute";
   if (seconds < 3600) return `${Math.floor(seconds / 60)} minute${Math.floor(seconds / 60) === 1 ? "" : "s"}`;
   return `${Math.floor(seconds / 3600)} hour${Math.floor(seconds / 3600) === 1 ? "" : "s"}`;
+}
+
+function goalSourceLabel(run) {
+  if (run?.data_source_mode === "Not connected") return "Not connected";
+  if (run?.execution_mode === "connected_read_only") return "Connected evidence";
+  return state.currentUser?.demo_mode ? "Demo evidence (labeled)" : "Not collected";
+}
+
+function goalStageIndex(run) {
+  if (run?.status === "created") return 0;
+  if (run?.status === "planning") return 1;
+  if (["investigating", "needs_more_evidence"].includes(run?.status)) return 2;
+  if (run?.status === "verifying") return 4;
+  if (run?.status === "pending_human_review") return 6;
+  if (["completed", "approved", "pr_created", "remediation_pr_created", "keep", "abstained"].includes(run?.status)) return 6;
+  return 0;
 }
 
 function renderGoalList() {
@@ -1766,18 +1815,18 @@ function renderGoalExecution() {
   setStatusBadge("goal-summary-status", { label: runStatusLabel(run.status), className: ["failed_safely", "canceled", "blocked"].includes(run.status) ? "status-blocked" : run.status === "pending_human_review" ? "status-awaiting-review" : "status-approved" });
   $("goal-summary-scope").textContent = run.scope || "Workspace scope";
   $("goal-summary-elapsed").textContent = goalDuration(run);
-  $("goal-summary-planning").textContent = planningModeLabel(run.decision_record?.planning_mode || "deterministic_only");
-  $("goal-summary-source").textContent = state.currentUser?.demo_mode ? (run.data_source_mode || "Fixture-backed") : "Connected evidence";
+  $("goal-summary-planning").textContent = planningModeLabel(run.planning_mode || "deterministic_only");
+  $("goal-summary-source").textContent = goalSourceLabel(run);
   $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created"].includes(run.status);
-  $("goal-agent-state").textContent = run.status === "pending_human_review" ? "Waiting for human approval" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
-  $("goal-agent-narration").textContent = run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
+  $("goal-agent-state").textContent = run.status === "created" ? "Starting" : run.status === "pending_human_review" ? "Waiting for human approval" : run.status === "needs_more_evidence" ? "Evidence needed" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
+  $("goal-agent-narration").textContent = run.status === "created" ? "Goal received. Interpreting goal and scope." : run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
   $("goal-agent-mark").className = `goal-agent-mark ${run.status === "pending_human_review" ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
   const journey = $("goal-journey-list"); clear(journey);
   const stages = ["Understand goal", "Choose investigation path", "Collect evidence", "Compare alternatives", "Verify safety policy", "Prepare recommendation", "Human approval"];
-  const completedUntil = run.status === "pending_human_review" || ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? 5 : Math.min(3, Math.max(1, state.goalEvents.length ? 2 : 1));
-  stages.forEach((stage, index) => { const item = el("li", `goal-map-node ${index < completedUntil ? "complete" : index === completedUntil ? "active" : "waiting"}`); const stateLabel = index < completedUntil ? "Complete" : index === completedUntil ? "In progress" : "Waiting"; append(item, el("span", "goal-map-number", index < completedUntil ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
+  const currentStage = goalStageIndex(run);
+  stages.forEach((stage, index) => { const currentState = index < currentStage ? "complete" : index === currentStage ? (["failed_safely", "blocked"].includes(run.status) ? "failed" : run.status === "needs_more_evidence" ? "warning" : "active") : "waiting"; const stateLabel = currentState === "complete" ? "Completed" : currentState === "warning" ? "Evidence needed" : currentState === "failed" ? "Stopped safely" : currentState === "active" ? "Running" : "Waiting"; const item = el("li", `goal-map-node ${currentState}`); append(item, el("span", "goal-map-number", currentState === "complete" ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
   const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
-  $("goal-current-action").textContent = latest?.label || (state.goalEvents.length ? runStatusLabel(run.status) : "Interpreting scope");
+  $("goal-current-action").textContent = latest?.label || (run.status === "created" ? "Interpreting goal and scope" : state.goalEvents.length ? runStatusLabel(run.status) : "Interpreting goal and scope");
   $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
   $("goal-current-reason").textContent = latest?.reason || latest?.summary || "Recorded by the execution plan.";
   $("goal-current-input").textContent = latest?.input_summary || "Sanitized execution context";
@@ -1788,21 +1837,38 @@ function renderGoalExecution() {
   renderGoalTab();
 }
 
+function goalDestinationActions(run) {
+  const actions = el("div", "start-actions");
+  if (run.linked_pr_review_id) {
+    const button = el("button", "secondary compact", "Open PR Review"); button.type = "button";
+    button.addEventListener("click", () => openPrReviewById(run.linked_pr_review_id).catch((error) => setMessage("goal-message", friendlyError(error, "PR Review is unavailable.")))); actions.appendChild(button);
+  }
+  if (run.linked_cloud_hunt_id) {
+    const button = el("button", "secondary compact", "Open Cloud Hunt Finding"); button.type = "button";
+    button.addEventListener("click", async () => { try { const review = await api(`/api/reviews/${run.linked_cloud_hunt_id}`); selectCloudFinding(review.candidate, "goals", review); } catch (error) { setMessage("goal-message", friendlyError(error, "Cloud Hunt finding is unavailable.")); } }); actions.appendChild(button);
+  }
+  if (run.linked_approval_id || run.status === "pending_human_review") {
+    const button = el("button", "secondary compact", "Open Approval"); button.type = "button";
+    button.addEventListener("click", () => { switchMode("review-queue"); loadReviewQueue(); }); actions.appendChild(button);
+  }
+  return actions.childNodes.length ? actions : null;
+}
+
 function renderGoalTab() {
   const node = $("goal-tab-content"); clear(node); const run = state.selectedGoal; if (!run) return;
   if (state.goalTab === "outcome") {
-    const decision = run.decision_record; const findings = decision?.verifier_findings || [];
+    const decision = run.decision_record; const findings = run.findings || [];
     const hero = el("div", "goal-outcome-hero"); const heroCopy = el("div");
-    append(heroCopy, el("p", "kicker", "Investigation outcome"), el("h3", null, ["pending_human_review", "needs_more_evidence"].includes(run.status) ? "Human review is the next step" : runStatusLabel(run.status)), el("p", null, run.stop_reason || decision?.final_summary || "GhostBusters recorded the investigation and its safety boundary."));
+    append(heroCopy, el("p", "kicker", "Investigation outcome"), el("h3", null, run.status === "needs_more_evidence" ? "More evidence is required" : ["pending_human_review"].includes(run.status) ? "Human review is the next step" : runStatusLabel(run.status)), el("p", null, run.stop_reason || decision?.final_summary || "No outcome has been recorded yet."));
     append(hero, el("span", "goal-outcome-icon", "✓"), heroCopy);
     const metrics = el("div", "goal-outcome-metrics");
-    [[findings.length, "Safety findings"], [run.evidence_summaries?.length || decision?.evidence?.length || 0, "Evidence sources"], [0, "Automatic changes"]].forEach(([value, label]) => { const metric = el("div"); append(metric, el("strong", null, String(value)), el("span", null, label)); metrics.appendChild(metric); });
-    append(node, hero, metrics, el("h3", "card-title", "Recommended next action"), el("p", "goal-next-action", run.status === "pending_human_review" ? "Review the recommendation and approve, reject, or request more evidence." : "Review the recorded evidence and safety checks.")); return;
+    [[findings.length, "Findings"], [run.evidence?.length || 0, "Evidence sources"], [0, "Automatic changes"]].forEach(([value, label]) => { const metric = el("div"); append(metric, el("strong", null, String(value)), el("span", null, label)); metrics.appendChild(metric); });
+    append(node, hero, metrics, el("h3", "card-title", "Recommended next action"), el("p", "goal-next-action", run.status === "needs_more_evidence" ? "Collect verified resource, utilization, or pricing evidence before any recommendation is considered." : run.status === "pending_human_review" ? "Review the recommendation and approve, reject, or request more evidence." : "Review the recorded evidence and safety checks."), goalDestinationActions(run)); return;
   }
-  if (state.goalTab === "findings") { const findings = run.decision_record?.verifier_findings || []; if (!findings.length) return node.appendChild(el("p", "muted", "No findings recorded yet.")); findings.forEach((item) => { const card = el("article", "goal-finding-card"); append(card, el("span", "status-badge status-warning", labelFor(item.severity)), el("h3", null, labelFor(item.check_name)), el("p", null, item.explanation), dataList([["Status", labelFor(item.status)], ["Evidence", item.evidence_sources]])); node.appendChild(card); }); return; }
-  if (state.goalTab === "technical") { node.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Details", render: (event) => event.summary || "Recorded" }], state.goalEvents, "No technical events recorded.")); return; }
-  if (state.goalTab === "evidence") { node.appendChild(responsiveTable([{ label: "Source", render: (item) => labelFor(item.source) }, { label: "Claim", render: (item) => item.claim }, { label: "Freshness", render: (item) => labelFor(item.freshness) }, { label: "Reliability", render: (item) => item.reliability }, { label: "Effect", render: (item) => item.effect_on_decision }], run.evidence_summaries || [], "No evidence recorded.")); return; }
-  if (state.goalTab === "plan") { append(node, el("h3", "card-title", "Original plan"), el("pre", "technical-value", JSON.stringify(run.original_plan || {}, null, 2)), el("h3", "card-title", "Plan revisions"), el("pre", "technical-value", JSON.stringify(run.plan_revisions || [], null, 2))); return; }
+  if (state.goalTab === "findings") { const findings = run.findings || []; if (!findings.length) return node.appendChild(el("p", "muted", run.status === "needs_more_evidence" ? "No finding was produced because verified evidence is still required." : "No findings recorded yet.")); findings.forEach((item) => { const card = el("article", "goal-finding-card"); append(card, el("span", "status-badge status-warning", labelFor(item.severity || "info")), el("h3", null, labelFor(item.check_name || item.title || "Finding")), el("p", null, item.explanation || item.summary || "No explanation recorded."), dataList([["Status", labelFor(item.status || "not available")], ["Evidence", item.evidence_sources || "Not collected"]]), goalDestinationActions(run)); node.appendChild(card); }); return; }
+  if (state.goalTab === "technical") { const details = el("details", "goal-technical-trace"); const summary = el("summary", null, `Technical Trace (${state.goalEvents.length})`); details.appendChild(summary); details.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Stage", render: (event) => labelFor(event.stage || "Not available") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Result", render: (event) => event.status || event.summary || "Recorded" }], state.goalEvents, "No technical events recorded.")); node.appendChild(details); return; }
+  if (state.goalTab === "evidence") { node.appendChild(responsiveTable([{ label: "Source", render: (item) => labelFor(item.source) }, { label: "Summary", render: (item) => item.value_summary || item.claim || "Not collected" }, { label: "Freshness", render: (item) => labelFor(item.freshness || item.freshness_status || "unknown") }, { label: "Reliability", render: (item) => item.reliability || "Not available" }, { label: "Impact", render: (item) => item.effect_on_decision || "Not assessed" }], run.evidence || [], "No verified evidence has been collected.")); return; }
+  if (state.goalTab === "plan") { const selected = run.selected_tools || []; append(node, el("h3", "card-title", "Investigation path"), el("p", "muted", selected.length ? "Connected sources selected for this read-only investigation." : "No connected source has been selected yet.")); selected.forEach((tool) => node.appendChild(append(el("article", "goal-finding-card"), el("h3", null, labelFor(tool)), el("p", null, "Waiting for verified evidence before any recommendation.")))); return; }
   if (state.goalTab === "alternatives") { node.appendChild(responsiveTable([{ label: "Action", render: (item) => recommendationLabel(item.action) }, { label: "Savings", render: (item) => money(item.estimated_monthly_savings) }, { label: "Eligible", render: (item) => item.eligible ? "Eligible" : "Not eligible" }, { label: "Reason", render: (item) => item.ineligible_reason || item.reason || "Recorded comparison" }], run.decision_record?.alternatives || [], "No alternatives recorded.")); return; }
   const policy = run.decision_record?.policy_result; append(node, el("p", null, `Passed checks: ${(policy?.evaluated_rules || []).join(", ") || "Not recorded"}`), el("p", null, `Warnings: ${(policy?.warnings || []).join("; ") || "None recorded"}`), el("p", null, `Blocks: ${(policy?.blocking_reasons || []).join("; ") || "None recorded"}`), el("p", null, `Mandatory human approval: ${policy?.requires_human_approval ? "Yes" : "No"}`), el("p", null, `Stop reason: ${run.stop_reason || "Not recorded"}`));
 }
@@ -3792,7 +3858,7 @@ function bindEvents() {
   on("start-cloud-hunt-button", "click", startCloudHunt);
   on("goal-start-button", "click", startGoal);
   on("goal-confirm-button", "click", confirmGoal);
-  on("goal-retry-button", "click", confirmGoal);
+  on("goal-retry-button", "click", retryGoalAction);
   on("goal-edit-button", "click", editGoalDraft);
   on("goal-back-list-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
   on("goal-workspace-back-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });

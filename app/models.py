@@ -43,7 +43,7 @@ GhostSignalType = Literal[
     "no_recent_activity", "no_dependencies", "unattached_resource", "idle_public_ip",
     "cost_without_usage", "recent_activity", "active_dependency", "production_resource",
 ]
-ReviewCaseSource = Literal["terraform_pr", "cloud_hunt", "manual_demo"]
+ReviewCaseSource = Literal["terraform_pr", "cloud_hunt", "manual_demo", "autonomous_goal"]
 ReviewCaseStatus = Literal[
     "pending",
     "approved",
@@ -763,6 +763,10 @@ class WorkflowRun(AppModel):
     github_context: dict[str, Any] | None = None
     jira_context: dict[str, Any] | None = None
     outcome_verification_id: UUID | None = None
+    execution_mode: str = "scenario"
+    linked_pr_review_id: UUID | None = None
+    linked_cloud_hunt_id: UUID | None = None
+    linked_approval_id: UUID | None = None
 
 
 class OutcomeVerification(AppModel):
