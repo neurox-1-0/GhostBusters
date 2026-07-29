@@ -618,6 +618,8 @@ class GoalValidationRequest(AppModel):
     constraints: list[str] = Field(default_factory=list)
     clarification_answers: dict[str, Any] = Field(default_factory=dict)
     clarification_round: int = Field(default=0, ge=0, le=2)
+    previous_normalized_goal: str | None = Field(default=None, max_length=1200)
+    previous_clarification_questions: list[dict[str, Any]] = Field(default_factory=list, max_length=3)
 
 
 class GoalValidationResponse(AppModel):
@@ -634,6 +636,7 @@ class GoalValidationResponse(AppModel):
     validation_mode: Literal["deterministic", "deterministic_fallback", "gemini_assisted", "groq_assisted"] = "deterministic"
     clarification_questions: list["GeminiClarificationQuestion"] = Field(default_factory=list, max_length=3)
     question_generation_mode: Literal["groq_generated", "gemini_generated", "deterministic_fallback"] | None = None
+    clarification_round: int = Field(default=0, ge=0, le=2)
 
 
 class GeminiClarificationOption(AppModel):

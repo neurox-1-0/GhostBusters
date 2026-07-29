@@ -848,11 +848,13 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             client = build_ai_client(settings)
             if client is None:
                 raise AIClientError("provider_unavailable", "Gemini validation is unavailable.")
-            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
+            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "previous_normalized_goal": request.previous_normalized_goal, "previous_clarification_questions": request.previous_clarification_questions, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
             semantic = gemini.value
             if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
                 raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
             if semantic.status != "accepted":
+                if semantic.status == "needs_revision" and request.clarification_round >= 2:
+                    return GoalValidationResponse(status="rejected", reason="Essential planning details remain unresolved after two clarification rounds. Refine the goal and try again.", category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="groq_assisted" if gemini.planning_mode == "groq_primary" else "gemini_assisted", clarification_round=request.clarification_round)
                 questions = semantic.clarifying_questions[:3]
                 question_mode = "gemini_generated"
                 if semantic.status == "needs_revision" and not questions:
@@ -861,7 +863,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
                     question_mode = "deterministic_fallback"
                 validation_mode = "groq_assisted" if gemini.planning_mode == "groq_primary" else "gemini_assisted"
                 if validation_mode == "groq_assisted" and question_mode == "gemini_generated": question_mode = "groq_generated"
-                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": [item.model_dump() if hasattr(item, "model_dump") else item for item in questions]}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode=validation_mode, clarification_questions=questions, question_generation_mode=question_mode)
+                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": [item.model_dump() if hasattr(item, "model_dump") else item for item in questions]}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode=validation_mode, clarification_questions=questions, question_generation_mode=question_mode, clarification_round=request.clarification_round)
         except AIClientError as exc:
             logger.warning("goal_gemini_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
             detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "gemini_schema_validation_failed" if exc.category == "schema_validation_failed" else "gemini_validation_unavailable"}

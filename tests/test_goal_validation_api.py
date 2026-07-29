@@ -84,3 +84,17 @@ def test_gemini_supported_needs_revision_is_preserved(monkeypatch) -> None:  # t
     assert response.status_code == 200
     assert response.json()["status"] == "needs_revision"
     assert response.json()["reason"] == "Need the target period."
+
+
+def test_goal_validation_stops_after_two_clarification_rounds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class GeminiValidationClient:
+        def validate_goal(self, payload):  # type: ignore[no-untyped-def]
+            return AICallResult(value=GeminiGoalValidation(status="needs_revision", reason="Still need scope.", normalized_goal="Reduce cloud spending.", category="cost_optimization", missing_fields=["Scope"]), model="test-gemini", planning_mode="gemini_primary", latency_ms=0, usage_metadata={})
+
+    monkeypatch.setattr(main, "settings", replace(main.settings, app_env="production", ai_enabled=True, gemini_assisted_planning_enabled=True, gemini_api_key="test-key"))
+    monkeypatch.setattr(main, "build_ai_client", lambda configuration: GeminiValidationClient())
+    response = client.post("/api/goals/validate", json={"goal": "Reduce cloud spending", "scope": "Workspace", "clarification_round": 2})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+    assert "two clarification rounds" in response.json()["reason"]
