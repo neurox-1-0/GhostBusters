@@ -19,7 +19,7 @@ from app.models import (
     DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
     AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
-    GoalContextRequest, GoalCreateRequest,
+    GoalContextRequest, GoalCreateRequest, GoalEvidenceRetryRequest,
     AWSIntegrationConfigRequest,
     GitHubIntegrationConfigRequest,
     JiraIntegrationConfigRequest, JiraContextRequest,
@@ -840,9 +840,9 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                 name for name, enabled in (("GitHub", github.enabled and bool(github.installation_id)), ("AWS", aws.enabled), ("Jira", jira.enabled and bool(jira.base_url))) if enabled
             ]
             existing_prs = [run for run in workflow_service.list_runs(principal.organization_id) if run.source_type == "terraform_pr"]
-            existing_cases = cloud_hunt_service.list_cases(principal.organization_id)
+            existing_hunts = cloud_hunt_service.list_hunts(principal.organization_id)
             latest_pr = max(existing_prs, key=lambda item: item.updated_at, default=None)
-            latest_case = max(existing_cases, key=lambda item: item.updated_at, default=None)
+            latest_hunt = max(existing_hunts, key=lambda item: item.completed_at or item.started_at, default=None)
             if latest_pr and latest_pr.data_source_mode in {"Fixture-backed", "fixtures", "demo"}:
                 latest_pr = None
             run, created = workflow_service.start_connected_goal(
@@ -853,8 +853,46 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                 connected_sources=connected_sources,
                 reference_run=latest_pr,
                 linked_pr_review_id=latest_pr.id if latest_pr else None,
-                linked_cloud_hunt_id=latest_case.id if latest_case else None,
+                linked_cloud_hunt_id=latest_hunt.id if latest_hunt else None,
             )
+            if created and run.status == "investigating":
+                def github_collector(goal_run: WorkflowRun) -> dict[str, object]:
+                    config = github_integration_store.get(principal.organization_id)
+                    if not config.enabled or not config.installation_id:
+                        raise RuntimeError("GitHub installation is not connected.")
+                    client = GitHubAppClient(config.installation_id).api_client()
+                    repositories = client.list_installation_repositories()
+                    allowed = {item.lower() for item in config.allowed_repositories}
+                    repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed)), None)
+                    if not repository:
+                        raise RuntimeError("No allowed GitHub repository is available.")
+                    owner, name = repository.split("/", 1)
+                    metadata = client.get_repository(owner, name)
+                    commits = client.list_commits(owner, name)
+                    collected_at = utc_now()
+                    context = {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "commit_activity": {"recent_commit_count": len(commits), "last_commit": ((commits[0].get("commit") or {}).get("author") or {}).get("date") if commits else None}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}
+                    evidence = {"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}
+                    return {"github_context": context, "evidence": [evidence], "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"GitHub repository context collected for {repository}."}
+
+                def cloud_hunt_collector(goal_run: WorkflowRun) -> dict[str, object]:
+                    if not goal_run.linked_cloud_hunt_id:
+                        raise RuntimeError("No linked Cloud Hunt run is available.")
+                    hunt = cloud_hunt_service.get_hunt(goal_run.linked_cloud_hunt_id, principal.organization_id)
+                    if hunt.data_source_mode == "Fixture-backed":
+                        raise RuntimeError("Fixture-backed Cloud Hunt evidence is not eligible for production goals.")
+                    collected_at = utc_now()
+                    evidence = []
+                    for candidate in hunt.candidates:
+                        resource = candidate.resource
+                        evidence.append({"source": "Cloud Hunt", "source_id": str(hunt.id), "resource_id": resource.resource_id, "status": "partial", "summary": f"{resource.resource_name}: {candidate.suspicion_level} suspicion classification from Cloud Hunt.", "provenance": {"organization_id": str(principal.organization_id), "cloud_hunt_id": str(hunt.id), "source_mode": hunt.data_source_mode, "collected_at": collected_at}, "limitations": ["Cloud Hunt classification alone does not verify utilization, savings, or remediation safety."], "collected_at": collected_at})
+                    return {"evidence": evidence, "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"{len(evidence)} eligible Cloud Hunt record(s) imported."}
+
+                collectors = {"GitHub": github_collector}
+                if latest_hunt:
+                    collectors["Cloud Hunt"] = cloud_hunt_collector
+                    if "Cloud Hunt" not in run.selected_tools:
+                        run = workflow_service.store.update(run.id, lambda current: current.model_copy(update={"selected_tools": [*current.selected_tools, "Cloud Hunt"]}), principal.organization_id)
+                run = workflow_service.execute_connected_evidence(run.id, principal.organization_id, collectors)
         if not created: response.status_code = 200
         else:
             auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id, "execution_mode": run.execution_mode}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)
@@ -893,6 +931,49 @@ def continue_goal(goal_id: UUID, request: Request, principal: Principal = Depend
     require_permission(principal, GOALS_RUN)
     try: return workflow_service.get_run(goal_id, principal.organization_id)
     except RunNotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/{goal_id}/retry-evidence", response_model=WorkflowRun)
+def retry_goal_evidence(goal_id: UUID, request: GoalEvidenceRetryRequest, fastapi_request: Request, principal: Principal = Depends(principal_dependency)) -> WorkflowRun:
+    rate_limiter.check(fastapi_request, "goal_execution", principal.user.id if principal.user else None, settings.expensive_rate_limit_attempts, settings.expensive_rate_limit_window_seconds, principal.organization_id)
+    require_permission(principal, GOALS_RUN)
+    try:
+        run = workflow_service.get_run(goal_id, principal.organization_id)
+        if run.last_evidence_retry_key == request.idempotency_key:
+            return run
+        if run.status != "needs_more_evidence":
+            raise HTTPException(status_code=409, detail="Evidence retry is only available for goals paused for evidence.")
+
+        def github_collector(goal_run: WorkflowRun) -> dict[str, object]:
+            config = github_integration_store.get(principal.organization_id)
+            if not config.enabled or not config.installation_id:
+                raise RuntimeError("GitHub installation is not connected.")
+            client = GitHubAppClient(config.installation_id).api_client()
+            repositories = client.list_installation_repositories()
+            allowed = {item.lower() for item in config.allowed_repositories}
+            repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed)), None)
+            if not repository:
+                raise RuntimeError("No allowed GitHub repository is available.")
+            owner, name = repository.split("/", 1); metadata = client.get_repository(owner, name); commits = client.list_commits(owner, name); collected_at = utc_now()
+            return {"github_context": {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "commit_activity": {"recent_commit_count": len(commits)}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}, "evidence": [{"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}], "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"GitHub repository context collected for {repository}."}
+
+        def cloud_hunt_collector(goal_run: WorkflowRun) -> dict[str, object]:
+            if not goal_run.linked_cloud_hunt_id:
+                raise RuntimeError("No linked Cloud Hunt run is available.")
+            hunt = cloud_hunt_service.get_hunt(goal_run.linked_cloud_hunt_id, principal.organization_id)
+            if hunt.data_source_mode == "Fixture-backed":
+                raise RuntimeError("Fixture-backed Cloud Hunt evidence is not eligible for production goals.")
+            collected_at = utc_now()
+            evidence = [{"source": "Cloud Hunt", "source_id": str(hunt.id), "resource_id": candidate.resource.resource_id, "status": "partial", "summary": f"{candidate.resource.resource_name}: {candidate.suspicion_level} suspicion classification from Cloud Hunt.", "provenance": {"organization_id": str(principal.organization_id), "cloud_hunt_id": str(hunt.id), "source_mode": hunt.data_source_mode, "collected_at": collected_at}, "limitations": ["Cloud Hunt classification alone does not verify utilization, savings, or remediation safety."], "collected_at": collected_at} for candidate in hunt.candidates]
+            return {"evidence": evidence, "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"{len(evidence)} eligible Cloud Hunt record(s) imported."}
+
+        collectors = {"GitHub": github_collector, "Cloud Hunt": cloud_hunt_collector}
+        updated = workflow_service.execute_connected_evidence(goal_id, principal.organization_id, collectors, retry_unavailable_only=True)
+        updated = workflow_service.store.update(goal_id, lambda current: current.model_copy(update={"last_evidence_retry_key": request.idempotency_key}), principal.organization_id)
+        auth_store.record_activity(principal.organization_id, "goal_evidence_retry", principal.user.id if principal.user else None, {"goal_id": str(goal_id), "correlation_id": updated.correlation_id}, actor_type="User", category="System", target_type="goal", target_id=goal_id, target_display_name=updated.goal[:120], related_run_id=goal_id)
+        return updated
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Goal not found.") from exc
 
 
 @app.post("/api/goals/{goal_id}/context", response_model=WorkflowRun)

@@ -33,3 +33,10 @@ def test_goal_start_maps_errors_and_prevents_duplicate_requests() -> None:
 def test_goal_start_handler_is_exposed_for_dynamic_frontend_tests() -> None:
     assert "confirmGoal," in APP_JS
     assert "normalizeGoalResponse," in APP_JS
+
+
+def test_evidence_paused_goal_has_a_truthful_retry_state() -> None:
+    assert '"goal-retry-evidence-button"' in APP_JS
+    assert 'run.status !== "needs_more_evidence"' in APP_JS
+    assert '"Live updates temporarily unavailable. Showing last known state."' in APP_JS
+    assert "missing_evidence" in APP_JS

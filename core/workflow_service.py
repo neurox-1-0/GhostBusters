@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from app.models import (
@@ -297,27 +297,82 @@ class WorkflowService:
                 )
                 current.updated_at = utc_now()
                 return current
-            current.status = RunStatus.needs_more_evidence
+            current.status = RunStatus.investigating
             current.current_step = "collect_evidence"
             current.completed_steps = ["scope_resolved", "plan_created"]
-            current.stop_reason = (
-                "No verified resource-level evidence has been collected yet. "
-                "GhostBusters will not fabricate a finding, savings estimate, or remediation recommendation."
-            )
-            current.final_outcome = "needs_human_context"
             append_audit_event(
                 current,
-                event_type="evidence_collection_pending",
+                event_type="evidence_collection_started",
                 actor="agent",
-                summary="Waiting for verified connected evidence before producing a recommendation.",
+                summary="Selected connected evidence collectors are starting.",
                 stage="evidence",
-                status="waiting",
+                status="running",
                 decision_impact="No infrastructure mutation was performed.",
             )
             current.updated_at = utc_now()
             return current
 
         return self.store.update(run.id, await_evidence, organization_id), True
+
+    def execute_connected_evidence(
+        self,
+        run_id: UUID,
+        organization_id: UUID,
+        collectors: dict[str, Callable[[WorkflowRun], dict[str, Any]]],
+        *,
+        retry_unavailable_only: bool = False,
+    ) -> WorkflowRun:
+        """Run selected read-only collectors and persist every attempt safely."""
+        def execute(current: WorkflowRun) -> WorkflowRun:
+            current.status = RunStatus.investigating
+            current.current_step = "collect_evidence"
+            missing: list[str] = []
+            existing_sources = {
+                (str(item.get("source")), str(item.get("source_id")), str(item.get("resource_id")))
+                for item in current.evidence_summaries
+            }
+            for tool in current.selected_tools:
+                prior = next((item for item in reversed(current.tool_attempts) if item.get("tool_name") == tool), None)
+                if retry_unavailable_only and prior and prior.get("status") == "completed":
+                    continue
+                collector = collectors.get(tool)
+                started = utc_now()
+                append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_collection_started", actor="tool", summary=f"{tool} evidence collection started.", stage="evidence", status="running", tool=tool, attempt_number=1)
+                record: dict[str, Any] = {"tool_name": tool, "selected_because": "Selected for this autonomous goal.", "status": "running", "started_at": started, "attempt_number": 1, "input_summary": "Organization-scoped read-only collection."}
+                try:
+                    if collector is None:
+                        raise WorkflowValidationError(f"{tool} collection is not available.")
+                    result = collector(current)
+                    evidence = list(result.get("evidence") or [])
+                    for item in evidence:
+                        key = (str(item.get("source")), str(item.get("source_id")), str(item.get("resource_id")))
+                        if key not in existing_sources:
+                            current.evidence_summaries.append(item)
+                            existing_sources.add(key)
+                    if result.get("github_context"):
+                        current.github_context = result["github_context"]
+                    record.update({"status": "completed", "completed_at": utc_now(), "output_summary": result.get("output_summary") or f"{len(evidence)} evidence item(s) recorded."})
+                    append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_collection_completed", actor="tool", summary=record["output_summary"], stage="evidence", status="completed", tool=tool, attempt_number=1)
+                    for item in evidence:
+                        append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_evidence_recorded", actor="tool", summary=str(item.get("summary") or "Evidence recorded."), stage="evidence", status=str(item.get("status") or "partial"), tool=tool, attempt_number=1)
+                    missing.extend(result.get("missing_evidence") or [])
+                except Exception as exc:
+                    record.update({"status": "failed", "completed_at": utc_now(), "error": "Collector unavailable or failed safely.", "error_category": type(exc).__name__, "output_summary": "No evidence was recorded."})
+                    missing.append(f"{tool} evidence")
+                    append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_collection_failed", actor="tool", summary="Collector failed safely; no evidence was fabricated.", stage="evidence", status="failed", tool=tool, attempt_number=1, decision_impact="No recommendation was produced from this source.")
+                current.tool_attempts.append(record)
+
+            current.missing_evidence = list(dict.fromkeys(missing or ["Verified resource-to-workload mapping", "AWS utilization", "Verified pricing"]))
+            verified = [item for item in current.evidence_summaries if item.get("status") in {"verified", "partial"}]
+            append_audit_event(current, event_type="evidence_threshold_evaluated", actor="agent", summary=f"{len(verified)} verified or partial evidence item(s) available.", stage="policy", status="completed")
+            current.status = RunStatus.needs_more_evidence
+            current.current_step = "collect_evidence"
+            current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected"]
+            current.stop_reason = "Recommendation paused. Missing evidence: " + "; ".join(current.missing_evidence)
+            current.final_outcome = "needs_human_context"
+            current.updated_at = utc_now()
+            return current
+        return self.store.update(run_id, execute, organization_id)
 
     def cancel_goal(self, run_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> WorkflowRun:
         def cancel(current: WorkflowRun) -> WorkflowRun:

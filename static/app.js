@@ -1755,6 +1755,17 @@ async function cancelSelectedGoal() {
   catch (error) { showToast("Cancel failed", friendlyError(error), "error"); }
 }
 
+async function retrySelectedGoalEvidence() {
+  if (!state.selectedGoal) return;
+  return withButtonState("goal-retry-evidence-button", "Retrying evidence...", async () => {
+    const key = `goal-evidence:${state.selectedGoal.id}:${Date.now()}`;
+    state.selectedGoal = normalizeGoalResponse(await api(`/api/goals/${state.selectedGoal.id}/retry-evidence`, { method: "POST", body: JSON.stringify({ idempotency_key: key }) }));
+    state.goalEvents = await api(`/api/goals/${state.selectedGoal.id}/events`);
+    renderGoalExecution();
+    setMessage("goal-message", "Evidence collection retried. Showing the latest recorded state.", true);
+  }).catch((error) => setMessage("goal-message", goalErrorMessage(error)));
+}
+
 function goalEventClass(event) { if (["failed_safely", "tool_failed"].includes(event.event_type)) return "goal-failed"; if (["human_review_required", "conflict_detected", "policy_evaluated"].includes(event.event_type)) return "goal-warning"; if (["tool_started", "step_started"].includes(event.event_type)) return "goal-running"; return "goal-completed"; }
 
 function goalStatusMeta(status) {
@@ -1817,7 +1828,8 @@ function renderGoalExecution() {
   $("goal-summary-elapsed").textContent = goalDuration(run);
   $("goal-summary-planning").textContent = planningModeLabel(run.planning_mode || "deterministic_only");
   $("goal-summary-source").textContent = goalSourceLabel(run);
-  $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created"].includes(run.status);
+  $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created", "needs_more_evidence"].includes(run.status);
+  $("goal-retry-evidence-button").hidden = run.status !== "needs_more_evidence";
   $("goal-agent-state").textContent = run.status === "created" ? "Starting" : run.status === "pending_human_review" ? "Waiting for human approval" : run.status === "needs_more_evidence" ? "Evidence needed" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
   $("goal-agent-narration").textContent = run.status === "created" ? "Goal received. Interpreting goal and scope." : run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
   $("goal-agent-mark").className = `goal-agent-mark ${run.status === "pending_human_review" ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
@@ -1845,7 +1857,7 @@ function goalDestinationActions(run) {
   }
   if (run.linked_cloud_hunt_id) {
     const button = el("button", "secondary compact", "Open Cloud Hunt Finding"); button.type = "button";
-    button.addEventListener("click", async () => { try { const review = await api(`/api/reviews/${run.linked_cloud_hunt_id}`); selectCloudFinding(review.candidate, "goals", review); } catch (error) { setMessage("goal-message", friendlyError(error, "Cloud Hunt finding is unavailable.")); } }); actions.appendChild(button);
+    button.addEventListener("click", async () => { try { state.hunt = await api(`/api/cloud/hunts/${run.linked_cloud_hunt_id}`); state.selectedCloudHuntId = state.hunt.id; switchMode("cloud-hunt"); renderCloudHunt(); } catch (error) { setMessage("goal-message", friendlyError(error, "Cloud Hunt run is unavailable.")); } }); actions.appendChild(button);
   }
   if (run.linked_approval_id || run.status === "pending_human_review") {
     const button = el("button", "secondary compact", "Open Approval"); button.type = "button";
@@ -1863,7 +1875,7 @@ function renderGoalTab() {
     append(hero, el("span", "goal-outcome-icon", "✓"), heroCopy);
     const metrics = el("div", "goal-outcome-metrics");
     [[findings.length, "Findings"], [run.evidence?.length || 0, "Evidence sources"], [0, "Automatic changes"]].forEach(([value, label]) => { const metric = el("div"); append(metric, el("strong", null, String(value)), el("span", null, label)); metrics.appendChild(metric); });
-    append(node, hero, metrics, el("h3", "card-title", "Recommended next action"), el("p", "goal-next-action", run.status === "needs_more_evidence" ? "Collect verified resource, utilization, or pricing evidence before any recommendation is considered." : run.status === "pending_human_review" ? "Review the recommendation and approve, reject, or request more evidence." : "Review the recorded evidence and safety checks."), goalDestinationActions(run)); return;
+    append(node, hero, metrics, el("h3", "card-title", "Recommended next action"), el("p", "goal-next-action", run.status === "needs_more_evidence" ? "Collect verified resource, utilization, or pricing evidence before any recommendation is considered." : run.status === "pending_human_review" ? "Review the recommendation and approve, reject, or request more evidence." : "Review the recorded evidence and safety checks."), run.missing_evidence?.length ? dataList(run.missing_evidence.map((item) => ["Missing evidence", item])) : null, goalDestinationActions(run)); return;
   }
   if (state.goalTab === "findings") { const findings = run.findings || []; if (!findings.length) return node.appendChild(el("p", "muted", run.status === "needs_more_evidence" ? "No finding was produced because verified evidence is still required." : "No findings recorded yet.")); findings.forEach((item) => { const card = el("article", "goal-finding-card"); append(card, el("span", "status-badge status-warning", labelFor(item.severity || "info")), el("h3", null, labelFor(item.check_name || item.title || "Finding")), el("p", null, item.explanation || item.summary || "No explanation recorded."), dataList([["Status", labelFor(item.status || "not available")], ["Evidence", item.evidence_sources || "Not collected"]]), goalDestinationActions(run)); node.appendChild(card); }); return; }
   if (state.goalTab === "technical") { const details = el("details", "goal-technical-trace"); const summary = el("summary", null, `Technical Trace (${state.goalEvents.length})`); details.appendChild(summary); details.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Stage", render: (event) => labelFor(event.stage || "Not available") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Result", render: (event) => event.status || event.summary || "Recorded" }], state.goalEvents, "No technical events recorded.")); node.appendChild(details); return; }
@@ -3864,6 +3876,7 @@ function bindEvents() {
   on("goal-workspace-back-button", "click", () => { stopGoalPolling(); state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
   on("goal-refresh-button", "click", refreshGoalJourney);
   on("goal-cancel-button", "click", cancelSelectedGoal);
+  on("goal-retry-evidence-button", "click", retrySelectedGoalEvidence);
   on("goal-skip-button", "click", () => { state.goalReplayPaused = false; renderGoalExecution(); });
   on("goal-pause-button", "click", () => { state.goalReplayPaused = !state.goalReplayPaused; $("goal-pause-button").textContent = state.goalReplayPaused ? "Resume Replay" : "Pause Replay"; });
   document.querySelectorAll("[data-goal-tab]").forEach((button) => button.addEventListener("click", () => { state.goalTab = button.dataset.goalTab || "outcome"; renderGoalExecution(); }));

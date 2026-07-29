@@ -376,6 +376,8 @@ class ToolExecutionRecord(AppModel):
     input_summary: str | None = None
     output_summary: str | None = None
     error: str | None = None
+    attempt_number: int = 1
+    error_category: str | None = None
     external_call: ExternalCallExecutionResult | None = None
 
 
@@ -608,6 +610,10 @@ class GoalContextRequest(AppModel):
     expected_version: int | None = None
 
 
+class GoalEvidenceRetryRequest(AppModel):
+    idempotency_key: str
+
+
 class HumanReviewRequest(AppModel):
     action: HumanReviewAction
     reviewer: str = "demo-reviewer"
@@ -767,6 +773,8 @@ class WorkflowRun(AppModel):
     linked_pr_review_id: UUID | None = None
     linked_cloud_hunt_id: UUID | None = None
     linked_approval_id: UUID | None = None
+    missing_evidence: list[str] = Field(default_factory=list)
+    last_evidence_retry_key: str | None = None
 
 
 class OutcomeVerification(AppModel):
