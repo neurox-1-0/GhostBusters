@@ -50,6 +50,7 @@ const state = {
   goalPollTimer: null,
   goalPollFailures: 0,
   goalStartInFlight: false,
+  goalValidationInFlight: false,
   awsConfig: null,
   awsValidation: null,
   githubConfig: null,
@@ -1694,17 +1695,22 @@ async function retryGoalAction() {
 }
 
 async function startGoal() {
+  if (state.goalValidationInFlight) return;
+  state.goalValidationInFlight = true;
   $("goal-create-panel")?.appendChild($("goal-message"));
   if ($("goal-edit-button")) $("goal-edit-button").textContent = "Edit Goal";
   const goal = $("goal-input").value.trim();
   if ($("goal-retry-button")) $("goal-retry-button").hidden = true;
-  if (goal.length < 12) return setMessage("goal-message", "This goal is too broad to execute safely. Add an outcome, scope, or safety boundary.");
-  if (/delete all|destroy everything|make everything cheaper/i.test(goal)) return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes.");
+  if (goal.length < 12) { state.goalValidationInFlight = false; return setMessage("goal-message", "This goal is too broad to execute safely. Add an outcome, scope, or safety boundary."); }
+  if (/delete all|destroy everything|make everything cheaper/i.test(goal)) { state.goalValidationInFlight = false; return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes."); }
   let validation;
   try {
-    validation = await withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out.");
+    validation = await withButtonState("goal-start-button", "Gemini is reviewing the goal...", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out."));
   } catch (error) {
-    return setMessage("goal-message", goalErrorMessage(error));
+    setMessage("goal-message", error?.status === 503 ? "Goal analysis is temporarily unavailable. Retry once." : goalErrorMessage(error));
+    return;
+  } finally {
+    state.goalValidationInFlight = false;
   }
   if (validation.status !== "accepted") return setMessage("goal-message", validation.reason || "This goal needs revision before it can start.");
   state.goalDraft = { goal: validation.normalized_goal || goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };

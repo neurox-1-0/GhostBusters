@@ -855,7 +855,9 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             if semantic.status != "accepted":
                 return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": semantic.clarifying_questions}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted")
         except AIClientError as exc:
-            raise HTTPException(status_code=503, detail=exc.safe_message) from exc
+            logger.warning("goal_gemini_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
+            detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "gemini_schema_validation_failed" if exc.category == "schema_validation_failed" else "gemini_validation_unavailable"}
+            raise HTTPException(status_code=503, detail=detail) from exc
     forbidden = ("delete all", "destroy", "terraform apply", "shell command", "run command", "bypass approval")
     if any(term in lowered for term in forbidden):
         return GoalValidationResponse(status="rejected", reason="This objective requests an unsafe or unsupported action.", category="unsupported", normalized_goal=goal, suggested_goal="Investigate the change and prepare a recommendation that requires approval.", constraints=["No direct infrastructure mutation", "Human approval required"], risk_level="high")

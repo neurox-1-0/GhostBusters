@@ -7,6 +7,8 @@ never performs workflow mutations itself.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
@@ -28,6 +30,7 @@ from core.redaction import redact_model_payload
 
 
 T = TypeVar("T", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class AIClientError(Exception):
@@ -126,18 +129,21 @@ class GeminiAIClient:
                 ),
             )
             parsed = getattr(response, "parsed", None)
-            if isinstance(parsed, schema):
-                value = parsed
-            elif isinstance(parsed, dict):
-                value = schema.model_validate(parsed)
-            else:
-                text = getattr(response, "text", None)
-                if not text:
-                    raise ValueError("empty structured response")
-                value = schema.model_validate_json(text)
+            text = getattr(response, "text", None)
+            finish_reason = None
+            candidates = getattr(response, "candidates", None) or []
+            if candidates:
+                finish_reason = str(getattr(candidates[0], "finish_reason", "") or "")
+            logger.info("gemini_structured_response endpoint=generate model=%s schema=%s parsed_present=%s text_length=%s candidates=%s finish_reason=%s", model, schema.__name__, parsed is not None, len(text or ""), len(candidates), finish_reason or "unknown")
+            raw = parsed if parsed is not None else self._parse_json_text(text)
+            value = schema.model_validate(self._normalize_structured_payload(schema, raw))
         except Exception as exc:
             category = _safe_category(exc)
-            raise AIClientError(category, "Gemini returned an unusable response.", model=model) from exc
+            fields = []
+            if isinstance(exc, ValidationError): fields = [".".join(str(part) for part in item.get("loc", ())) for item in exc.errors()]
+            logger.warning("gemini_structured_response_failed endpoint=generate model=%s schema=%s parse_stage=structured_validation exception_class=%s validation_fields=%s", model, schema.__name__, type(exc).__name__, fields)
+            message = "Gemini response did not match the goal-validation schema." if schema is GeminiGoalValidation else "Gemini returned an unusable response."
+            raise AIClientError(category, message, model=model) from exc
         return AICallResult(
             value=value,
             model=model,
@@ -145,6 +151,36 @@ class GeminiAIClient:
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
             usage_metadata={},
         )
+
+    @staticmethod
+    def _parse_json_text(text: Any) -> dict[str, Any]:
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("empty structured response")
+        cleaned = text.strip()
+        fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            cleaned = fenced.group(1).strip()
+        value = json.loads(cleaned)
+        if not isinstance(value, dict):
+            raise ValueError("structured response was not an object")
+        return value
+
+    @staticmethod
+    def _normalize_structured_payload(schema: type[T], raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        if schema is not GeminiGoalValidation:
+            return raw
+        normalized = dict(raw)
+        for field in ("missing_fields", "clarifying_questions", "constraints", "success_criteria", "stop_conditions", "suggested_capabilities"):
+            if normalized.get(field) is None:
+                normalized[field] = []
+        for field in ("reason", "normalized_goal", "category"):
+            if normalized.get(field) is None:
+                normalized[field] = ""
+        if normalized.get("suggested_goal") is None:
+            normalized["suggested_goal"] = None
+        return normalized
 
     def _call(self, schema: type[T], prompt: str) -> AICallResult:
         models = [self.active_model] if self.active_model else [self.configuration.gemini_model]
