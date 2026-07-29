@@ -43,8 +43,10 @@ const state = {
   cloudHuntError: "",
   goals: [],
   selectedGoal: null,
+  goalDraft: null,
+  goalCreationStage: "idle",
   goalEvents: [],
-  goalTab: "timeline",
+  goalTab: "outcome",
   goalReplayPaused: false,
   goalReplayTimer: null,
   awsConfig: null,
@@ -1376,9 +1378,8 @@ async function loadPRReviews({ preserveSelection = true, showNotice = false } = 
 async function loadGoals() {
   try {
     state.goals = await api("/api/goals");
-    const stored = localStorage.getItem("ghostbusters:lastGoalId");
-    const selected = state.goals.find((goal) => goal.id === stored) || state.goals[0];
-    if (selected) await selectGoal(selected.id, false);
+    if (state.selectedGoal && !state.goals.some((goal) => goal.id === state.selectedGoal.id)) state.selectedGoal = null;
+    renderGoalList();
     if (!state.goalReplayTimer) state.goalReplayTimer = window.setInterval(() => { if (state.selectedGoal && state.activeMode === "goals" && !state.goalReplayPaused) refreshGoalJourney(); }, 2500);
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
 }
@@ -1564,6 +1565,7 @@ async function selectGoal(goalId, switchToView = true) {
   try {
     state.selectedGoal = await api(`/api/goals/${goalId}`);
     state.goalEvents = await api(`/api/goals/${goalId}/events`);
+    state.goalTab = ["completed", "approved", "pr_created", "remediation_pr_created"].includes(state.selectedGoal.status) ? "outcome" : "plan";
     localStorage.setItem("ghostbusters:lastGoalId", goalId);
     if (switchToView) switchMode("goals");
     renderGoalExecution();
@@ -1574,13 +1576,33 @@ async function refreshGoalJourney() { return state.selectedGoal ? selectGoal(sta
 
 async function startGoal() {
   const goal = $("goal-input").value.trim();
-  if (!goal) return setMessage("goal-message", "Enter a goal before starting.");
-  return withButtonState("goal-start-button", "Starting...", async () => {
-    const created = await api("/api/goals", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value.trim() || null, scenario_name: $("goal-scenario-select").value, data_source_mode: "Fixture-backed" }) });
+  if (goal.length < 12) return setMessage("goal-message", "This goal is too broad to execute safely. Add an outcome, scope, or safety boundary.");
+  if (/delete all|destroy everything|make everything cheaper/i.test(goal)) return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes.");
+  state.goalDraft = { goal, scope: $("goal-scope-input").value || "Workspace scope" };
+  state.goalCreationStage = "confirm";
+  $("goal-confirmed-objective").textContent = goal;
+  $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · connected systems where available`;
+  $("goal-interpretation-panel").hidden = false;
+  $("goal-create-panel").hidden = true;
+  setMessage("goal-message", "Goal understood. Review the investigation boundary before starting.", true);
+}
+
+async function confirmGoal() {
+  if (!state.goalDraft) return;
+  return withButtonState("goal-confirm-button", "Starting...", async () => {
+    const created = await api("/api/goals", { method: "POST", body: JSON.stringify({ goal: state.goalDraft.goal, scope: state.goalDraft.scope, scenario_name: "safe", data_source_mode: "Connected evidence" }) });
+    state.goalCreationStage = "started";
     state.selectedGoal = created;
     await selectGoal(created.id);
-    setMessage("goal-message", "Goal execution recorded. No infrastructure was changed.", true);
+    setMessage("goal-message", "Investigation started. No infrastructure was changed.", true);
   }, "Started").catch((error) => setMessage("goal-message", friendlyError(error, "Goal failed safely.")));
+}
+
+function editGoalDraft() {
+  state.goalCreationStage = "idle";
+  $("goal-interpretation-panel").hidden = true;
+  $("goal-create-panel").hidden = false;
+  $("goal-input").focus?.();
 }
 
 async function cancelSelectedGoal() {
@@ -1591,20 +1613,58 @@ async function cancelSelectedGoal() {
 
 function goalEventClass(event) { if (["failed_safely", "tool_failed"].includes(event.event_type)) return "goal-failed"; if (["human_review_required", "conflict_detected", "policy_evaluated"].includes(event.event_type)) return "goal-warning"; if (["tool_started", "step_started"].includes(event.event_type)) return "goal-running"; return "goal-completed"; }
 
+function goalStatusMeta(status) {
+  const meta = { completed: ["Completed", "status-approved"], approved: ["Awaiting remediation", "status-approved"], pending_human_review: ["Awaiting human review", "status-awaiting-review"], needs_more_evidence: ["More evidence required", "status-warning"], failed_safely: ["Failed safely", "status-blocked"], canceled: ["Canceled safely", "status-neutral"], blocked: ["Policy blocked", "status-blocked"] }[status];
+  return meta || [runStatusLabel(status), "status-in-progress"];
+}
+
+function goalDuration(run) {
+  const start = parseTime(run?.created_at); const end = parseTime(run?.updated_at);
+  if (!start || !end) return "Not recorded";
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} minute${Math.floor(seconds / 60) === 1 ? "" : "s"}`;
+  return `${Math.floor(seconds / 3600)} hour${Math.floor(seconds / 3600) === 1 ? "" : "s"}`;
+}
+
+function renderGoalList() {
+  const node = $("goal-list"); if (!node) return;
+  clear(node);
+  const goals = state.goals || [];
+  $("goal-list-count").textContent = `${goals.length} goal${goals.length === 1 ? "" : "s"}`;
+  $("goal-list-empty").hidden = Boolean(goals.length);
+  goals.forEach((goal) => {
+    const [label, className] = goalStatusMeta(goal.status);
+    const card = el("article", "goal-card");
+    const button = el("button", "secondary compact", "Open Goal"); button.type = "button"; button.addEventListener("click", () => selectGoal(goal.id));
+    append(card, append(el("div", "goal-card-heading"), el("span", "goal-card-icon", "G"), el("span", `status-badge ${className}`, label)), el("h3", "goal-card-title", goal.goal || "Untitled goal"), el("p", "goal-card-scope", goal.scope || "Workspace scope"), append(el("div", "goal-card-meta"), el("span", null, "Connected evidence"), timestampNode(goal.updated_at, "Updated")), append(el("div", "goal-card-footer"), el("span", "muted", `Current stage: ${goal.status === "pending_human_review" ? "Human review" : label}`), button));
+    node.appendChild(card);
+  });
+}
+
 function renderGoalExecution() {
   if (!$("goal-execution-panel")) return;
   const run = state.selectedGoal;
   $("goal-execution-panel").hidden = !run;
+  $("goal-list-panel").hidden = Boolean(run);
+  $("goal-back-list-button").hidden = !run;
+  $("goal-create-panel").hidden = Boolean(run) || state.goalCreationStage === "confirm";
+  $("goal-interpretation-panel").hidden = Boolean(run) || state.goalCreationStage !== "confirm";
   if (!run) return;
   $("goal-summary-title").textContent = run.goal;
   setStatusBadge("goal-summary-status", { label: runStatusLabel(run.status), className: ["failed_safely", "canceled", "blocked"].includes(run.status) ? "status-blocked" : run.status === "pending_human_review" ? "status-awaiting-review" : "status-approved" });
   $("goal-summary-scope").textContent = run.scope || "Workspace scope";
-  $("goal-summary-elapsed").textContent = `${Math.max(0, Math.round((new Date(run.updated_at) - new Date(run.created_at)) / 1000))}s recorded`;
+  $("goal-summary-elapsed").textContent = goalDuration(run);
   $("goal-summary-planning").textContent = planningModeLabel(run.decision_record?.planning_mode || "deterministic_only");
-  $("goal-summary-source").textContent = run.data_source_mode || "Fixture-backed";
+  $("goal-summary-source").textContent = state.currentUser?.demo_mode ? (run.data_source_mode || "Fixture-backed") : "Connected evidence";
   $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created"].includes(run.status);
+  $("goal-agent-state").textContent = run.status === "pending_human_review" ? "Waiting for human approval" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
+  $("goal-agent-narration").textContent = run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
+  $("goal-agent-mark").className = `goal-agent-mark ${run.status === "pending_human_review" ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
   const journey = $("goal-journey-list"); clear(journey);
-  (state.goalEvents || []).forEach((event) => { const item = el("li", goalEventClass(event)); append(item, el("strong", null, event.label || labelFor(event.event_type)), el("small", null, `${exactTimestamp(event.timestamp)} · ${event.summary || "Recorded event"}`)); journey.appendChild(item); });
+  const stages = ["Understand goal", "Choose investigation path", "Collect evidence", "Compare alternatives", "Verify safety policy", "Prepare recommendation", "Human approval"];
+  const completedUntil = run.status === "pending_human_review" || ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? 5 : Math.min(3, Math.max(1, state.goalEvents.length ? 2 : 1));
+  stages.forEach((stage, index) => { const item = el("li", `goal-map-node ${index < completedUntil ? "complete" : index === completedUntil ? "active" : "waiting"}`); const stateLabel = index < completedUntil ? "Complete" : index === completedUntil ? "In progress" : "Waiting"; append(item, el("span", "goal-map-number", index < completedUntil ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
   const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
   $("goal-current-action").textContent = latest?.label || runStatusLabel(run.status);
   $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
@@ -1619,7 +1679,17 @@ function renderGoalExecution() {
 
 function renderGoalTab() {
   const node = $("goal-tab-content"); clear(node); const run = state.selectedGoal; if (!run) return;
-  if (state.goalTab === "timeline") { node.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Explanation", render: (event) => event.summary || "Recorded" }], state.goalEvents, "No journey events recorded.")); return; }
+  if (state.goalTab === "outcome") {
+    const decision = run.decision_record; const findings = decision?.verifier_findings || [];
+    const hero = el("div", "goal-outcome-hero"); const heroCopy = el("div");
+    append(heroCopy, el("p", "kicker", "Investigation outcome"), el("h3", null, ["pending_human_review", "needs_more_evidence"].includes(run.status) ? "Human review is the next step" : runStatusLabel(run.status)), el("p", null, run.stop_reason || decision?.final_summary || "GhostBusters recorded the investigation and its safety boundary."));
+    append(hero, el("span", "goal-outcome-icon", "✓"), heroCopy);
+    const metrics = el("div", "goal-outcome-metrics");
+    [[findings.length, "Safety findings"], [run.evidence_summaries?.length || decision?.evidence?.length || 0, "Evidence sources"], [0, "Automatic changes"]].forEach(([value, label]) => { const metric = el("div"); append(metric, el("strong", null, String(value)), el("span", null, label)); metrics.appendChild(metric); });
+    append(node, hero, metrics, el("h3", "card-title", "Recommended next action"), el("p", "goal-next-action", run.status === "pending_human_review" ? "Review the recommendation and approve, reject, or request more evidence." : "Review the recorded evidence and safety checks.")); return;
+  }
+  if (state.goalTab === "findings") { const findings = run.decision_record?.verifier_findings || []; if (!findings.length) return node.appendChild(el("p", "muted", "No findings recorded yet.")); findings.forEach((item) => { const card = el("article", "goal-finding-card"); append(card, el("span", "status-badge status-warning", labelFor(item.severity)), el("h3", null, labelFor(item.check_name)), el("p", null, item.explanation), dataList([["Status", labelFor(item.status)], ["Evidence", item.evidence_sources]])); node.appendChild(card); }); return; }
+  if (state.goalTab === "technical") { node.appendChild(responsiveTable([{ label: "Time", render: (event) => timestampNode(event.timestamp, "Event") }, { label: "Event", render: (event) => event.label || labelFor(event.event_type) }, { label: "Details", render: (event) => event.summary || "Recorded" }], state.goalEvents, "No technical events recorded.")); return; }
   if (state.goalTab === "evidence") { node.appendChild(responsiveTable([{ label: "Source", render: (item) => labelFor(item.source) }, { label: "Claim", render: (item) => item.claim }, { label: "Freshness", render: (item) => labelFor(item.freshness) }, { label: "Reliability", render: (item) => item.reliability }, { label: "Effect", render: (item) => item.effect_on_decision }], run.evidence_summaries || [], "No evidence recorded.")); return; }
   if (state.goalTab === "plan") { append(node, el("h3", "card-title", "Original plan"), el("pre", "technical-value", JSON.stringify(run.original_plan || {}, null, 2)), el("h3", "card-title", "Plan revisions"), el("pre", "technical-value", JSON.stringify(run.plan_revisions || [], null, 2))); return; }
   if (state.goalTab === "alternatives") { node.appendChild(responsiveTable([{ label: "Action", render: (item) => recommendationLabel(item.action) }, { label: "Savings", render: (item) => money(item.estimated_monthly_savings) }, { label: "Eligible", render: (item) => item.eligible ? "Eligible" : "Not eligible" }, { label: "Reason", render: (item) => item.ineligible_reason || item.reason || "Recorded comparison" }], run.decision_record?.alternatives || [], "No alternatives recorded.")); return; }
@@ -2916,7 +2986,7 @@ function renderAll() {
   renderIdentity();
   renderAssistantTriggers();
   renderStatus(); renderSource(); renderGitHubContext(); renderJiraContext(); renderPlanningStatus(); renderStages(); renderRecommendation(); renderEvidenceSummary(); renderHumanControls(); renderResult(); renderOutcomeVerification(); renderTechnical();
-  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
+  renderPRReviewList(); renderCloudRunHistory(); renderCloudHunt(); renderGoalList(); renderGoalExecution(); renderReviewQueue(); renderOverview(); renderMembers(); renderActivityLog();
 }
 
 function renderGitHubContext() {
@@ -2960,7 +3030,7 @@ function switchMode(mode) {
   const titles = {
     overview: ["Workspace", "Overview"],
     simple: ["Reviews", "PR Reviews"],
-    goals: ["Orchestration", "Goal Execution"],
+    goals: ["Orchestration", "Autonomous Goals"],
     "cloud-hunt": ["Discovery", "Cloud Hunt"],
     "review-queue": ["Human control", "Approvals"],
     technical: ["Audit", "Technical Audit"],
@@ -3606,11 +3676,15 @@ function bindEvents() {
   on("cancel-review-button", "click", closeReviewForm);
   on("start-cloud-hunt-button", "click", startCloudHunt);
   on("goal-start-button", "click", startGoal);
+  on("goal-confirm-button", "click", confirmGoal);
+  on("goal-edit-button", "click", editGoalDraft);
+  on("goal-back-list-button", "click", () => { state.selectedGoal = null; state.goalEvents = []; state.goalCreationStage = "idle"; renderAll(); });
+  on("goal-workspace-back-button", "click", () => { state.selectedGoal = null; state.goalEvents = []; renderAll(); });
   on("goal-refresh-button", "click", refreshGoalJourney);
   on("goal-cancel-button", "click", cancelSelectedGoal);
   on("goal-skip-button", "click", () => { state.goalReplayPaused = false; renderGoalExecution(); });
   on("goal-pause-button", "click", () => { state.goalReplayPaused = !state.goalReplayPaused; $("goal-pause-button").textContent = state.goalReplayPaused ? "Resume Replay" : "Pause Replay"; });
-  document.querySelectorAll("[data-goal-tab]").forEach((button) => button.addEventListener("click", () => { state.goalTab = button.dataset.goalTab || "timeline"; renderGoalExecution(); }));
+  document.querySelectorAll("[data-goal-tab]").forEach((button) => button.addEventListener("click", () => { state.goalTab = button.dataset.goalTab || "outcome"; renderGoalExecution(); }));
   on("cloud-new-run-button", "click", () => { state.selectedCloudHuntId = null; state.hunt = null; renderCloudRunHistory(); renderCloudHunt(); $("cloud-hunt-start-panel")?.scrollIntoView({ block: "start" }); });
   on("cloud-run-back-button", "click", backToCloudRunHistory);
   on("cloud-run-status-filter", "change", (event) => { state.cloudHuntFilters.status = event.target.value; state.cloudHuntPage = 1; loadCloudHunts(); });
