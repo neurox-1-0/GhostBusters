@@ -65,6 +65,7 @@ ObjectiveType = Literal[
 ]
 AgentAction = Literal["call_tool", "request_human_context", "finish_investigation", "abstain"]
 AIPlanningMode = Literal[
+    "groq_primary",
     "gemini_primary",
     "gemini_fallback_model",
     "deterministic_fallback",
@@ -630,9 +631,9 @@ class GoalValidationResponse(AppModel):
     constraints: list[str] = Field(default_factory=list)
     suggested_capabilities: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
-    validation_mode: Literal["deterministic", "gemini_assisted"] = "deterministic"
+    validation_mode: Literal["deterministic", "deterministic_fallback", "gemini_assisted", "groq_assisted"] = "deterministic"
     clarification_questions: list["GeminiClarificationQuestion"] = Field(default_factory=list, max_length=3)
-    question_generation_mode: Literal["gemini_generated", "deterministic_fallback"] | None = None
+    question_generation_mode: Literal["groq_generated", "gemini_generated", "deterministic_fallback"] | None = None
 
 
 class GeminiClarificationOption(AppModel):

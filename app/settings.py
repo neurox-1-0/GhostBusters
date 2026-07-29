@@ -57,6 +57,11 @@ class Settings:
     external_call_timeout_seconds: float = float(os.getenv("EXTERNAL_CALL_TIMEOUT_SECONDS", "5"))
     ai_enabled: bool = os.getenv("AI_ENABLED", "false").lower() in {"1", "true", "yes"}
     ai_provider: str = os.getenv("AI_PROVIDER", "gemini")
+    ai_primary_provider: str = os.getenv("AI_PRIMARY_PROVIDER", os.getenv("AI_PROVIDER", "gemini")).lower()
+    ai_fallback_provider: str | None = os.getenv("AI_FALLBACK_PROVIDER", "gemini").lower() or None
+    groq_api_key: str | None = os.getenv("GROQ_API_KEY") or None
+    groq_model: str = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    groq_timeout_seconds: float = float(os.getenv("GROQ_TIMEOUT_SECONDS", "10"))
     gemini_enabled: bool = os.getenv("GEMINI_ENABLED", os.getenv("AI_ENABLED", "false")).lower() in {"1", "true", "yes"}
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")

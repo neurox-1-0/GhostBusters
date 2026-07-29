@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import replace
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
@@ -349,6 +350,68 @@ class GeminiAIClient:
         return self._call(AskGhostBustersResponse, prompt)
 
 
+class GroqAIClient(GeminiAIClient):
+    """Groq JSON-object provider reusing the same prompts and local schemas."""
+
+    def _generate(self, model: str, schema: type[T], prompt: str) -> AICallResult:
+        if not self.configuration.groq_api_key:
+            raise AIClientError("missing_api_key", "Groq API key is not configured.", model=model)
+        started = time.monotonic()
+        try:
+            from groq import Groq
+            client = Groq(api_key=self.configuration.groq_api_key, timeout=self.configuration.groq_timeout_seconds)
+            response = client.chat.completions.create(model=model, temperature=0, response_format={"type": "json_object"}, messages=[{"role": "system", "content": "Return exactly one valid JSON object matching the requested contract. Do not include markdown or prose outside JSON."}, {"role": "user", "content": prompt}])
+            text = response.choices[0].message.content if response.choices else None
+            raw = self._parse_json_text(text)
+            value = schema.model_validate(self._normalize_structured_payload(schema, raw))
+        except AIClientError:
+            raise
+        except Exception as exc:
+            category = "provider_error" if isinstance(exc, EmptyGeminiResponseError) else _safe_category(exc)
+            logger.warning("groq_structured_response_failed model=%s schema=%s exception_class=%s", model, schema.__name__, type(exc).__name__)
+            raise AIClientError(category, "Groq returned an unusable response.", model=model) from exc
+        return AICallResult(value=value, model=model, planning_mode="groq_primary", latency_ms=max(0, int((time.monotonic() - started) * 1000)), usage_metadata={"provider": "groq"})
+
+    def _call(self, schema: type[T], prompt: str) -> AICallResult:
+        prompt = self._prompt_with_response_contract(schema, prompt)
+        logger.info("ai_provider_attempt_started provider=groq model=%s purpose=%s attempt_number=1", self.configuration.groq_model, schema.__name__)
+        result = self._generate(self.configuration.groq_model, schema, prompt)
+        logger.info("ai_provider_attempt_succeeded provider=groq model=%s purpose=%s latency_ms=%s", result.model, schema.__name__, result.latency_ms)
+        return result
+
+
+class RoutedAIClient:
+    """One bounded attempt per configured provider, with no business-logic fork."""
+
+    transient_categories = {"timeout", "provider_error", "rate_limited", "model_unavailable", "connection_error", "empty_response"}
+
+    def __init__(self, configuration: Settings) -> None:
+        self.configuration = configuration
+        self.providers: list[tuple[str, StructuredAIClient]] = []
+        if configuration.ai_primary_provider == "groq" and configuration.groq_api_key:
+            self.providers.append(("groq", GroqAIClient(configuration)))
+        if configuration.ai_primary_provider == "gemini" and configuration.gemini_api_key:
+            self.providers.append(("gemini", GeminiAIClient(replace(configuration, gemini_max_retries=0))))
+        if configuration.ai_fallback_provider == "gemini" and configuration.gemini_api_key and not any(name == "gemini" for name, _ in self.providers):
+            self.providers.append(("gemini", GeminiAIClient(replace(configuration, gemini_max_retries=0))))
+
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+        def routed(payload: dict[str, Any]) -> AICallResult:
+            last: AIClientError | None = None
+            for index, (provider, client) in enumerate(self.providers):
+                try:
+                    result = getattr(client, name)(payload)
+                    return result
+                except AIClientError as exc:
+                    last = exc
+                    logger.warning("ai_provider_attempt_failed provider=%s purpose=%s category=%s exception_class=%s", provider, name, exc.category, type(exc).__name__)
+                    if exc.category not in self.transient_categories or index == len(self.providers) - 1:
+                        raise
+                    logger.info("ai_provider_fallback_started from_provider=%s to_provider=%s reason=%s", provider, self.providers[index + 1][0], exc.category)
+            raise last or AIClientError("provider_error", "No AI provider is configured.")
+        return routed
+
+
 class MockGeminiClient:
     """Offline provider for demonstrations and tests; never claims real Gemini."""
 
@@ -481,10 +544,10 @@ class MockGeminiClient:
 
 
 def build_ai_client(configuration: Settings = settings) -> StructuredAIClient | None:
-    if not (configuration.ai_enabled or configuration.gemini_enabled):
+    if not (configuration.ai_enabled or configuration.gemini_enabled or configuration.groq_api_key):
         return None
     if configuration.ai_provider.lower() == "mock":
         return MockGeminiClient()
-    if configuration.ai_provider.lower() == "gemini":
-        return GeminiAIClient(configuration)
+    if configuration.ai_primary_provider in {"groq", "gemini"}:
+        return RoutedAIClient(configuration)  # type: ignore[return-value]
     return None
