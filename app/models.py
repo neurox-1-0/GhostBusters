@@ -605,6 +605,32 @@ class GoalCreateRequest(AppModel):
     data_source_mode: str = "Fixture-backed"
 
 
+class GoalValidationRequest(AppModel):
+    goal: str = Field(min_length=3, max_length=2000)
+    category: str | None = None
+    scope: str | None = None
+    cloud_accounts: list[str] = Field(default_factory=list)
+    repositories: list[str] = Field(default_factory=list)
+    protected_environments: list[str] = Field(default_factory=list)
+    require_approval: bool = True
+    savings_target: float | None = Field(default=None, ge=0)
+    constraints: list[str] = Field(default_factory=list)
+
+
+class GoalValidationResponse(AppModel):
+    status: Literal["accepted", "needs_revision", "rejected"]
+    reason: str
+    category: str
+    normalized_goal: str
+    missing_fields: list[str] = Field(default_factory=list)
+    suggested_goal: str | None = None
+    requested_scope: dict[str, Any] = Field(default_factory=dict)
+    constraints: list[str] = Field(default_factory=list)
+    suggested_capabilities: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"] = "medium"
+    validation_mode: Literal["deterministic", "gemini_assisted"] = "deterministic"
+
+
 class GoalContextRequest(AppModel):
     context: str
     expected_version: int | None = None
@@ -775,6 +801,10 @@ class WorkflowRun(AppModel):
     linked_approval_id: UUID | None = None
     missing_evidence: list[str] = Field(default_factory=list)
     last_evidence_retry_key: str | None = None
+    goal_validation: dict[str, Any] = Field(default_factory=dict)
+    parent_goal_run_id: UUID | None = None
+    capability_name: str | None = None
+    invoked_by: Literal["user", "webhook", "autonomous_goal", "system"] = "user"
 
 
 class OutcomeVerification(AppModel):

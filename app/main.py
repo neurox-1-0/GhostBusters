@@ -19,7 +19,7 @@ from app.models import (
     DEFAULT_DEVELOPMENT_ORGANIZATION_ID,
     AuditEvent,
     ChangeMemberRoleRequest, CloudHuntRequest, CurrentUserResponse, HealthResponse,
-    GoalContextRequest, GoalCreateRequest, GoalEvidenceRetryRequest,
+    GoalContextRequest, GoalCreateRequest, GoalEvidenceRetryRequest, GoalValidationRequest, GoalValidationResponse,
     AWSIntegrationConfigRequest,
     GitHubIntegrationConfigRequest,
     JiraIntegrationConfigRequest, JiraContextRequest,
@@ -107,6 +107,7 @@ from core.cloud_hunt_scheduler import CloudHuntScheduler, schedule_store
 from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError, outcome_store, outcome_verification_service
 from core.rate_limit import rate_limiter
 from core.evidence_utils import verified_pricing_item
+from core.ai_planner import deterministic_objective_interpretation
 
 
 logger = logging.getLogger(__name__)
@@ -821,6 +822,34 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
     except (RunNotFoundError, GitHubAPIError) as exc:
         github_integration_store.mark_collection(principal.organization_id, False, str(exc))
         raise HTTPException(status_code=409 if isinstance(exc, GitHubAPIError) else 404, detail=str(exc)) from exc
+
+
+@app.post("/api/goals/validate", response_model=GoalValidationResponse)
+def validate_goal(request: GoalValidationRequest, principal: Principal = Depends(principal_dependency)) -> GoalValidationResponse:
+    """Validate free-form goals before they can create a durable goal run.
+
+    This deterministic gate is the authority even when Gemini-assisted
+    interpretation is enabled elsewhere in the product.
+    """
+    require_permission(principal, GOALS_RUN)
+    goal = request.goal.strip()
+    lowered = goal.lower()
+    forbidden = ("delete all", "destroy", "terraform apply", "shell command", "run command", "bypass approval")
+    if any(term in lowered for term in forbidden):
+        return GoalValidationResponse(status="rejected", reason="This objective requests an unsafe or unsupported action.", category="unsupported", normalized_goal=goal, suggested_goal="Investigate the change and prepare a recommendation that requires approval.", constraints=["No direct infrastructure mutation", "Human approval required"], risk_level="high")
+    interpretation = deterministic_objective_interpretation(goal)
+    supported_terms = ("cost", "cloud", "aws", "terraform", "repository", "pull request", "resource", "ownership", "tag", "idle", "waste", "policy")
+    if interpretation.objective_type == "unsupported" or not any(term in lowered for term in supported_terms):
+        return GoalValidationResponse(status="rejected", reason="GhostBusters supports cloud-cost, infrastructure, Terraform, ownership, tagging, and governance objectives.", category="unsupported", normalized_goal=goal, suggested_goal="Review non-production cloud waste while protecting production workloads.", constraints=["No direct infrastructure mutation"], risk_level="medium")
+    missing = []
+    if len(goal) < 18: missing.append("A measurable outcome or safety boundary")
+    if not request.scope: missing.append("Environment or scope")
+    capabilities = ["evaluate_policy", "rank_recommendations", "create_recommendation"]
+    if any(term in lowered for term in ("cloud", "idle", "waste", "resource")): capabilities.extend(["inspect_cloud_inventory", "run_cloud_hunt", "inspect_resource_utilization", "inspect_resource_tags", "identify_resource_owner"])
+    if any(term in lowered for term in ("terraform", "repository", "pull request", "pr")): capabilities.extend(["inspect_terraform_repository", "analyse_pull_request", "estimate_cost_change"])
+    status = "needs_revision" if missing else "accepted"
+    reason = "Add the missing scope before GhostBusters can execute safely." if missing else "Goal is within GhostBusters' supported, recommendation-first scope."
+    return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=interpretation.normalized_goal, missing_fields=missing, suggested_goal=interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories}, constraints=list(dict.fromkeys([*interpretation.constraints, *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys(capabilities)), risk_level="high" if "production" in lowered else "medium")
 
 
 @app.post("/api/goals", response_model=WorkflowRun, status_code=201)

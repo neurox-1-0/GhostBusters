@@ -249,6 +249,7 @@ class WorkflowService:
             linked_pr_review_id=linked_pr_review_id,
             linked_cloud_hunt_id=linked_cloud_hunt_id,
             linked_approval_id=linked_approval_id,
+            goal_validation=dict(request.constraints.get("validation") or {}),
         )
         append_audit_event(run, event_type="run_created", actor="system", summary="Autonomous goal created.", stage="goal", status="completed")
         append_audit_event(run, event_type="goal_received", actor="agent", summary="Goal received and scoped for read-only investigation.", stage="goal", status="completed")
