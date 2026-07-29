@@ -183,30 +183,81 @@ class GeminiAIClient:
         return normalized
 
     def _call(self, schema: type[T], prompt: str) -> AICallResult:
-        models = [self.active_model] if self.active_model else [self.configuration.gemini_model]
-        if not self.active_model:
-            models.append(self.configuration.gemini_fallback_model)
+        primary_model = self.configuration.gemini_model
+        fallback_model = self.configuration.gemini_fallback_model
+        # Keep a successful model preferred, but retain the configured fallback for
+        # transient failures so an overloaded active primary cannot trap requests.
+        models = [self.active_model or primary_model, fallback_model]
         last_error: AIClientError | None = None
         for index, model in enumerate(dict.fromkeys(models)):
             if not model:
                 continue
+            planning_mode = "gemini_primary" if model == primary_model else "gemini_fallback_model"
+            is_fallback_model = model == fallback_model and model != primary_model
+            if is_fallback_model:
+                logger.info(
+                    "gemini_fallback_started model=%s retry_count=%s planning_mode=%s",
+                    model,
+                    0,
+                    planning_mode,
+                )
             for attempt in range(max(1, self.configuration.gemini_max_retries + 1)):
+                logger.info(
+                    "gemini_model_attempt model=%s retry_count=%s planning_mode=%s",
+                    model,
+                    attempt + 1,
+                    planning_mode,
+                )
                 try:
                     result = self._generate(model, schema, prompt)
                     result.usage_metadata["retry_count"] = attempt
                     self.active_model = result.model
                     self.active_mode = result.planning_mode
+                    if is_fallback_model:
+                        logger.info(
+                            "gemini_fallback_succeeded model=%s retry_count=%s planning_mode=%s",
+                            model,
+                            attempt,
+                            result.planning_mode,
+                        )
                     return result
                 except AIClientError as exc:
                     last_error = exc
-                    can_try_fallback = exc.category in {"model_unavailable", "permission_denied"}
                     retryable = exc.category in {"timeout", "rate_limited", "provider_error"}
                     if retryable and attempt < self.configuration.gemini_max_retries:
                         time.sleep(min(0.25 * (2 ** attempt), 2.0))
                         continue
-                    if index == 0 and can_try_fallback:
+                    can_try_fallback = (
+                        index == 0
+                        and not is_fallback_model
+                        and fallback_model != model
+                        and exc.category in {"model_unavailable", "timeout", "rate_limited", "provider_error"}
+                    )
+                    if can_try_fallback:
+                        logger.warning(
+                            "gemini_primary_exhausted model=%s category=%s retry_count=%s planning_mode=%s",
+                            model,
+                            exc.category,
+                            attempt,
+                            planning_mode,
+                        )
                         break
+                    logger.error(
+                        "gemini_all_models_failed model=%s category=%s retry_count=%s planning_mode=%s",
+                        model,
+                        exc.category,
+                        attempt,
+                        planning_mode,
+                    )
                     raise
+        if last_error is not None:
+            logger.error(
+                "gemini_all_models_failed model=%s category=%s retry_count=%s planning_mode=%s",
+                last_error.model or "unknown",
+                last_error.category,
+                self.configuration.gemini_max_retries,
+                self.active_mode or "gemini_primary",
+            )
         raise last_error or AIClientError("model_unavailable", "No Gemini model is configured.")
 
     def interpret_objective(self, payload: dict[str, Any]) -> AICallResult:
