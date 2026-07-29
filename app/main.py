@@ -108,9 +108,17 @@ from core.outcome_verification import OutcomeConflictError, OutcomeNotFoundError
 from core.rate_limit import rate_limiter
 from core.evidence_utils import verified_pricing_item
 from core.ai_planner import deterministic_objective_interpretation
+from core.ai_client import AIClientError, build_ai_client
 
 
 logger = logging.getLogger(__name__)
+
+GOAL_CAPABILITY_ALLOWLIST = {
+    "inspect_github_repository", "inspect_recent_pull_requests", "load_cloud_hunt_evidence",
+    "inspect_aws_inventory", "inspect_aws_utilization", "inspect_verified_pricing",
+    "evaluate_evidence_sufficiency", "evaluate_policy", "create_recommendation",
+    "request_human_approval", "summarize_goal_outcome",
+}
 
 app = FastAPI(title="GhostBusters", version="0.1.0")
 validate_startup_settings()
@@ -834,6 +842,20 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     require_permission(principal, GOALS_RUN)
     goal = request.goal.strip()
     lowered = goal.lower()
+    gemini = None
+    if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and settings.gemini_api_key:
+        try:
+            client = build_ai_client(settings)
+            if client is None:
+                raise AIClientError("provider_unavailable", "Gemini validation is unavailable.")
+            gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
+            semantic = gemini.value
+            if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
+                raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
+            if semantic.status != "accepted":
+                return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": semantic.clarifying_questions}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="gemini_assisted")
+        except AIClientError as exc:
+            raise HTTPException(status_code=503, detail=exc.safe_message) from exc
     forbidden = ("delete all", "destroy", "terraform apply", "shell command", "run command", "bypass approval")
     if any(term in lowered for term in forbidden):
         return GoalValidationResponse(status="rejected", reason="This objective requests an unsafe or unsupported action.", category="unsupported", normalized_goal=goal, suggested_goal="Investigate the change and prepare a recommendation that requires approval.", constraints=["No direct infrastructure mutation", "Human approval required"], risk_level="high")
@@ -849,7 +871,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     if any(term in lowered for term in ("terraform", "repository", "pull request", "pr")): capabilities.extend(["inspect_terraform_repository", "analyse_pull_request", "estimate_cost_change"])
     status = "needs_revision" if missing else "accepted"
     reason = "Add the missing scope before GhostBusters can execute safely." if missing else "Goal is within GhostBusters' supported, recommendation-first scope."
-    return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=interpretation.normalized_goal, missing_fields=missing, suggested_goal=interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories}, constraints=list(dict.fromkeys([*interpretation.constraints, *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys(capabilities)), risk_level="high" if "production" in lowered else "medium")
+    return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=gemini.value.normalized_goal if gemini else interpretation.normalized_goal, missing_fields=missing, suggested_goal=gemini.value.suggested_goal if gemini else interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": gemini.value.clarifying_questions if gemini else []}, constraints=list(dict.fromkeys([*(gemini.value.constraints if gemini else interpretation.constraints), *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys((gemini.value.suggested_capabilities if gemini else capabilities))), risk_level="high" if "production" in lowered else (gemini.value.risk_level if gemini else "medium"), validation_mode="gemini_assisted" if gemini else "deterministic")
 
 
 @app.post("/api/goals", response_model=WorkflowRun, status_code=201)
@@ -884,6 +906,26 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                 linked_pr_review_id=latest_pr.id if latest_pr else None,
                 linked_cloud_hunt_id=latest_hunt.id if latest_hunt else None,
             )
+            if created:
+                append_audit_event(run, event_type="gemini_planning_started", actor="agent", summary="Preparing an allowlisted, read-only capability plan.", stage="planning", status="running")
+                try:
+                    planner = build_ai_client(settings) if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and settings.gemini_api_key else None
+                    if planner is None:
+                        raise AIClientError("provider_unavailable", "Gemini planning is unavailable.")
+                    plan_call = planner.plan_goal({"goal": run.goal, "scope": run.scope, "constraints": run.goal_validation.get("constraints", []), "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST), "connected_sources": connected_sources})
+                    proposed = plan_call.value
+                    names = [step.capability for step in proposed.selected_capabilities]
+                    if not names or any(name not in GOAL_CAPABILITY_ALLOWLIST for name in names):
+                        raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability plan.")
+                    run.original_plan = {"planning_mode": "gemini_primary", "normalized_goal": run.goal, "selected_capabilities": [step.model_dump() for step in proposed.selected_capabilities], "decision_summary": proposed.decision_summary, "created_at": utc_now()}
+                    run.goal_planning_mode = "gemini_primary"
+                    append_audit_event(run, event_type="gemini_planning_completed", actor="agent", summary="Gemini selected allowlisted capabilities for this goal.", stage="planning", status="completed", details={"capabilities": names})
+                    append_audit_event(run, event_type="plan_validated", actor="system", summary="Capability plan passed allowlist and organization-scope validation.", stage="planning", status="completed")
+                except AIClientError as exc:
+                    run.original_plan = {"planning_mode": "deterministic", "normalized_goal": run.goal, "selected_capabilities": [], "decision_summary": "Gemini planning was unavailable; deterministic evidence collection remains in effect.", "created_at": utc_now()}
+                    run.goal_planning_mode = "deterministic"
+                    append_audit_event(run, event_type="gemini_planning_unavailable", actor="agent", summary="Gemini planning was unavailable; no model-authored plan is shown.", stage="planning", status="warning", details={"category": exc.category})
+                run = workflow_service.store.update(run.id, run, principal.organization_id)
             if created and run.status == "investigating":
                 def github_collector(goal_run: WorkflowRun) -> dict[str, object]:
                     config = github_integration_store.get(principal.organization_id)

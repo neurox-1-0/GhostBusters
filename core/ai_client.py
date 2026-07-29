@@ -17,6 +17,9 @@ from app.models import (
     AgentNextAction,
     AskGhostBustersResponse,
     GeminiInvestigationPlan,
+    GeminiGoalPlan,
+    GeminiGoalPlanStep,
+    GeminiGoalValidation,
     GeminiRecommendationExplanation,
     ObjectiveInterpretation,
 )
@@ -47,6 +50,8 @@ class AICallResult:
 
 
 class StructuredAIClient(Protocol):
+    def validate_goal(self, payload: dict[str, Any]) -> AICallResult: ...
+    def plan_goal(self, payload: dict[str, Any]) -> AICallResult: ...
     def interpret_objective(self, payload: dict[str, Any]) -> AICallResult: ...
 
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult: ...
@@ -172,6 +177,14 @@ class GeminiAIClient:
         prompt = json.dumps({"task": "interpret_objective", "input": redact_model_payload(payload)}, sort_keys=True)
         return self._call(ObjectiveInterpretation, prompt)
 
+    def validate_goal(self, payload: dict[str, Any]) -> AICallResult:
+        prompt = json.dumps({"task": "validate_cloud_cost_goal", "instructions": "Return only the schema. Assess relevance and ambiguity; do not authorize mutation, invent facts, tools, or permissions.", "input": redact_model_payload(payload)}, sort_keys=True)
+        return self._call(GeminiGoalValidation, prompt)
+
+    def plan_goal(self, payload: dict[str, Any]) -> AICallResult:
+        prompt = json.dumps({"task": "plan_cloud_cost_goal", "instructions": "Select only capabilities listed in allowed_capabilities. Plan read-only evidence collection and policy checks; never request arbitrary code or mutation.", "input": redact_model_payload(payload)}, sort_keys=True)
+        return self._call(GeminiGoalPlan, prompt)
+
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult:
         prompt = json.dumps({"task": "propose_next_action", "input": redact_model_payload(payload)}, sort_keys=True)
         return self._call(AgentNextAction, prompt)
@@ -232,6 +245,24 @@ class MockGeminiClient:
             ),
             "interpret_objective",
         )
+
+    def validate_goal(self, payload: dict[str, Any]) -> AICallResult:
+        goal = str(payload.get("goal", "")).strip()
+        lowered = goal.lower()
+        ambiguous = "15%" in lowered and not any(term in lowered for term in ("spend", "waste", "cost reduction"))
+        status = "needs_revision" if ambiguous else "accepted"
+        return self._result(GeminiGoalValidation(status=status, reason="The percentage target needs a spending baseline and environment." if ambiguous else "The goal is relevant to cloud-cost investigation.", normalized_goal=goal, category="cost_optimization", missing_fields=["Spending baseline", "Environment"] if ambiguous else [], clarifying_questions=["Should the 15% target apply to spend or waste?", "Which environment is in scope?"] if ambiguous else [], suggested_goal="Identify safe opportunities to reduce non-production AWS spending by 15%, while protecting production and requiring approval before changes." if ambiguous else goal, constraints=["No direct infrastructure mutation", "Human approval required"], success_criteria=["Produce evidence-grounded opportunities or a safe abstention"], stop_conditions=["Evidence is insufficient", "Human approval is required"], suggested_capabilities=["inspect_github_repository", "load_cloud_hunt_evidence", "evaluate_policy"], risk_level="medium"), "validate_goal")
+
+    def plan_goal(self, payload: dict[str, Any]) -> AICallResult:
+        allowed = set(payload.get("allowed_capabilities", []))
+        steps = [
+            ("inspect_github_repository", "Repository context can establish ownership and infrastructure change context.", "Repository metadata and recent activity."),
+            ("load_cloud_hunt_evidence", "Cloud Hunt can provide organization-scoped resource signals.", "Eligible resource evidence and limitations."),
+            ("evaluate_evidence_sufficiency", "Evidence gaps must be identified before recommendation.", "Verified evidence threshold and missing inputs."),
+            ("evaluate_policy", "Production protection and approval rules remain mandatory.", "Policy outcome and approval requirement."),
+        ]
+        selected = [GeminiGoalPlanStep(capability=name, reason=reason, expected_evidence=expected) for name, reason, expected in steps if name in allowed]
+        return self._result(GeminiGoalPlan(decision_summary="Read-only evidence will be collected before any recommendation is considered.", selected_capabilities=selected or [GeminiGoalPlanStep(capability="evaluate_policy", reason="Safety policy must be evaluated.", expected_evidence="Policy result.")]), "plan_goal")
 
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult:
         available = list(payload.get("available_tools", []))

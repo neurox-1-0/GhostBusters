@@ -631,6 +631,32 @@ class GoalValidationResponse(AppModel):
     validation_mode: Literal["deterministic", "gemini_assisted"] = "deterministic"
 
 
+class GeminiGoalValidation(AppModel):
+    status: Literal["accepted", "needs_revision", "rejected"]
+    reason: str = Field(max_length=600)
+    normalized_goal: str = Field(max_length=1200)
+    category: str = Field(max_length=80)
+    missing_fields: list[str] = Field(default_factory=list, max_length=8)
+    clarifying_questions: list[str] = Field(default_factory=list, max_length=6)
+    suggested_goal: str | None = Field(default=None, max_length=1200)
+    constraints: list[str] = Field(default_factory=list, max_length=10)
+    success_criteria: list[str] = Field(default_factory=list, max_length=8)
+    stop_conditions: list[str] = Field(default_factory=list, max_length=8)
+    suggested_capabilities: list[str] = Field(default_factory=list, max_length=12)
+    risk_level: Literal["low", "medium", "high"] = "medium"
+
+
+class GeminiGoalPlanStep(AppModel):
+    capability: str = Field(max_length=80)
+    reason: str = Field(max_length=360)
+    expected_evidence: str = Field(max_length=360)
+
+
+class GeminiGoalPlan(AppModel):
+    decision_summary: str = Field(max_length=600)
+    selected_capabilities: list[GeminiGoalPlanStep] = Field(default_factory=list, min_length=1, max_length=8)
+
+
 class GoalContextRequest(AppModel):
     context: str
     expected_version: int | None = None
@@ -805,6 +831,7 @@ class WorkflowRun(AppModel):
     parent_goal_run_id: UUID | None = None
     capability_name: str | None = None
     invoked_by: Literal["user", "webhook", "autonomous_goal", "system"] = "user"
+    goal_planning_mode: str = "deterministic"
 
 
 class OutcomeVerification(AppModel):
