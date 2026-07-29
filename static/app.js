@@ -1639,7 +1639,7 @@ function renderAWSConfig() {
   $("aws-lookback-input").value = config.cloudwatch_lookback_days || 14;
   $("aws-last-success").textContent = config.last_successful_collection ? exactTimestamp(config.last_successful_collection) : "Not recorded";
   $("aws-permission-warnings").textContent = config.last_failure_summary || "None recorded";
-  const editable = hasPermission("integrations.aws.manage"); $("aws-save-button").hidden = !editable; $("aws-enabled-select").disabled = !editable; $("aws-regions-input").readOnly = !editable; $("aws-lookback-input").readOnly = !editable; $("aws-validate-button").disabled = !hasPermission("integrations.aws.read");
+  const editable = hasPermission("integrations.aws.manage"); $("aws-save-button").hidden = !editable; $("aws-connect-button").hidden = !editable; $("aws-connect-button").disabled = !editable; $("aws-enabled-select").disabled = !editable; $("aws-regions-input").readOnly = !editable; $("aws-lookback-input").readOnly = !editable; $("aws-validate-button").disabled = !hasPermission("integrations.aws.read");
 }
 
 async function saveAWSConfig() {
@@ -1656,6 +1656,14 @@ async function validateAWSConnection() {
     $("aws-permission-warnings").textContent = [...(result.permission_warnings || []), ...(result.missing_permissions || [])].join("; ") || "None recorded";
     setMessage("aws-message", result.connected ? "AWS identity validated. Real collection remains read-only." : "AWS validation failed safely. Fixture mode was not used.", result.connected);
   }, "Validated").catch((error) => setMessage("aws-message", friendlyError(error, "AWS validation failed.")));
+}
+
+async function connectAWSAccount() {
+  return withButtonState("aws-connect-button", "Connecting...", async () => {
+    state.awsConfig = await api("/api/integrations/aws/config", { method: "PATCH", body: JSON.stringify({ enabled: true, regions: $("aws-regions-input").value.split(",").map((item) => item.trim()).filter(Boolean), cloudwatch_lookback_days: Number($("aws-lookback-input").value) }) });
+    renderAWSConfig();
+    await validateAWSConnection();
+  }, "Connected").catch((error) => setMessage("aws-message", friendlyError(error, "AWS account could not be connected. Check the server credential chain and read-only permissions.")));
 }
 
 async function selectGoal(goalId, switchToView = true, seed = null) {
@@ -3987,6 +3995,7 @@ function bindEvents() {
   on("refresh-review-queue-button", "click", loadReviewQueue);
   on("refresh-members-button", "click", loadMembers);
   on("aws-save-button", "click", saveAWSConfig);
+  on("aws-connect-button", "click", connectAWSAccount);
   on("aws-validate-button", "click", validateAWSConnection);
   on("github-save-button", "click", saveGitHubConfig);
   on("github-validate-button", "click", validateGitHubConnection);
