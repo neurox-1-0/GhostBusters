@@ -2884,17 +2884,20 @@ function connectedRepositories() {
 }
 
 function setupSteps() {
-  const repos = connectedRepositories();
-  const hasReviews = overviewReviews().length > 0;
-  const hasCloudEvidence = Boolean(state.hunt);
-  const hasApprovals = state.reviews.some((item) => ["pending", "pending_human_review", "needs_more_evidence", "abstained"].includes(item.status));
+  const health = state.overview?.integration_health || {};
+  const github = health.github || {};
+  const aws = health.aws || {};
+  const githubConnected = github.status === "connected";
+  const awsConnected = aws.status === "connected";
+  const repositoryCount = Number(github.repository_count || 0);
+  const activeGoals = Number(state.overview?.metrics?.active_goals || 0);
+  const hasRecordedWork = activeGoals > 0 || Number(state.overview?.metrics?.pr_reviews_in_progress || 0) > 0 || Number(state.overview?.metrics?.cloud_hunt_runs_in_progress || 0) > 0;
   return [
-    { title: "Create organization", description: "Demo workspace is available.", state: "completed" },
-    { title: "Connect GitHub", description: hasReviews || state.run ? "Repository review data is available." : "Ready for GitHub webhooks.", state: hasReviews || state.run ? "completed" : "running", action: "Launch Demo", handler: openDemoModal },
-    { title: "Select repositories", description: repos.length ? `${repos.length} repository${repos.length === 1 ? "" : "ies"} connected.` : "Open or load a review to discover repositories.", state: repos.length ? "completed" : "waiting", action: "Open PR Reviews", handler: () => switchMode("simple") },
-    { title: "Connect cloud evidence", description: hasCloudEvidence ? "Latest Cloud Hunt inventory is loaded." : "Run Cloud Hunt to load provider evidence.", state: hasCloudEvidence ? "completed" : "waiting", action: "Open Cloud Hunt", handler: () => switchMode("cloud-hunt") },
-    { title: "Add reviewers", description: hasApprovals ? "Approval queue has active review work." : "Reviewers can approve or request evidence from Approvals.", state: hasApprovals ? "completed" : "waiting", action: "Open Approvals", handler: () => switchMode("review-queue") },
-    { title: "Start monitoring", description: hasReviews || hasCloudEvidence ? "GhostBusters has active monitoring context." : "Start with a demo or Cloud Hunt scan.", state: hasReviews || hasCloudEvidence ? "completed" : "waiting" },
+    { title: "Workspace access", description: state.currentUser?.authenticated ? `Signed in to ${organizationName()}.` : "Sign in to access workspace data.", state: state.currentUser?.authenticated ? "completed" : "waiting" },
+    { title: "Connect GitHub", description: githubConnected ? "GitHub connection is validated for this workspace." : "Connect and validate the GitHub App in Settings.", state: githubConnected ? "completed" : "waiting", action: "Open Settings", handler: () => switchMode("settings") },
+    { title: "Select repositories", description: repositoryCount ? `${repositoryCount} allowed repositor${repositoryCount === 1 ? "y" : "ies"} configured.` : "Select an allowlisted repository in GitHub settings.", state: repositoryCount ? "completed" : "waiting", action: "Open Settings", handler: () => switchMode("settings") },
+    { title: "Connect AWS", description: awsConnected ? `${aws.region_count || 0} allowed region${Number(aws.region_count || 0) === 1 ? "" : "s"} configured.` : "Enable and validate read-only AWS access in Settings.", state: awsConnected ? "completed" : "waiting", action: "Open Settings", handler: () => switchMode("settings") },
+    { title: "Start an investigation", description: hasRecordedWork ? "Organization-scoped workflow activity is recorded." : "Review a scoped goal or run Cloud Hunt after integrations are ready.", state: hasRecordedWork ? "completed" : "waiting", action: "Open Goals", handler: () => switchMode("goals") },
   ];
 }
 

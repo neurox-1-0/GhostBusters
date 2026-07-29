@@ -1214,7 +1214,7 @@ def overview_dashboard(
     for name, store, permission in (("aws", aws_integration_store, INTEGRATIONS_AWS_READ), ("github", github_integration_store, INTEGRATIONS_GITHUB_READ), ("jira", jira_integration_store, INTEGRATIONS_JIRA_READ)):
         if permission not in principal.permissions: continue
         try:
-            config = store.get(principal.organization_id); checked = getattr(config, "last_validated", None) or getattr(config, "updated_at", None); failure = bool(config.last_failure_summary); integrations[name] = {"status": "disabled" if not config.enabled else "unavailable" if failure else "connected" if checked else "warning", "last_checked": checked, "last_success": config.last_successful_collection, "permission_warning_count": 1 if failure else 0}
+            config = store.get(principal.organization_id); checked = getattr(config, "last_validated", None) or getattr(config, "updated_at", None); failure = bool(config.last_failure_summary); integrations[name] = {"status": "disabled" if not config.enabled else "unavailable" if failure else "connected" if checked else "warning", "last_checked": checked, "last_success": config.last_successful_collection, "permission_warning_count": 1 if failure else 0, "repository_count": len(getattr(config, "allowed_repositories", []) or getattr(config, "connected_repositories", [])), "region_count": len(getattr(config, "regions", []))}
         except Exception:
             integrations[name] = {"status": "unavailable", "last_checked": None, "last_success": None, "permission_warning_count": 0}; warnings.append(f"{name} integration health is temporarily unavailable.")
     sections["integration_health"] = integrations

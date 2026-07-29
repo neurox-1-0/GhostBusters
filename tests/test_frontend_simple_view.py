@@ -1108,7 +1108,7 @@ def test_overview_dashboard_uses_real_loaded_state_without_raw_enums() -> None:
     assert rendered["page-title"]["text"] == "Overview"
     assert rendered["setup-progress-percent"]["text"]
     assert any("Connect GitHub" in step["text"] for step in rendered["setupSteps"])
-    assert any("Select repositories" in step["text"] and "progress-completed" in step["className"] for step in rendered["setupSteps"])
+    assert any("Select repositories" in step["text"] and "progress-waiting" in step["className"] for step in rendered["setupSteps"])
     assert any("Open PR Reviews 2" in card for card in rendered["summaryCards"])
     assert any("Awaiting Approval 2" in card for card in rendered["summaryCards"])
     assert any("Potential Monthly Savings $140" in card for card in rendered["summaryCards"])
