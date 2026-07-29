@@ -1746,14 +1746,25 @@ function renderClarificationOther(question, card, value) {
 async function continueGoalClarifications() {
   const draft = state.goalClarification; if (!draft) return;
   const missing = draft.validation.clarification_questions.filter((q) => q.required && !draft.answers[q.id]);
-  if (missing.length) return setMessage("goal-message", "Answer each required detail before continuing.");
-  const validation = await withButtonState("goal-clarification-continue-button", "Reviewing answers…", () => api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal: draft.goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, clarification_answers: draft.answers, clarification_round: Math.min(draft.round + 1, 2), previous_normalized_goal: draft.validation.normalized_goal || draft.goal, previous_clarification_questions: draft.validation.clarification_questions || [] }) }));
-  $("goal-clarification-panel").hidden = true;
+  if (missing.length) { $("goal-clarification-reason").textContent = "Answer each required detail before continuing."; return; }
+  let validation;
+  try {
+    validation = await withButtonState("goal-clarification-continue-button", "Reviewing answers…", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal: draft.goal, scope: $("goal-scope-input").value || "Workspace scope", require_approval: true, clarification_answers: draft.answers, clarification_round: Math.min(draft.round + 1, 2), previous_normalized_goal: draft.validation.normalized_goal || draft.goal, previous_clarification_questions: draft.validation.clarification_questions || [] }) }), 10000, "Goal revalidation timed out."));
+  } catch (error) {
+    $("goal-clarification-reason").textContent = goalErrorMessage(error);
+    return;
+  }
   if (validation.status === "needs_revision" && validation.clarification_questions?.length) return showGoalClarifications(draft.goal, validation);
-  if (validation.status !== "accepted") return setMessage("goal-message", validation.reason || "Goal needs revision.");
+  if (validation.status !== "accepted") { $("goal-clarification-reason").textContent = validation.reason || "Goal needs revision. Edit the original goal and try again."; return; }
   validation.clarification_answers = draft.answers;
   state.goalDraft = { goal: validation.normalized_goal || draft.goal, scope: $("goal-scope-input").value || "Workspace scope", validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
-  state.goalCreationStage = "confirm"; $("goal-confirmed-objective").textContent = state.goalDraft.goal; $("goal-confirmed-scope").textContent = state.goalDraft.scope; $("goal-interpretation-panel").hidden = false;
+  state.goalCreationStage = "confirm";
+  $("goal-clarification-panel").hidden = true;
+  $("goal-confirmed-objective").textContent = state.goalDraft.goal;
+  $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · ${planningModeLabel(validation.validation_mode || "deterministic")}`;
+  $("goal-interpretation-panel").hidden = false;
+  $("goal-interpretation-panel").scrollIntoView?.({ block: "start", behavior: "smooth" });
+  $("goal-confirm-button").focus?.();
 }
 
 async function confirmGoal() {

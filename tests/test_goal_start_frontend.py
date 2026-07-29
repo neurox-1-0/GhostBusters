@@ -32,6 +32,13 @@ def test_goal_start_maps_errors_and_prevents_duplicate_requests() -> None:
     assert "beginGoalPolling" in APP_JS
 
 
+def test_clarification_revalidation_keeps_a_visible_next_action() -> None:
+    assert '$("goal-clarification-panel").hidden = true;' in APP_JS
+    assert 'if (validation.status !== "accepted") { $("goal-clarification-reason").textContent' in APP_JS
+    assert '$("goal-interpretation-panel").hidden = false;' in APP_JS
+    assert '$("goal-confirm-button").focus?.();' in APP_JS
+
+
 def test_goal_start_handler_is_exposed_for_dynamic_frontend_tests() -> None:
     assert "confirmGoal," in APP_JS
     assert "normalizeGoalResponse," in APP_JS
