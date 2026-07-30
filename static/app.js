@@ -1476,7 +1476,12 @@ async function loadPRReviews({ preserveSelection = true, showNotice = false } = 
 
 async function loadGoals() {
   try {
-    state.goals = await api("/api/goals");
+    const goals = await api("/api/goals");
+    state.goals = [...goals].sort((left, right) => {
+      const leftUpdated = parseTime(left.updated_at || left.created_at)?.getTime() || 0;
+      const rightUpdated = parseTime(right.updated_at || right.created_at)?.getTime() || 0;
+      return rightUpdated - leftUpdated;
+    });
     if (state.selectedGoal && !state.goals.some((goal) => goal.id === state.selectedGoal.id)) state.selectedGoal = null;
     renderGoalList();
   } catch (error) { setMessage("goal-message", friendlyError(error, "Failed to load goals.")); }
