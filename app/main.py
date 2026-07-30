@@ -1438,10 +1438,12 @@ def aws_onboarding_template() -> PlainTextResponse:
 @app.get("/api/integrations/aws/connect")
 def connect_aws(principal: Principal = Depends(principal_dependency)) -> RedirectResponse:
     require_permission(principal, INTEGRATIONS_AWS_MANAGE)
-    if not settings.aws_onboarding_trusted_principal_arn:
-        raise HTTPException(status_code=503, detail="AWS account onboarding is not configured for this deployment. Configure AWS_ONBOARDING_TRUSTED_PRINCIPAL_ARN first.")
+    if not settings.aws_onboarding_trusted_principal_arn or not settings.aws_onboarding_template_url:
+        raise HTTPException(status_code=503, detail="AWS account onboarding is not configured for this deployment. Configure AWS_ONBOARDING_TRUSTED_PRINCIPAL_ARN and AWS_ONBOARDING_TEMPLATE_URL first.")
     if not settings.app_base_url.lower().startswith("https://"):
         raise HTTPException(status_code=503, detail="AWS account onboarding requires a public HTTPS APP_BASE_URL.")
+    if not settings.aws_onboarding_template_url.startswith("https://"):
+        raise HTTPException(status_code=503, detail="AWS_ONBOARDING_TEMPLATE_URL must be an HTTPS Amazon S3 template URL.")
     state, correlation_id = aws_onboarding_state.create(principal.organization_id, principal.user.id if principal.user else None)
     aws_integration_store.begin_onboarding(principal.organization_id, correlation_id)
     auth_store.record_activity(
@@ -1453,7 +1455,7 @@ def connect_aws(principal: Principal = Depends(principal_dependency)) -> Redirec
         category="Integrations",
     )
     callback_url = f"{settings.app_base_url.rstrip('/')}/api/integrations/aws/callback"
-    template_url = f"{settings.app_base_url.rstrip('/')}/api/integrations/aws/onboarding-template"
+    template_url = settings.aws_onboarding_template_url
     parameters = {
         "templateURL": template_url,
         "stackName": f"GhostBustersReadOnly-{str(principal.organization_id)[:8]}",

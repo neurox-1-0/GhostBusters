@@ -98,6 +98,7 @@ class Settings:
     # used by this GhostBusters deployment to assume customer read-only roles.
     aws_onboarding_trusted_principal_arn: str | None = os.getenv("AWS_ONBOARDING_TRUSTED_PRINCIPAL_ARN") or None
     aws_onboarding_role_name: str = os.getenv("AWS_ONBOARDING_ROLE_NAME", "GhostBustersReadOnlyRole")
+    aws_onboarding_template_url: str | None = os.getenv("AWS_ONBOARDING_TEMPLATE_URL") or None
     aws_onboarding_state_ttl_seconds: int = int(os.getenv("AWS_ONBOARDING_STATE_TTL_SECONDS", "900"))
     github_integration_enabled: bool = os.getenv("GITHUB_INTEGRATION_ENABLED", "false").lower() in {"1", "true", "yes"}
     github_token: str | None = os.getenv("GITHUB_TOKEN") or None
