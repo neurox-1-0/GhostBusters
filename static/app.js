@@ -1919,16 +1919,22 @@ function goalRoadmapStates(run, events) {
 function renderGoalList() {
   const node = $("goal-list"); if (!node) return;
   clear(node);
-  const goals = state.goals || [];
+  const goals = [...(state.goals || [])].sort((left, right) => {
+    const leftUpdated = parseTime(left.updated_at || left.created_at)?.getTime() || 0;
+    const rightUpdated = parseTime(right.updated_at || right.created_at)?.getTime() || 0;
+    return rightUpdated - leftUpdated;
+  });
   $("goal-list-count").textContent = `${goals.length} goal${goals.length === 1 ? "" : "s"}`;
   $("goal-list-empty").hidden = Boolean(goals.length);
-  goals.forEach((goal) => {
-    const [label, className] = goalStatusMeta(goal.status);
-    const card = el("article", "goal-card");
-    const button = el("button", "secondary compact", "Open Goal"); button.type = "button"; button.addEventListener("click", () => selectGoal(goal.id));
-    append(card, append(el("div", "goal-card-heading"), el("span", "goal-card-icon", "G"), el("span", `status-badge ${className}`, label)), el("h3", "goal-card-title", goal.goal || "Untitled goal"), el("p", "goal-card-scope", goal.scope || "Workspace scope"), append(el("div", "goal-card-meta"), el("span", null, "Connected evidence"), timestampNode(goal.updated_at, "Updated")), append(el("div", "goal-card-footer"), el("span", "muted", `Current stage: ${goal.status === "pending_human_review" ? "Human review" : label}`), button));
-    node.appendChild(card);
-  });
+  if (!goals.length) return;
+  const columns = [
+    { label: "Goal", priority: "mobile", render: (goal) => { const copy = el("div", "goal-table-title"); append(copy, el("strong", null, goal.goal || "Untitled goal"), el("small", null, "Connected evidence")); return copy; } },
+    { label: "Scope", priority: "tablet", render: (goal) => goal.scope || "Workspace scope" },
+    { label: "Status", render: (goal) => { const [label, className] = goalStatusMeta(goal.status); return statusBadge({ label, className }); } },
+    { label: "Updated", render: (goal) => timestampNode(goal.updated_at || goal.created_at, "Updated") },
+    { label: "Action", render: (goal) => { const button = el("button", "secondary compact", "Open Goal"); button.type = "button"; button.addEventListener("click", () => selectGoal(goal.id)); return button; } },
+  ];
+  node.appendChild(responsiveTable(columns, goals, "No goals have been recorded yet."));
 }
 
 function renderGoalExecution() {
