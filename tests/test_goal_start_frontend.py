@@ -67,3 +67,10 @@ def test_abstained_goal_is_not_rendered_as_a_running_policy_step() -> None:
 def test_live_plan_surfaces_a_safe_groq_fallback_reason() -> None:
     assert "Groq could not complete this decision" in APP_JS
     assert "decision.error_category" in APP_JS
+
+
+def test_current_step_uses_a_human_readable_presentation() -> None:
+    assert "function goalStepPresentation" in APP_JS
+    assert 'title: "Reviewed AWS resource evidence"' in APP_JS
+    assert 'title: "Reviewed Terraform repository context"' in APP_JS
+    assert "const presentation = goalStepPresentation(latest, run);" in APP_JS

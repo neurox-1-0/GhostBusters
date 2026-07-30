@@ -1937,6 +1937,46 @@ function renderGoalList() {
   node.appendChild(responsiveTable(columns, goals, "No goals have been recorded yet."));
 }
 
+function goalStepPresentation(event, run) {
+  const text = `${event?.summary || ""} ${event?.output_summary || ""}`;
+  const tool = event?.tool || "";
+  const isAws = tool === "AWS" || /\b(?:AWS|EC2|EBS|CloudWatch)\b/i.test(text);
+  const isGitHub = tool === "GitHub" || /\bGitHub\b/i.test(text);
+  const outcome = run.status === "pending_human_review"
+    ? "The evidence supports a recommendation. A human decision is required before any remediation proposal."
+    : run.status === "needs_more_evidence"
+      ? "Some required evidence is still unavailable, so GhostOps paused safely."
+      : run.status === "abstained"
+        ? "The collected evidence did not support a safe Terraform recommendation. No change was proposed."
+        : "GhostOps recorded the result and will use it to choose the next safe step.";
+  if (isAws) return {
+    title: "Reviewed AWS resource evidence",
+    tool: "AWS",
+    reason: "GhostOps checked the selected account for non-production resources, utilization, live pricing, and Terraform mapping.",
+    input: "Read-only AWS inventory and monitoring context",
+    output: /Terraform mapping verified/i.test(text)
+      ? "Live pricing and the resource-to-repository mapping were confirmed."
+      : "AWS resource evidence was collected for the investigation.",
+    impact: outcome,
+  };
+  if (isGitHub) return {
+    title: "Reviewed Terraform repository context",
+    tool: "GitHub",
+    reason: "GhostOps checked the selected repository for Terraform definitions and recent activity.",
+    input: "Read-only repository metadata and Terraform context",
+    output: "Repository context was collected and linked to this investigation.",
+    impact: outcome,
+  };
+  return {
+    title: event?.label || (run.status === "created" ? "Interpreting goal and scope" : runStatusLabel(run.status)),
+    tool: event?.tool || "Planner and policy",
+    reason: event?.reason || "GhostOps evaluated the recorded investigation context.",
+    input: event?.input_summary || "Sanitized execution context",
+    output: event?.output_summary || "Recorded result",
+    impact: event?.decision_impact || outcome,
+  };
+}
+
 function renderGoalExecution() {
   if (!$("goal-execution-panel")) return;
   const run = state.selectedGoal;
@@ -1962,13 +2002,14 @@ function renderGoalExecution() {
   const roadmapStates = goalRoadmapStates(run, state.goalEvents);
   stages.forEach((stage, index) => { const currentState = roadmapStates[index] || "waiting"; const stateLabel = currentState === "complete" ? "Completed" : currentState === "warning" ? (run.status === "abstained" ? "No recommendation" : "Evidence needed") : currentState === "failed" ? "Stopped safely" : currentState === "active" ? "Running" : "Waiting"; const item = el("li", `goal-map-node ${currentState}`); append(item, el("span", "goal-map-number", currentState === "complete" ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
   const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
-  $("goal-current-action").textContent = latest?.label || (run.status === "created" ? "Interpreting goal and scope" : state.goalEvents.length ? runStatusLabel(run.status) : "Interpreting goal and scope");
-  $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
-  $("goal-current-reason").textContent = latest?.reason || latest?.summary || "Recorded by the execution plan.";
-  $("goal-current-input").textContent = latest?.input_summary || "Sanitized execution context";
+  const presentation = goalStepPresentation(latest, run);
+  $("goal-current-action").textContent = presentation.title;
+  $("goal-current-tool").textContent = presentation.tool;
+  $("goal-current-reason").textContent = presentation.reason;
+  $("goal-current-input").textContent = presentation.input;
   $("goal-current-attempt").textContent = latest?.attempt_number || "1";
-  $("goal-current-output").textContent = latest?.output_summary || latest?.summary || "Recorded output";
-  $("goal-current-impact").textContent = latest?.decision_impact || run.stop_reason || "No infrastructure mutation was performed.";
+  $("goal-current-output").textContent = presentation.output;
+  $("goal-current-impact").textContent = presentation.impact;
   document.querySelectorAll("[data-goal-tab]").forEach((button) => button.classList.toggle("filter-chip-active", button.dataset.goalTab === state.goalTab));
   renderGoalTab();
 }
