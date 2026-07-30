@@ -89,7 +89,7 @@ const stageDefinitions = [
   { id: "parsed", title: "Terraform change parsed", description: "Resource and configuration change identified.", matches: ["terraform_parsed"] },
   { id: "planned", title: "Investigation planned", description: "Questions and evidence sources selected.", matches: ["investigation_plan_created", "tool_selected"] },
   { id: "evidence", title: "Evidence collected", description: "Cost, usage, dependency, and activity evidence gathered.", prefix: ["tool_", "external_call_", "alternative_evidence_"] },
-  { id: "recommended", title: "Recommendation produced", description: "GhostBusters selected the safest cost action.", matches: ["conflicts_detected", "verifier_completed", "alternatives_generated", "recommendation_produced"], prefix: ["policy_"] },
+  { id: "recommended", title: "Recommendation produced", description: "GhostOps selected the safest cost action.", matches: ["conflicts_detected", "verifier_completed", "alternatives_generated", "recommendation_produced"], prefix: ["policy_"] },
   { id: "human", title: "Human review", description: "A reviewer confirms, rejects, or requests more context.", matches: ["human_review_received", "additional_evidence_requested", "human_context_added", "workflow_resumed", "preferred_action_modified"] },
   { id: "remediation", title: "Remediation PR", description: "A simulated or real remediation pull request is recorded.", matches: ["mock_pr_created", "real_pr_created"] },
 ];
@@ -210,7 +210,7 @@ function ensureCompatibleDom() {
     window.location.replace(url.toString());
     return false;
   }
-  console.error(`GhostBusters UI could not start because these elements are missing: ${missing.join(", ")}`);
+  console.error(`GhostOps UI could not start because these elements are missing: ${missing.join(", ")}`);
   return false;
 }
 
@@ -776,7 +776,7 @@ function goalErrorMessage(error) {
 
 function logGoalDiagnostic(message, error) {
   const hostname = typeof window !== "undefined" ? window.location?.hostname : "";
-  if (["localhost", "127.0.0.1"].includes(hostname)) console.debug(`[GhostBusters Goals] ${message}`, { endpoint: error?.endpoint, status: error?.status, code: error?.code });
+  if (["localhost", "127.0.0.1"].includes(hostname)) console.debug(`[GhostOps Goals] ${message}`, { endpoint: error?.endpoint, status: error?.status, code: error?.code });
 }
 
 function showGoalError(error) {
@@ -1285,7 +1285,7 @@ function renderAuthModal(switching = false) {
     $("accept-invitation-form").hidden = !accepting;
     $("accept-invitation-form").classList.toggle("auth-form-active", accepting);
   }
-  if ($("auth-modal-title")) $("auth-modal-title").textContent = accepting ? "Accept invitation" : signin ? "Sign in to GhostBusters" : "Create a workspace";
+  if ($("auth-modal-title")) $("auth-modal-title").textContent = accepting ? "Accept invitation" : signin ? "Sign in to GhostOps" : "Create a workspace";
   if ($("auth-modal-kicker")) $("auth-modal-kicker").textContent = accepting ? "Invitation" : signin ? "Workspace access" : "New workspace";
   if (switching) setMessage("auth-message", "");
 }
@@ -1766,7 +1766,7 @@ function showGoalClarifications(goal, validation) {
   $("goal-create-panel").hidden = true;
   $("goal-clarification-panel").hidden = false;
   $("goal-clarification-reason").textContent = validation.reason || "A few details are needed before planning.";
-  $("goal-clarification-progress").textContent = `${validation.clarification_questions.length} details needed before GhostBusters can plan safely`;
+  $("goal-clarification-progress").textContent = `${validation.clarification_questions.length} details needed before GhostOps can plan safely`;
   const questions = $("goal-clarification-questions"); questions.replaceChildren();
   validation.clarification_questions.forEach((question) => {
     const card = el("article", "goal-finding-card clarification-question-card"); append(card, el("h3", "card-title clarification-question-title", question.question), el("p", "muted clarification-question-help", question.why_needed || "This affects safe planning."));
@@ -1944,7 +1944,7 @@ function renderGoalExecution() {
   $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created", "needs_more_evidence"].includes(run.status);
   $("goal-retry-evidence-button").hidden = run.status !== "needs_more_evidence";
   $("goal-agent-state").textContent = run.status === "created" ? "Starting" : run.status === "pending_human_review" ? "Waiting for human approval" : run.status === "needs_more_evidence" ? "Evidence needed" : run.status === "abstained" ? "No recommendation" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
-  $("goal-agent-narration").textContent = run.status === "created" ? "Goal received. Interpreting goal and scope." : run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
+  $("goal-agent-narration").textContent = run.status === "created" ? "Goal received. Interpreting goal and scope." : run.status === "pending_human_review" ? "GhostOps has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
   $("goal-agent-mark").className = `goal-agent-mark ${["pending_human_review", "abstained"].includes(run.status) ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
   const journey = $("goal-journey-list"); clear(journey);
   const stages = ["Understand goal", "Choose investigation path", "Collect evidence", "Compare alternatives", "Verify safety policy", "Prepare recommendation", "Human approval"];
@@ -2001,7 +2001,7 @@ function renderGoalTab() {
     const decisions = (run.plan_revisions || []).filter((item) => item.kind === "next_action");
     const planMode = run.goal_planning_mode || run.original_plan?.planning_mode || run.planning_mode;
     append(node, el("h3", "card-title", ["groq_primary", "gemini_primary"].includes(planMode) ? "Groq-guided live plan" : planMode === "gemini_fallback_model" ? "AI fallback live plan" : "Evidence-guided live plan"), el("p", "muted", "Each next step is chosen from recorded evidence and limitations. Only allowlisted read-only tools can run."));
-    if (!attempts.length && !decisions.length) node.appendChild(el("p", "goal-next-action", "Next decision pending evidence. GhostBusters has not run an evidence tool yet."));
+    if (!attempts.length && !decisions.length) node.appendChild(el("p", "goal-next-action", "Next decision pending evidence. GhostOps has not run an evidence tool yet."));
     const entries = [];
     decisions.forEach((decision, index) => entries.push({ type: "decision", index, item: decision }));
     attempts.forEach((attempt, index) => entries.push({ type: "attempt", index, item: attempt }));
@@ -2013,7 +2013,7 @@ function renderGoalTab() {
         const mode = planningModeLabel(decision.planning_mode || "deterministic_fallback");
         const card = el("article", `goal-finding-card goal-agent-decision ${accepted ? "goal-agent-decision-accepted" : "goal-agent-decision-rejected"}`);
         append(card, el("span", `status-badge ${accepted ? "status-in-progress" : "status-warning"}`, accepted ? "Agent decision" : "Proposal rejected"), el("h3", null, `${entry.index + 1}. Decide next step`), el("p", null, decision.reason || "The agent evaluated the recorded investigation context."), dataList([["Selected tool", labelFor(decision.tool_name || "No tool")], ["Question", decision.question_being_answered || "Not recorded"], ["Expected evidence", decision.expected_information || "Not recorded"], ["Safety check", decision.validation_result || "Not recorded"], ["Planning mode", mode]]));
-        if (decision.fallback_from) card.appendChild(el("p", "goal-next-action", "The original proposal did not pass the bounded safety check, so GhostBusters used the next registered read-only collector."));
+        if (decision.fallback_from) card.appendChild(el("p", "goal-next-action", "The original proposal did not pass the bounded safety check, so GhostOps used the next registered read-only collector."));
         node.appendChild(card);
         return;
       }
@@ -2426,7 +2426,7 @@ function renderEvidenceSummary() {
 function recommendationReason(decision, preferred) {
   const highConflicts = (decision?.conflicts || []).filter((item) => item.severity === "high");
   if (highConflicts.length) return `${highConflicts.length} high-risk conflict${highConflicts.length === 1 ? " remains" : "s remain"}: ${highConflicts.map((item) => item.explanation).join(" ")}`;
-  if (decision?.missing_evidence?.length) return `GhostBusters needs more evidence before it can recommend a safe remediation.`;
+  if (decision?.missing_evidence?.length) return `GhostOps needs more evidence before it can recommend a safe remediation.`;
   return preferred?.description || decision?.final_summary || "No recommendation recorded.";
 }
 
@@ -2451,7 +2451,7 @@ function renderRecommendation() {
   const decision = state.run?.decision_record;
   const preferred = preferredAlternative();
   $("recommendation-title").textContent = plainRecommendationTitle(state.run);
-  $("recommendation-reason").textContent = decision ? recommendationReason(decision, preferred) : "The recommendation will appear here after GhostBusters completes its investigation.";
+  $("recommendation-reason").textContent = decision ? recommendationReason(decision, preferred) : "The recommendation will appear here after GhostOps completes its investigation.";
   $("recommendation-confidence").textContent = percentage(decision?.confidence?.final_confidence);
   $("recommendation-risk").textContent = decision ? riskLevel(decision, preferred) : "--";
   $("recommendation-policy").textContent = decision ? policyStatusLabel(decision.policy_result?.status) : "--";
@@ -2481,7 +2481,7 @@ function renderPlanningStatus() {
   } else if (mode === "mock_gemini") {
     $("planning-note").textContent = "Mock AI planning was used for demonstration only.";
   } else if (mode === "deterministic_fallback") {
-    $("planning-note").textContent = "AI planning was unavailable, so GhostBusters continued with deterministic review logic.";
+    $("planning-note").textContent = "AI planning was unavailable, so GhostOps continued with deterministic review logic.";
   } else {
     $("planning-note").textContent = isDemoRun(state.run) ? "Prepared fixtures are backing this demo case." : "";
   }
@@ -2610,7 +2610,7 @@ function renderHumanControls() {
       : status === "needs_more_evidence"
         ? "The recommendation is not ready for approval. Add context or request missing evidence."
         : status === "pending_human_review"
-          ? hasPermission("approvals.decide") ? "A human reviewer can decide whether GhostBusters should create a remediation pull request." : "You have read-only access. You do not have permission to approve this case."
+          ? hasPermission("approvals.decide") ? "A human reviewer can decide whether GhostOps should create a remediation pull request." : "You have read-only access. You do not have permission to approve this case."
         : allowed.length ? "Human input can refine the recorded decision." : "No further review action is available in this state.";
   if (state.selectedReviewAction && !allowed.includes(state.selectedReviewAction)) closeReviewForm();
 }
@@ -3001,7 +3001,7 @@ function renderGoalRepositoryScope() {
   if (!repositories.length) container.appendChild(el("p", "muted", "No connected repositories available."));
   container.classList.toggle("is-empty", repositories.length === 0);
   help.textContent = repositories.length
-    ? "Choose the repositories GhostBusters may inspect. Leave none selected for an AWS-only investigation."
+    ? "Choose the repositories GhostOps may inspect. Leave none selected for an AWS-only investigation."
     : "No GitHub repositories are connected. You can still run an AWS-only investigation.";
 }
 
@@ -3706,8 +3706,8 @@ function renderCloudFindingDetail() {
           ? "Choose a decision action for this Cloud Hunt approval case."
           : "No further human action is available for this case.";
   $("cloud-safety-notice").textContent = managedByTerraform
-    ? "Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly."
-    : "Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.";
+    ? "Approval creates a remediation pull request or approved remediation proposal only. GhostOps does not apply Terraform, merge pull requests, or modify cloud resources directly."
+    : "Approval records the remediation decision and prepares the next supported remediation step. GhostOps does not apply Terraform, merge pull requests, or modify cloud resources directly.";
   renderCloudHumanControls(caseItem, candidate);
 }
 
@@ -3872,11 +3872,11 @@ function renderReviewQueue() {
 }
 
 const assistantSuggestions = {
-  pr_review: ["Why do you recommend this?", "Which evidence affected confidence?", "What happens if I approve?", "Were any conflicts detected?", "Did GhostBusters change anything?"],
+  pr_review: ["Why do you recommend this?", "Which evidence affected confidence?", "What happens if I approve?", "Were any conflicts detected?", "Did GhostOps change anything?"],
   cloud_hunt: ["Why was this resource flagged?", "Why is this resource protected?", "What evidence is missing?", "What action is being recommended?"],
   approvals: ["Why is this waiting for approval?", "What are the safety conditions?", "What happens after approval?"],
   technical_audit: ["Which tools were selected and why?", "Were retries used?", "Which policy rules were evaluated?", "What evidence was missing?"],
-  product_help: ["What is PR Reviews?", "What is Cloud Hunt?", "What is Approvals?", "Does GhostBusters run Terraform?"],
+  product_help: ["What is PR Reviews?", "What is Cloud Hunt?", "What is Approvals?", "Does GhostOps run Terraform?"],
 };
 
 function assistantContextLabel(context) {

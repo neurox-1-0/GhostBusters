@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GhostBusters</title>
+    <title>GhostOps</title>
+    <link rel="icon" type="image/png" href="/static/assets/ghostops-favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="/static/styles.css?v=auth-v1" />
@@ -12,11 +13,7 @@
     <div class="app-shell" hidden>
       <aside class="sidebar" aria-label="Primary navigation">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true">GB</span>
-          <div>
-            <h1>GhostBusters</h1>
-            <p>FinOps decision support</p>
-          </div>
+          <img src="/static/assets/ghostops-sidebar.png" alt="GhostOps" />
         </div>
 
         <nav class="view-switch" aria-label="Product areas">
@@ -34,7 +31,7 @@
 
         <div class="sidebar-card">
           <strong>Human approval stays in control</strong>
-          <span>GhostBusters prepares remediation pull requests only after review.</span>
+          <span>GhostOps prepares remediation pull requests only after review.</span>
         </div>
 
         <nav class="sidebar-bottom" aria-label="Support navigation">
@@ -51,7 +48,7 @@
           </div>
           <div class="topbar-actions">
             <button class="icon-button" id="notification-button" type="button" aria-label="Notifications">!</button>
-            <button id="ask-global-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button>
+            <button id="ask-global-button" class="secondary compact ask-trigger" type="button">Ask GhostOps</button>
             <div class="user-chip" id="user-menu" aria-label="Signed-in user">
               <span id="user-initials" aria-hidden="true">GB</span>
               <div><strong id="user-display-name">FinOps</strong><small id="user-role-org">Demo workspace</small></div>
@@ -83,7 +80,7 @@
               <div class="progress-card-head">
                 <div>
                   <p class="kicker">Getting started</p>
-                  <h2 id="setup-progress-title" class="section-title">Connect GhostBusters</h2>
+                  <h2 id="setup-progress-title" class="section-title">Connect GhostOps</h2>
                 </div>
                 <strong id="setup-progress-percent">0% complete</strong>
               </div>
@@ -135,22 +132,22 @@
           <section id="demo-readiness-view" class="mode-view page-enter" hidden aria-labelledby="demo-readiness-title"><div class="mode-header panel"><div><p class="kicker">Competition Demo</p><h2 id="demo-readiness-title" class="section-title">Demo Readiness</h2><p>Transparent readiness checks for the live demonstration. Secrets are never displayed.</p></div><div class="toolbar-actions"><button id="demo-readiness-refresh-button" class="secondary" type="button">Refresh Readiness</button><button id="demo-reset-button" class="secondary" type="button">Reset Demo Fixtures</button></div></div><section class="summary-grid" id="demo-readiness-summary"></section><section class="overview-grid"><article class="panel"><div class="section-heading"><div><p class="kicker">System</p><h2 class="section-title">Health and data modes</h2></div></div><div id="demo-readiness-health" class="compact-list"></div></article><article class="panel"><div class="section-heading"><div><p class="kicker">Integrations</p><h2 class="section-title">Connection readiness</h2></div></div><div id="demo-readiness-integrations" class="compact-list"></div></article></section><section class="panel"><div class="section-heading"><div><p class="kicker">Warnings</p><h2 class="section-title">Known limitations</h2></div></div><div id="demo-readiness-warnings" class="compact-list"></div></section></section>
           <section id="goals-view" class="mode-view page-enter" hidden aria-labelledby="goals-title">
             <div class="mode-header goals-header">
-              <div><p class="kicker">Autonomous Goals</p><h2 id="goals-title" class="section-title">Direct the investigation</h2><p>Give GhostBusters an outcome. It will choose the investigations, collect evidence, and stop at the human decision boundary.</p></div>
+              <div><p class="kicker">Autonomous Goals</p><h2 id="goals-title" class="section-title">Direct the investigation</h2><p>Give GhostOps an outcome. It will choose the investigations, collect evidence, and stop at the human decision boundary.</p></div>
               <div class="toolbar-actions"><button id="goal-back-list-button" class="secondary compact" type="button" hidden>All Goals</button><button id="goal-refresh-button" class="secondary compact" type="button">Refresh</button></div>
             </div>
             <section class="panel goal-create-panel" id="goal-create-panel">
-              <div class="goal-create-heading"><div><p class="kicker">Start with an outcome</p><h2 class="section-title">What should GhostBusters investigate?</h2></div><span class="mode-badge">Human approval stays in control</span></div>
+              <div class="goal-create-heading"><div><p class="kicker">Start with an outcome</p><h2 class="section-title">What should GhostOps investigate?</h2></div><span class="mode-badge">Human approval stays in control</span></div>
               <label class="goal-prompt-label" for="goal-input">Goal</label><textarea id="goal-input" rows="3" placeholder="Reduce unnecessary production cloud spending without affecting reliability."></textarea>
               <div class="goal-scope-grid"><label>Environment<select id="goal-scope-input"><option value="Non-production AWS">Non-production AWS</option><option value="Production AWS (protected)">Production AWS (protected)</option><option value="Connected repositories">Connected repositories</option></select></label><fieldset class="goal-repository-scope" aria-describedby="goal-repositories-help"><legend>Repository scope</legend><div id="goal-repositories-input" class="goal-repository-checkboxes"></div><span id="goal-repositories-help" class="helper">Loading connected repositories...</span></fieldset><div class="goal-boundary-list"><span class="mini-label">Boundaries</span><span>Read-only investigation</span><span>Human approval before remediation</span><span>Protected resources excluded</span></div></div>
               <div class="connected-evidence-row"><span class="mini-label">Evidence sources</span><span class="evidence-connection">GitHub <b>Check settings</b></span><span class="evidence-connection">AWS <b>Check settings</b></span><span class="evidence-connection">Jira <b>Check settings</b></span><span class="evidence-connection">Pricing <b>Available only with verified pricing evidence</b></span></div>
               <div class="start-actions"><button id="goal-start-button" type="button">Review Goal</button></div><p id="goal-message" class="message" role="status"></p><button id="goal-retry-button" class="secondary compact" type="button" hidden>Retry</button>
             </section>
-            <section class="panel goal-clarification-panel" id="goal-clarification-panel" hidden><div class="goal-create-heading"><div><p class="kicker">A few details</p><h2 class="section-title">Help GhostBusters plan safely</h2><p id="goal-clarification-progress" class="muted"></p></div><span class="status-badge status-awaiting-review">Needs revision</span></div><p id="goal-clarification-reason" class="message"></p><div id="goal-clarification-questions" class="goal-card-grid"></div><div class="start-actions"><button id="goal-clarification-continue-button" type="button">Continue</button><button id="goal-clarification-recommended-button" class="secondary" type="button">Use recommended answers</button><button id="goal-clarification-edit-button" class="secondary" type="button">Edit original goal</button><button id="goal-clarification-cancel-button" class="secondary" type="button">Cancel</button></div></section>
+            <section class="panel goal-clarification-panel" id="goal-clarification-panel" hidden><div class="goal-create-heading"><div><p class="kicker">A few details</p><h2 class="section-title">Help GhostOps plan safely</h2><p id="goal-clarification-progress" class="muted"></p></div><span class="status-badge status-awaiting-review">Needs revision</span></div><p id="goal-clarification-reason" class="message"></p><div id="goal-clarification-questions" class="goal-card-grid"></div><div class="start-actions"><button id="goal-clarification-continue-button" type="button">Continue</button><button id="goal-clarification-recommended-button" class="secondary" type="button">Use recommended answers</button><button id="goal-clarification-edit-button" class="secondary" type="button">Edit original goal</button><button id="goal-clarification-cancel-button" class="secondary" type="button">Cancel</button></div></section>
             <section class="panel goal-interpretation-panel" id="goal-interpretation-panel" hidden><div class="goal-create-heading"><div><p class="kicker">Goal understood</p><h2 class="section-title">Confirm the investigation</h2></div><span class="status-badge status-in-progress">Ready to start</span></div><div class="goal-confirmation-grid"><div><span>Objective</span><strong id="goal-confirmed-objective">Not recorded</strong></div><div><span>Scope</span><strong id="goal-confirmed-scope">Not recorded</strong></div><div><span>Boundaries</span><strong>No automatic infrastructure mutation · Human approval required</strong></div><div><span>Planned investigations</span><strong>Repository analysis · Cloud Hunt · Utilization · Pricing · Dependencies</strong></div></div><div class="start-actions"><button id="goal-confirm-button" type="button">Start Investigation</button><button id="goal-edit-button" class="secondary" type="button">Edit Goal</button></div></section>
-            <section class="goal-list-panel" id="goal-list-panel"><div class="section-heading"><div><p class="kicker">Workspace history</p><h2 class="section-title">Your goals</h2></div><span class="count-badge" id="goal-list-count">0 goals</span></div><div id="goal-list" class="goal-card-grid"></div><div id="goal-list-empty" class="empty-state-inline" hidden><h3>No goals yet</h3><p>Start with a measurable outcome and GhostBusters will build the investigation path.</p></div></section>
+            <section class="goal-list-panel" id="goal-list-panel"><div class="section-heading"><div><p class="kicker">Workspace history</p><h2 class="section-title">Your goals</h2></div><span class="count-badge" id="goal-list-count">0 goals</span></div><div id="goal-list" class="goal-card-grid"></div><div id="goal-list-empty" class="empty-state-inline" hidden><h3>No goals yet</h3><p>Start with a measurable outcome and GhostOps will build the investigation path.</p></div></section>
             <section class="goal-execution-layout goal-workspace" id="goal-execution-panel" hidden>
               <aside class="goal-summary-rail panel"><button id="goal-workspace-back-button" class="secondary compact" type="button">Back to Goals</button><div class="goal-agent-mark idle" id="goal-agent-mark" aria-label="Agent state"><span></span></div><p class="kicker">Selected goal</p><h2 id="goal-summary-title" class="section-title">Goal</h2><span id="goal-summary-status" class="status-badge status-awaiting-review">Waiting</span><div class="goal-summary-grid"><div><span>Scope</span><strong id="goal-summary-scope">Not recorded</strong></div><div><span>Elapsed</span><strong id="goal-summary-elapsed">Not recorded</strong></div><div><span>Planning</span><strong id="goal-summary-planning">Deterministic safety planning</strong></div><div><span>Data source</span><strong id="goal-summary-source">Connected evidence</strong></div></div><button id="goal-retry-evidence-button" class="secondary" type="button" hidden>Retry Evidence Collection</button><button id="goal-cancel-button" class="button-danger" type="button">Cancel Goal</button></aside>
-              <div class="goal-workspace-main"><div class="goal-agent-status" aria-live="polite"><div><span class="mini-label">GhostBusters agent</span><h3 id="goal-agent-state">Waiting to investigate</h3><p id="goal-agent-narration">The recorded journey will appear here as evidence arrives.</p></div><span id="goal-current-tool" class="mode-badge">Planner</span></div><ol id="goal-journey-list" class="goal-execution-map"></ol><article class="panel goal-current-step" aria-live="polite"><div><p class="kicker">Current step</p><h2 id="goal-current-action" class="section-title">Waiting</h2></div><span class="mode-badge" id="goal-current-tool-duplicate" hidden>Planner</span><dl class="story-list compact"><div><dt>Why this step</dt><dd id="goal-current-reason">Not recorded</dd></div><div><dt>Input</dt><dd id="goal-current-input">Not recorded</dd></div><div><dt>Attempt</dt><dd id="goal-current-attempt">1</dd></div><div><dt>Output</dt><dd id="goal-current-output">Not recorded</dd></div><div><dt>Decision impact</dt><dd id="goal-current-impact">No infrastructure mutation was performed.</dd></div></dl></article><nav class="goal-tabs" aria-label="Goal workspace sections"><button class="filter-chip filter-chip-active" data-goal-tab="outcome" type="button">Outcome</button><button class="filter-chip" data-goal-tab="plan" type="button">Live Plan</button><button class="filter-chip" data-goal-tab="findings" type="button">Findings</button><button class="filter-chip" data-goal-tab="evidence" type="button">Evidence</button><button class="filter-chip" data-goal-tab="technical" type="button">Technical Trace</button></nav><section class="panel goal-tab-panel"><div id="goal-tab-content"></div></section></div>
+              <div class="goal-workspace-main"><div class="goal-agent-status" aria-live="polite"><div><span class="mini-label">GhostOps agent</span><h3 id="goal-agent-state">Waiting to investigate</h3><p id="goal-agent-narration">The recorded journey will appear here as evidence arrives.</p></div><span id="goal-current-tool" class="mode-badge">Planner</span></div><ol id="goal-journey-list" class="goal-execution-map"></ol><article class="panel goal-current-step" aria-live="polite"><div><p class="kicker">Current step</p><h2 id="goal-current-action" class="section-title">Waiting</h2></div><span class="mode-badge" id="goal-current-tool-duplicate" hidden>Planner</span><dl class="story-list compact"><div><dt>Why this step</dt><dd id="goal-current-reason">Not recorded</dd></div><div><dt>Input</dt><dd id="goal-current-input">Not recorded</dd></div><div><dt>Attempt</dt><dd id="goal-current-attempt">1</dd></div><div><dt>Output</dt><dd id="goal-current-output">Not recorded</dd></div><div><dt>Decision impact</dt><dd id="goal-current-impact">No infrastructure mutation was performed.</dd></div></dl></article><nav class="goal-tabs" aria-label="Goal workspace sections"><button class="filter-chip filter-chip-active" data-goal-tab="outcome" type="button">Outcome</button><button class="filter-chip" data-goal-tab="plan" type="button">Live Plan</button><button class="filter-chip" data-goal-tab="findings" type="button">Findings</button><button class="filter-chip" data-goal-tab="evidence" type="button">Evidence</button><button class="filter-chip" data-goal-tab="technical" type="button">Technical Trace</button></nav><section class="panel goal-tab-panel"><div id="goal-tab-content"></div></section></div>
             </section>
           </section>
 
@@ -213,7 +210,7 @@
                 <div class="toolbar-actions">
                   <button id="back-pr-list-button" class="secondary compact" type="button">Back to PR Reviews</button>
                   <button id="case-refresh-button" class="icon-button" type="button" title="Refresh current run" aria-label="Refresh current run">↻</button>
-                  <button id="ask-case-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button>
+                  <button id="ask-case-button" class="secondary compact ask-trigger" type="button">Ask GhostOps</button>
                   <button id="case-launch-demo-button" class="secondary compact" type="button">Launch Demo</button>
                 </div>
               </div>
@@ -312,7 +309,7 @@
                 <ol class="stage-list" id="stage-list"></ol>
                 <article class="current-action" aria-label="Current workflow summary">
                   <div><span>Current stage</span><strong id="current-action">No case loaded</strong></div>
-                  <div><span>Why it matters</span><strong id="current-reason">Start a review to see what GhostBusters found.</strong></div>
+                  <div><span>Why it matters</span><strong id="current-reason">Start a review to see what GhostOps found.</strong></div>
                   <div><span>Latest result</span><strong id="current-output">Waiting</strong></div>
                   <div><span>Next</span><strong id="current-next">Choose a prepared case</strong></div>
                 </article>
@@ -323,7 +320,7 @@
               <article class="panel recommendation-card" aria-labelledby="recommendation-title">
                 <p class="kicker">Recommendation</p>
                 <h2 id="recommendation-title" class="section-title">Waiting for review</h2>
-                <p class="recommendation-reason" id="recommendation-reason">The recommendation will appear here after GhostBusters completes its investigation.</p>
+                <p class="recommendation-reason" id="recommendation-reason">The recommendation will appear here after GhostOps completes its investigation.</p>
                 <div class="metric-row">
                   <div><span>Confidence</span><strong id="recommendation-confidence">--</strong></div>
                   <div><span>Risk</span><strong id="recommendation-risk">--</strong></div>
@@ -337,7 +334,7 @@
               <article class="panel evidence-summary" aria-labelledby="evidence-summary-title">
                 <div class="section-heading">
                   <div>
-                    <p class="kicker">Why GhostBusters recommends this</p>
+                    <p class="kicker">Why GhostOps recommends this</p>
                     <h2 id="evidence-summary-title" class="section-title">Decision evidence</h2>
                   </div>
                   <span class="count-badge" id="evidence-count">0 bullets</span>
@@ -355,7 +352,7 @@
                 <h2 id="human-title" class="section-title">Approve the next step</h2>
                 <div class="human-outcome"><span>Status</span><strong id="human-decision" class="status-badge status-awaiting-review">Not made</strong><small id="human-decision-technical">No review recorded</small></div>
                 <p id="review-guidance">Start a run to see the actions permitted by its safety state.</p>
-                <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p>Approval creates a remediation pull request or approved remediation proposal only. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
+                <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p>Approval creates a remediation pull request or approved remediation proposal only. GhostOps does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
               </div>
               <div class="review-control">
                 <div class="identity-block" id="reviewer-identity-block" aria-label="Reviewing as">
@@ -401,7 +398,7 @@
           <section id="technical-view" hidden class="page-enter" aria-labelledby="technical-title">
             <div class="technical-header">
               <div><p class="kicker">Technical Audit View</p><h2 id="technical-title" class="section-title">Complete recorded run data</h2><p>All backend audit data is preserved in sequence for engineering review.</p></div>
-              <div class="toolbar-actions"><button id="ask-technical-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><span class="status-chip light" id="technical-run-id">Run ID: not recorded</span></div>
+              <div class="toolbar-actions"><button id="ask-technical-button" class="secondary compact ask-trigger" type="button">Ask GhostOps</button><span class="status-chip light" id="technical-run-id">Run ID: not recorded</span></div>
             </div>
             <section class="panel technical-empty-state" id="technical-empty-state">
               <h3>No case selected</h3>
@@ -463,7 +460,7 @@
           <section id="cloud-hunt-view" class="mode-view page-enter" hidden aria-labelledby="cloud-hunt-title">
             <div class="mode-header panel">
               <div><p class="kicker">Provider-independent discovery</p><h2 id="cloud-hunt-title" class="section-title">Cloud Hunt</h2><p>Scan fixture-backed AWS, Azure, and Google Cloud inventories for suspicious waste while clearly separating protected resources from likely ghost resources.</p></div>
-              <div class="toolbar-actions"><button id="ask-cloud-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><span class="mode-badge" id="cloud-data-source-badge">Fixture-backed</span></div>
+              <div class="toolbar-actions"><button id="ask-cloud-button" class="secondary compact ask-trigger" type="button">Ask GhostOps</button><span class="mode-badge" id="cloud-data-source-badge">Fixture-backed</span></div>
             </div>
             <section class="panel" id="cloud-run-history" aria-labelledby="cloud-run-history-title">
               <div class="section-heading"><div><p class="kicker">History</p><h2 id="cloud-run-history-title" class="section-title">Cloud Hunt Runs</h2><p class="helper">Every hunt is retained with its original findings and data source.</p></div><button id="cloud-new-run-button" type="button">Start New Hunt</button></div>
@@ -525,12 +522,12 @@
               <div class="cloud-detail-layout">
                 <article class="evidence-card">
                   <p class="kicker">Finding evidence</p>
-                  <h3 class="card-title">Why GhostBusters flagged it</h3>
+                  <h3 class="card-title">Why GhostOps flagged it</h3>
                   <div id="cloud-detail-flagged" class="evidence-bullet-list"></div>
                 </article>
                 <article class="evidence-card caution-card">
                   <p class="kicker">Caution</p>
-                  <h3 class="card-title">Why GhostBusters is cautious</h3>
+                  <h3 class="card-title">Why GhostOps is cautious</h3>
                   <div id="cloud-detail-caution" class="evidence-bullet-list"></div>
                 </article>
                 <article class="evidence-card operational-card">
@@ -545,7 +542,7 @@
                 <article class="evidence-card recommendation-card cloud-recommendation-card">
                   <p class="kicker">Recommendation</p>
                   <h3 class="card-title">Decision readiness</h3>
-                  <p class="recommendation-helper">GhostBusters' current recommendation and safety state.</p>
+                  <p class="recommendation-helper">GhostOps' current recommendation and safety state.</p>
                   <dl class="story-list compact">
                     <div><dt>Recommended action</dt><dd id="cloud-detail-recommendation">Not recorded</dd></div>
                     <div><dt>Policy result</dt><dd id="cloud-detail-policy">Not recorded</dd></div>
@@ -560,7 +557,7 @@
                   <h2 id="cloud-human-title" class="section-title">Awaiting human review</h2>
                   <div class="human-outcome"><span>Status</span><strong id="cloud-human-status" class="status-badge status-awaiting-review">Not made</strong><small id="cloud-human-technical" hidden>No review recorded</small></div>
                   <p id="cloud-human-guidance">Open an approval case to see the available actions.</p>
-                  <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostBusters does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
+                  <div class="safety-callout"><span class="callout-icon" aria-hidden="true">S</span><div><strong>Safe by design</strong><p id="cloud-safety-notice">Approval records the remediation decision and prepares the next supported remediation step. GhostOps does not apply Terraform, merge pull requests, or modify cloud resources directly.</p></div></div>
                 </div>
                 <div class="review-control">
                   <div class="identity-block" id="cloud-reviewer-identity-block" aria-label="Reviewing as">
@@ -608,7 +605,7 @@
           </section>
 
           <section id="review-queue-view" class="mode-view page-enter" hidden aria-labelledby="review-queue-title">
-            <div class="mode-header panel"><div><p class="kicker">Human control</p><h2 id="review-queue-title" class="section-title">Approvals</h2><p>Each item highlights the case, recommendation, savings, policy state, and current status without exposing backend labels.</p></div><div class="toolbar-actions"><button id="ask-approvals-button" class="secondary compact ask-trigger" type="button">Ask GhostBusters</button><button id="refresh-review-queue-button" class="secondary" type="button">Refresh Queue</button></div></div>
+            <div class="mode-header panel"><div><p class="kicker">Human control</p><h2 id="review-queue-title" class="section-title">Approvals</h2><p>Each item highlights the case, recommendation, savings, policy state, and current status without exposing backend labels.</p></div><div class="toolbar-actions"><button id="ask-approvals-button" class="secondary compact ask-trigger" type="button">Ask GhostOps</button><button id="refresh-review-queue-button" class="secondary" type="button">Refresh Queue</button></div></div>
             <section class="panel"><div class="queue-grid" id="review-queue-list"><p class="muted">No review cases loaded.</p></div></section>
           </section>
           <section id="settings-view" class="mode-view page-enter" hidden aria-labelledby="settings-title">
@@ -623,8 +620,8 @@
             <section class="panel" aria-labelledby="pending-invitations-title"><div class="section-heading"><div><p class="kicker">Pending Invitations</p><h2 id="pending-invitations-title" class="section-title">Invitations</h2></div></div><div id="pending-invitations-table"></div></section>
             <section class="panel" aria-labelledby="roles-access-title"><div class="section-heading"><div><p class="kicker">Roles &amp; Access</p><h2 id="roles-access-title" class="section-title">Permission bundles</h2><p>Roles provide default bundles; backend granular permissions remain authoritative. Custom roles are future work.</p></div></div><div id="roles-access-list" class="compact-list"></div></section>
             <section class="panel" aria-labelledby="repositories-settings-title"><div class="section-heading"><div><p class="kicker">Repositories</p><h2 id="repositories-settings-title" class="section-title">Repository Access</h2><p>Manage repository allowlists from the GitHub integration below. No repository controls are simulated here.</p></div></div><div id="repositories-settings-list" class="compact-list"></div></section>
-            <section class="panel" aria-labelledby="aws-connection-title"><div class="section-heading"><div><p class="kicker">Cloud Connections</p><h2 id="aws-connection-title" class="section-title">AWS</h2><p>Connect a customer AWS account through AWS-hosted CloudFormation. GhostBusters receives read-only role access only.</p></div><span id="aws-connection-status" class="status-badge status-neutral">Not connected</span></div><div class="toolbar-actions"><button id="aws-connect-button" type="button">Connect AWS Account</button><button id="aws-validate-button" class="secondary" type="button">Validate Connection</button></div><dl class="story-list compact"><div><dt>Account ID</dt><dd id="aws-account-id">Not connected</dd></div><div><dt>Last checked</dt><dd id="aws-last-checked">Not checked</dd></div><div><dt>Last successful collection</dt><dd id="aws-last-success">Not recorded</dd></div><div><dt>Permission warnings</dt><dd id="aws-permission-warnings">None recorded</dd></div></dl><details class="integration-advanced"><summary>Advanced AWS settings</summary><p class="helper">Use these controls only to limit scan regions, change the CloudWatch evidence window, or disable the connection.</p><div class="goal-create-grid"><label>Enabled<select id="aws-enabled-select"><option value="false">Disabled</option><option value="true">Enabled</option></select></label><label>Allowed regions<input id="aws-regions-input" placeholder="us-east-1,eu-west-1" /></label><label>CloudWatch lookback<input id="aws-lookback-input" type="number" min="1" max="90" value="14" /></label><button id="aws-save-button" type="button">Save Advanced Settings</button></div></details><p id="aws-message" class="message" role="status"></p><p class="helper">AWS opens its own sign-in and setup. No access key, secret key, or customer credentials are entered or stored in GhostBusters. Real AWS mode never falls back silently to fixtures.</p></section>
-            <section class="panel" aria-labelledby="github-connection-title"><div class="section-heading"><div><p class="kicker">Integrations</p><h2 id="github-connection-title" class="section-title">GitHub</h2><p>Connect a GitHub App installation for read-only repository context, activity, reviews, and CODEOWNERS evidence.</p></div><span id="github-connection-status" class="status-badge status-neutral">Not connected</span></div><div id="github-disconnected-state"><p class="helper">GhostBusters will request access through GitHub. No token or private key is entered here.</p><button id="github-connect-button" type="button">Connect GitHub</button></div><div id="github-connected-state" hidden><dl class="story-list compact"><div><dt>Connected account</dt><dd id="github-account-id">Not connected</dd></div><div><dt>Installation ID</dt><dd id="github-installation-id">Not connected</dd></div><div><dt>Repositories</dt><dd id="github-repository-list">None connected</dd></div><div><dt>Last checked</dt><dd id="github-last-checked">Not checked</dd></div><div><dt>Permission warnings</dt><dd id="github-permission-warnings">None recorded</dd></div></dl><div class="toolbar-actions"><button id="github-manage-repositories-button" class="secondary" type="button">Manage Repositories</button><button id="github-validate-button" class="secondary" type="button">Revalidate</button><button id="github-disconnect-button" class="secondary" type="button">Disconnect</button></div></div><details><summary>Advanced / Development setup</summary><p class="helper">Development fallback only. Production onboarding uses the GitHub App.</p><div class="goal-create-grid"><label>Enabled<select id="github-enabled-select"><option value="false">Disabled</option><option value="true">Enabled</option></select></label><label>Installation or account<input id="github-installation-input" placeholder="development account" /></label><label>Allowed repositories<input id="github-repositories-input" placeholder="owner/repository, ..." /></label><button id="github-save-button" type="button">Save Development Settings</button></div></details><p id="github-message" class="message" role="status"></p><p class="helper">Tokens, installation tokens, and private keys are never shown or stored in workspace configuration.</p></section>
+            <section class="panel" aria-labelledby="aws-connection-title"><div class="section-heading"><div><p class="kicker">Cloud Connections</p><h2 id="aws-connection-title" class="section-title">AWS</h2><p>Connect a customer AWS account through AWS-hosted CloudFormation. GhostOps receives read-only role access only.</p></div><span id="aws-connection-status" class="status-badge status-neutral">Not connected</span></div><div class="toolbar-actions"><button id="aws-connect-button" type="button">Connect AWS Account</button><button id="aws-validate-button" class="secondary" type="button">Validate Connection</button></div><dl class="story-list compact"><div><dt>Account ID</dt><dd id="aws-account-id">Not connected</dd></div><div><dt>Last checked</dt><dd id="aws-last-checked">Not checked</dd></div><div><dt>Last successful collection</dt><dd id="aws-last-success">Not recorded</dd></div><div><dt>Permission warnings</dt><dd id="aws-permission-warnings">None recorded</dd></div></dl><details class="integration-advanced"><summary>Advanced AWS settings</summary><p class="helper">Use these controls only to limit scan regions, change the CloudWatch evidence window, or disable the connection.</p><div class="goal-create-grid"><label>Enabled<select id="aws-enabled-select"><option value="false">Disabled</option><option value="true">Enabled</option></select></label><label>Allowed regions<input id="aws-regions-input" placeholder="us-east-1,eu-west-1" /></label><label>CloudWatch lookback<input id="aws-lookback-input" type="number" min="1" max="90" value="14" /></label><button id="aws-save-button" type="button">Save Advanced Settings</button></div></details><p id="aws-message" class="message" role="status"></p><p class="helper">AWS opens its own sign-in and setup. No access key, secret key, or customer credentials are entered or stored in GhostOps. Real AWS mode never falls back silently to fixtures.</p></section>
+            <section class="panel" aria-labelledby="github-connection-title"><div class="section-heading"><div><p class="kicker">Integrations</p><h2 id="github-connection-title" class="section-title">GitHub</h2><p>Connect a GitHub App installation for read-only repository context, activity, reviews, and CODEOWNERS evidence.</p></div><span id="github-connection-status" class="status-badge status-neutral">Not connected</span></div><div id="github-disconnected-state"><p class="helper">GhostOps will request access through GitHub. No token or private key is entered here.</p><button id="github-connect-button" type="button">Connect GitHub</button></div><div id="github-connected-state" hidden><dl class="story-list compact"><div><dt>Connected account</dt><dd id="github-account-id">Not connected</dd></div><div><dt>Installation ID</dt><dd id="github-installation-id">Not connected</dd></div><div><dt>Repositories</dt><dd id="github-repository-list">None connected</dd></div><div><dt>Last checked</dt><dd id="github-last-checked">Not checked</dd></div><div><dt>Permission warnings</dt><dd id="github-permission-warnings">None recorded</dd></div></dl><div class="toolbar-actions"><button id="github-manage-repositories-button" class="secondary" type="button">Manage Repositories</button><button id="github-validate-button" class="secondary" type="button">Revalidate</button><button id="github-disconnect-button" class="secondary" type="button">Disconnect</button></div></div><details><summary>Advanced / Development setup</summary><p class="helper">Development fallback only. Production onboarding uses the GitHub App.</p><div class="goal-create-grid"><label>Enabled<select id="github-enabled-select"><option value="false">Disabled</option><option value="true">Enabled</option></select></label><label>Installation or account<input id="github-installation-input" placeholder="development account" /></label><label>Allowed repositories<input id="github-repositories-input" placeholder="owner/repository, ..." /></label><button id="github-save-button" type="button">Save Development Settings</button></div></details><p id="github-message" class="message" role="status"></p><p class="helper">Tokens, installation tokens, and private keys are never shown or stored in workspace configuration.</p></section>
             <section class="panel" aria-labelledby="jira-connection-title"><div class="section-heading"><div><p class="kicker">Integrations</p><h2 id="jira-connection-title" class="section-title">Jira</h2><p>Read-only project, issue, ownership, status, and activity context.</p></div><span id="jira-connection-status" class="status-badge status-neutral">Not checked</span></div><div class="goal-create-grid"><label>Enabled<select id="jira-enabled-select"><option value="false">Disabled</option><option value="true">Enabled</option></select></label><label>Base URL<input id="jira-base-url-input" placeholder="https://your-domain.atlassian.net" /></label><label>Allowed projects<input id="jira-projects-input" placeholder="OPS, PLATFORM, ..." /></label><button id="jira-save-button" type="button">Save Jira Settings</button></div><div class="toolbar-actions"><button id="jira-validate-button" class="secondary" type="button">Validate Connection</button></div><dl class="story-list compact"><div><dt>Site or account</dt><dd id="jira-account-id">Not checked</dd></div><div><dt>Projects</dt><dd id="jira-project-list">Not checked</dd></div><div><dt>Last checked</dt><dd id="jira-last-checked">Not checked</dd></div><div><dt>Permission warnings</dt><dd id="jira-permission-warnings">None recorded</dd></div></dl><p id="jira-message" class="message" role="status"></p><p class="helper">Source mode: Real Jira. API tokens and secrets are supplied by the server environment and are never shown.</p></section>
             <section class="panel" aria-labelledby="cloud-schedule-title"><div class="section-heading"><div><p class="kicker">Cloud Hunt</p><h2 id="cloud-schedule-title" class="section-title">Cloud Hunt Schedule</h2><p>Recurring read-only hunts preserve every prior run and never approve or remediate automatically.</p></div></div><div class="goal-create-grid"><label>Name<input id="schedule-name-input" placeholder="Weekly cloud review" /></label><label>Provider<select id="schedule-provider-select"><option value="multi_cloud">Multi-cloud</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">Google Cloud</option></select></label><label>Source mode<select id="schedule-source-select"><option value="fixtures">Fixture-backed</option><option value="real_aws">Connected cloud account</option></select></label><label>Recurrence<select id="schedule-recurrence-select"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label><label>Time zone<input id="schedule-timezone-input" value="UTC" /></label><label>Hour<input id="schedule-hour-input" type="number" min="0" max="23" value="0" /></label><label>Minute<input id="schedule-minute-input" type="number" min="0" max="59" value="0" /></label><button id="schedule-create-button" type="button">Create Schedule</button></div><div id="schedule-list" class="compact-list"></div><p id="schedule-message" class="message" role="status"></p></section>
             <section class="panel" aria-labelledby="policies-settings-title"><div class="section-heading"><div><p class="kicker">Policies</p><h2 id="policies-settings-title" class="section-title">Safety Policy</h2><p>Active policy behavior is functional and enforced server-side. Safe edits are not exposed until a policy editor exists.</p></div><span class="status-badge status-approved">Functional</span></div><div id="policies-settings-list" class="compact-list"></div></section>
@@ -645,7 +642,7 @@
         <div class="modal-head">
           <div>
             <p class="kicker" id="auth-modal-kicker">Workspace access</p>
-            <h2 id="auth-modal-title" class="section-title">Sign in to GhostBusters</h2>
+            <h2 id="auth-modal-title" class="section-title">Sign in to GhostOps</h2>
           </div>
         </div>
         <form id="signin-form" class="auth-form">
@@ -733,15 +730,15 @@
         <div class="section-heading">
           <div>
             <p class="kicker">Read-only assistant</p>
-            <h2 id="assistant-title" class="section-title">Ask GhostBusters</h2>
+            <h2 id="assistant-title" class="section-title">Ask GhostOps</h2>
           </div>
-          <button id="assistant-close-button" class="icon-button" type="button" aria-label="Close Ask GhostBusters">×</button>
+          <button id="assistant-close-button" class="icon-button" type="button" aria-label="Close Ask GhostOps">×</button>
         </div>
         <p class="assistant-context" id="assistant-context-label">Product help</p>
-        <p class="safety-callout">Ask GhostBusters can explain recorded evidence and product behavior. It cannot approve actions or modify infrastructure.</p>
+        <p class="safety-callout">Ask GhostOps can explain recorded evidence and product behavior. It cannot approve actions or modify infrastructure.</p>
         <div class="assistant-suggestions" id="assistant-suggestions"></div>
         <label for="assistant-question-input">Question</label>
-        <textarea id="assistant-question-input" rows="3" maxlength="600" placeholder="Ask about the current case or GhostBusters behavior"></textarea>
+        <textarea id="assistant-question-input" rows="3" maxlength="600" placeholder="Ask about the current case or GhostOps behavior"></textarea>
         <div class="start-actions"><button id="assistant-ask-button" type="button">Ask</button><button id="assistant-clear-button" class="secondary" type="button">Clear</button></div>
         <p class="message" id="assistant-message" role="status"></p>
         <div id="assistant-answer" class="assistant-answer" aria-live="polite"></div>

@@ -125,7 +125,7 @@ GOAL_CAPABILITY_ALLOWLIST = {
     "request_human_approval", "summarize_goal_outcome",
 }
 
-app = FastAPI(title="GhostBusters", version="0.1.0")
+app = FastAPI(title="GhostOps", version="0.1.0")
 validate_startup_settings()
 if settings.cors_allowed_origins:
     app.add_middleware(
@@ -1018,7 +1018,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
         return GoalValidationResponse(status="rejected", reason="This objective requests an unsafe or unsupported action.", category="unsupported", normalized_goal=goal, suggested_goal="Investigate the change and prepare a recommendation that requires approval.", constraints=["No direct infrastructure mutation", "Human approval required"], risk_level="high")
     interpretation = deterministic_objective_interpretation(goal)
     if not is_supported_goal_domain(goal):
-        return GoalValidationResponse(status="rejected", reason="GhostBusters supports cloud-cost, infrastructure, Terraform, ownership, tagging, and governance objectives.", category="unsupported", normalized_goal=goal, suggested_goal="Review non-production cloud waste while protecting production workloads.", constraints=["No direct infrastructure mutation"], risk_level="medium")
+        return GoalValidationResponse(status="rejected", reason="GhostOps supports cloud-cost, infrastructure, Terraform, ownership, tagging, and governance objectives.", category="unsupported", normalized_goal=goal, suggested_goal="Review non-production cloud waste while protecting production workloads.", constraints=["No direct infrastructure mutation"], risk_level="medium")
     if has_ambiguous_percentage_target(goal) and not request.clarification_answers:
         questions = [
             "Is the target a 15% reduction in current spending?",
@@ -1027,7 +1027,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             "Must production remain protected?",
         ]
         clarification_questions = [
-            {"id": "target_meaning", "question": "What does 15% mean?", "answer_type": "single_choice", "options": [{"value": "spend_reduction", "label": "Reduce current AWS spending by 15%", "recommended": True}, {"value": "potential_savings", "label": "Identify at least 15% potential savings", "recommended": False}, {"value": "other", "label": "Other", "recommended": False}], "placeholder": "Describe the target", "required": True, "why_needed": "This determines how GhostBusters measures the outcome."},
+            {"id": "target_meaning", "question": "What does 15% mean?", "answer_type": "single_choice", "options": [{"value": "spend_reduction", "label": "Reduce current AWS spending by 15%", "recommended": True}, {"value": "potential_savings", "label": "Identify at least 15% potential savings", "recommended": False}, {"value": "other", "label": "Other", "recommended": False}], "placeholder": "Describe the target", "required": True, "why_needed": "This determines how GhostOps measures the outcome."},
             {"id": "environment", "question": "Which environment is in scope?", "answer_type": "single_choice", "options": [{"value": "non_production", "label": "Non-production AWS", "recommended": True}, {"value": "production", "label": "Production AWS", "recommended": False}, {"value": "both_protected", "label": "Both, with production protected", "recommended": False}, {"value": "other", "label": "Other", "recommended": False}], "placeholder": "Describe the environment", "required": True, "why_needed": "Production remains protected by policy."},
             {"id": "baseline", "question": "Which baseline should be used?", "answer_type": "single_choice", "options": [{"value": "current_monthly", "label": "Current monthly spend", "recommended": True}, {"value": "previous_month", "label": "Previous month", "recommended": False}, {"value": "custom", "label": "Custom baseline", "recommended": False}], "placeholder": "Enter the baseline", "required": True, "why_needed": "A baseline is needed to evaluate the target."},
         ]
@@ -1052,7 +1052,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     if any(term in lowered for term in ("cloud", "idle", "waste", "resource")): capabilities.extend(["inspect_cloud_inventory", "run_cloud_hunt", "inspect_resource_utilization", "inspect_resource_tags", "identify_resource_owner"])
     if any(term in lowered for term in ("terraform", "repository", "pull request", "pr")): capabilities.extend(["inspect_terraform_repository", "analyse_pull_request", "estimate_cost_change"])
     status = "needs_revision" if missing else "accepted"
-    reason = "Add the missing scope before GhostBusters can execute safely." if missing else "Goal is within GhostBusters' supported, recommendation-first scope."
+    reason = "Add the missing scope before GhostOps can execute safely." if missing else "Goal is within GhostOps' supported, recommendation-first scope."
     return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=gemini.value.normalized_goal if gemini else interpretation.normalized_goal, missing_fields=missing, suggested_goal=gemini.value.suggested_goal if gemini else interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": gemini.value.clarifying_questions if gemini else []}, constraints=list(dict.fromkeys([*(gemini.value.constraints if gemini else interpretation.constraints), *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys((gemini.value.suggested_capabilities if gemini else capabilities))), risk_level="high" if "production" in lowered else (gemini.value.risk_level if gemini else "medium"), validation_mode=("groq_assisted" if gemini and gemini.planning_mode == "groq_primary" else "gemini_assisted") if gemini else "deterministic")
 
 
@@ -1237,7 +1237,7 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                         tool = available_tools[0]
                         action = AgentNextAction(
                             action="call_tool", tool_name=tool,
-                            reason="The model proposal could not safely advance this bounded investigation, so GhostBusters selected the next registered read-only collector.",
+                            reason="The model proposal could not safely advance this bounded investigation, so GhostOps selected the next registered read-only collector.",
                             question_being_answered=f"What does {tool} evidence add to this investigation?",
                             expected_information=f"Recorded {tool} evidence or an explicit limitation.", confidence=0.8,
                         )
