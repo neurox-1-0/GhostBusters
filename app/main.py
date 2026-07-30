@@ -1009,7 +1009,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     goal = request.goal.strip()
     lowered = goal.lower()
     gemini = None
-    if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key):
+    if settings.app_env == "production" and settings.ai_enabled and (settings.groq_api_key or settings.gemini_api_key):
         try:
             client = build_ai_client(settings)
             if client is None:
@@ -1126,7 +1126,7 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
             if created:
                 append_audit_event(run, event_type="gemini_planning_started", actor="agent", summary="Preparing an allowlisted, read-only capability plan.", stage="planning", status="running")
                 try:
-                    planner = build_ai_client(settings) if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key) else None
+                    planner = build_ai_client(settings) if settings.app_env == "production" and settings.ai_enabled and (settings.groq_api_key or settings.gemini_api_key) else None
                     if planner is None:
                         raise AIClientError("provider_unavailable", "AI planning is unavailable.")
                     plan_call = planner.plan_goal({"goal": run.goal, "scope": run.scope, "constraints": run.goal_validation.get("constraints", []), "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST), "connected_sources": connected_sources})
@@ -1187,7 +1187,7 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                 # before it can choose again. This is deliberately bounded and
                 # read-only; it is not a background mutation loop.
                 planner = None
-                if settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key):
+                if settings.ai_enabled and (settings.groq_api_key or settings.gemini_api_key):
                     try:
                         planner = build_ai_client(settings)
                     except Exception as exc:
@@ -1197,7 +1197,8 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                     key = (value or "").strip().casefold().replace("_", " ")
                     aliases = {
                         "github": "GitHub", "github context": "GitHub", "github activity": "GitHub",
-                        "aws": "AWS", "aws evidence": "AWS", "aws inventory": "AWS", "utilization": "AWS", "pricing": "AWS",
+                        "github pr context": "GitHub", "github_pr_context": "GitHub", "github reviews": "GitHub", "github ownership": "GitHub",
+                        "aws": "AWS", "aws evidence": "AWS", "aws inventory": "AWS", "aws_inventory": "AWS", "aws cloudwatch": "AWS", "aws_cloudwatch": "AWS", "aws pricing": "AWS", "aws_pricing": "AWS", "utilization": "AWS", "pricing": "AWS",
                         "cloud hunt": "Cloud Hunt", "cloud hunt context": "Cloud Hunt",
                     }
                     return aliases.get(key)

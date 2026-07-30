@@ -62,3 +62,8 @@ def test_abstained_goal_is_not_rendered_as_a_running_policy_step() -> None:
     assert 'if (run.status === "abstained")' in APP_JS
     assert 'run.status === "abstained" ? "No recommendation"' in APP_JS
     assert "const roadmapStates = goalRoadmapStates(run, state.goalEvents);" in APP_JS
+
+
+def test_live_plan_surfaces_a_safe_groq_fallback_reason() -> None:
+    assert "Groq could not complete this decision" in APP_JS
+    assert "decision.error_category" in APP_JS

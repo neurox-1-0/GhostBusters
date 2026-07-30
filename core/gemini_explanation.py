@@ -50,6 +50,55 @@ def add_gemini_explanation(
             "summary": "Gemini explanation is disabled; deterministic explanation used.",
             "details": {"fallback_used": True, "provider": "disabled"},
         }
+    selected_client = client if client is not None else build_ai_client(configuration)
+    if selected_client is None:
+        return decision.model_copy(update={"gemini_explanation": fallback}), {
+            "event_type": "gemini_explanation_fallback",
+            "summary": "Gemini explanation provider unavailable; deterministic explanation used.",
+            "details": {"fallback_used": True, "provider": "disabled"},
+        }
+    payload = redact_model_payload({
+        "final_summary": decision.final_summary,
+        "preferred_action": decision.preferred_action,
+        "confidence": decision.confidence.final_confidence,
+        "policy_status": decision.policy_result.status,
+        "policy_allowed": decision.policy_result.allowed,
+        "blocking_reasons": decision.policy_result.blocking_reasons,
+        "verifier_findings": [item.model_dump(mode="json") for item in decision.verifier_findings],
+        "evidence_points": [f"{item.source}: {item.claim} = {item.value}" for item in decision.evidence[:8]],
+        "uncertainty_points": [item.model_dump(mode="json") for item in decision.missing_evidence[:5]],
+        "real_pr_url": None,
+        "pricing_policy": "Do not introduce currency or monetary values. Explain only pricing values present in verified live or verified_cached pricing evidence; otherwise state that pricing is unavailable.",
+        "pricing_available": any(item.source == "pricing" and item.source_mode in {"live", "verified_cached"} and item.freshness_status != "unavailable" for item in decision.evidence),
+        "safety_boundaries": [
+            "No cloud resource has been changed by GhostBusters.",
+            "Terraform apply and pull-request merge are outside GhostBusters automation.",
+        ],
+    })
+    try:
+        call = selected_client.explain_recommendation(payload)
+        explanation = call.value
+        if not isinstance(explanation, GeminiRecommendationExplanation):
+            raise AIClientError("schema_validation_failed", "Gemini explanation schema was invalid.")
+        validate_explanation(explanation, decision, payload)
+        return decision.model_copy(update={"gemini_explanation": explanation}), {
+            "event_type": "gemini_explanation_completed",
+            "summary": "Gemini generated a validated recommendation explanation.",
+            "details": {
+                "provider": "gemini" if call.planning_mode != "mock_gemini" else "mock",
+                "model": call.model,
+                "latency_ms": call.latency_ms,
+                "fallback_used": False,
+                "retry_count": call.usage_metadata.get("retry_count", 0),
+            },
+        }
+    except Exception as exc:
+        category = exc.category if isinstance(exc, AIClientError) else "schema_validation_failed"
+        return decision.model_copy(update={"gemini_explanation": fallback}), {
+            "event_type": "gemini_explanation_fallback",
+            "summary": "Deterministic explanation used after Gemini explanation failure.",
+            "details": {"fallback_used": True, "error_category": category},
+        }
 
 
 def connected_evidence_assessment(
@@ -130,55 +179,6 @@ def connected_evidence_assessment(
     except Exception as exc:
         category = exc.category if isinstance(exc, AIClientError) else type(exc).__name__
         return fallback, {"event_type": "agent_assessment_fallback", "summary": "Deterministic evidence assessment used after AI assessment failure.", "details": {"fallback_used": True, "error_category": category}}
-    selected_client = client if client is not None else build_ai_client(configuration)
-    if selected_client is None:
-        return decision.model_copy(update={"gemini_explanation": fallback}), {
-            "event_type": "gemini_explanation_fallback",
-            "summary": "Gemini explanation provider unavailable; deterministic explanation used.",
-            "details": {"fallback_used": True, "provider": "disabled"},
-        }
-    payload = redact_model_payload({
-        "final_summary": decision.final_summary,
-        "preferred_action": decision.preferred_action,
-        "confidence": decision.confidence.final_confidence,
-        "policy_status": decision.policy_result.status,
-        "policy_allowed": decision.policy_result.allowed,
-        "blocking_reasons": decision.policy_result.blocking_reasons,
-        "verifier_findings": [item.model_dump(mode="json") for item in decision.verifier_findings],
-        "evidence_points": [f"{item.source}: {item.claim} = {item.value}" for item in decision.evidence[:8]],
-        "uncertainty_points": [item.model_dump(mode="json") for item in decision.missing_evidence[:5]],
-        "real_pr_url": None,
-        "pricing_policy": "Do not introduce currency or monetary values. Explain only pricing values present in verified live or verified_cached pricing evidence; otherwise state that pricing is unavailable.",
-        "pricing_available": any(item.source == "pricing" and item.source_mode in {"live", "verified_cached"} and item.freshness_status != "unavailable" for item in decision.evidence),
-        "safety_boundaries": [
-            "No cloud resource has been changed by GhostBusters.",
-            "Terraform apply and pull-request merge are outside GhostBusters automation.",
-        ],
-    })
-    try:
-        call = selected_client.explain_recommendation(payload)
-        explanation = call.value
-        if not isinstance(explanation, GeminiRecommendationExplanation):
-            raise AIClientError("schema_validation_failed", "Gemini explanation schema was invalid.")
-        validate_explanation(explanation, decision, payload)
-        return decision.model_copy(update={"gemini_explanation": explanation}), {
-            "event_type": "gemini_explanation_completed",
-            "summary": "Gemini generated a validated recommendation explanation.",
-            "details": {
-                "provider": "gemini" if call.planning_mode != "mock_gemini" else "mock",
-                "model": call.model,
-                "latency_ms": call.latency_ms,
-                "fallback_used": False,
-                "retry_count": call.usage_metadata.get("retry_count", 0),
-            },
-        }
-    except Exception as exc:
-        category = exc.category if isinstance(exc, AIClientError) else "schema_validation_failed"
-        return decision.model_copy(update={"gemini_explanation": fallback}), {
-            "event_type": "gemini_explanation_fallback",
-            "summary": "Deterministic explanation used after Gemini explanation failure.",
-            "details": {"fallback_used": True, "error_category": category},
-        }
 
 
 def validate_explanation(explanation: GeminiRecommendationExplanation, decision: DecisionRecord, payload: dict[str, Any]) -> None:

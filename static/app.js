@@ -2027,6 +2027,7 @@ function renderGoalTab() {
         const mode = planningModeLabel(decision.planning_mode || "deterministic_fallback");
         const card = el("article", `goal-finding-card goal-agent-decision ${accepted ? "goal-agent-decision-accepted" : "goal-agent-decision-rejected"}`);
         append(card, el("span", `status-badge ${accepted ? "status-in-progress" : "status-warning"}`, accepted ? "Agent decision" : "Proposal rejected"), el("h3", null, `${entry.index + 1}. Decide next step`), el("p", null, decision.reason || "The agent evaluated the recorded investigation context."), dataList([["Selected tool", labelFor(decision.tool_name || "No tool")], ["Question", decision.question_being_answered || "Not recorded"], ["Expected evidence", decision.expected_information || "Not recorded"], ["Safety check", decision.validation_result || "Not recorded"], ["Planning mode", mode]]));
+        if (decision.error_category) card.appendChild(el("p", "goal-next-action", `Groq could not complete this decision (${labelFor(decision.error_category)}), so GhostOps used the recorded safe fallback.`));
         if (decision.fallback_from) card.appendChild(el("p", "goal-next-action", "The original proposal did not pass the bounded safety check, so GhostOps used the next registered read-only collector."));
         node.appendChild(card);
         return;

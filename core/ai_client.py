@@ -322,7 +322,16 @@ class GeminiAIClient:
         return self._call(GeminiGoalPlan, prompt)
 
     def propose_next_action(self, payload: dict[str, Any]) -> AICallResult:
-        prompt = json.dumps({"task": "propose_next_action", "input": redact_model_payload(payload)}, sort_keys=True)
+        prompt = json.dumps({
+            "task": "propose_next_action",
+            "instructions": (
+                "Return action=call_tool while available_tools is non-empty. "
+                "Set tool_name to exactly one value from available_tools, preserving its spelling and case. "
+                "Do not return a capability alias, API endpoint, or invented tool name. "
+                "Explain the next evidence question from the supplied objective and recorded evidence only."
+            ),
+            "input": redact_model_payload(payload),
+        }, sort_keys=True)
         return self._call(AgentNextAction, prompt)
 
     def propose_investigation_plan(self, payload: dict[str, Any]) -> AICallResult:
