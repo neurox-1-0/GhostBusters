@@ -1314,7 +1314,10 @@ samp {
   .view-switch { display: flex; overflow-x: auto; padding-top: 0.5rem; }
   .view-button { flex: 0 0 auto; justify-content: center; min-width: 124px; }
   .view-button.active::before { display: none; }
-  .sidebar-bottom, .sidebar-card, .nav-label { display: none; }
+  .sidebar-card, .nav-label { display: none; }
+  .sidebar-bottom { display: flex; margin-top: 0.3rem; padding-top: 0; border-top: 0; }
+  .sidebar-bottom .view-button { min-width: 0; }
+  .sidebar-bottom .view-button[disabled] { display: none; }
   .topbar, .recommendation-layout, .decision-panel, .result-grid, .technical-columns, .hunt-controls, .case-status-row, .summary-metric-row, .cloud-detail-layout { grid-template-columns: 1fr; }
   .topbar { position: static; min-height: 0; }
   .topbar-actions, .overview-heading, .mode-header, .technical-header { align-items: flex-start; flex-direction: column; }
