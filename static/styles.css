@@ -432,13 +432,36 @@ samp {
   width: min(460px, 100%);
   display: grid;
   gap: 1rem;
-  padding: clamp(1.25rem, 3vw, 2rem);
+  padding: 0 clamp(1.25rem, 3vw, 2rem) clamp(1.25rem, 3vw, 2rem);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-background);
+  overflow: hidden;
   box-shadow: var(--shadow-md);
   animation: authCardIn 280ms ease both;
   will-change: transform, opacity;
+}
+.auth-brand {
+  display: grid;
+  place-items: center;
+  min-height: 142px;
+  margin: 0 calc(clamp(1.25rem, 3vw, 2rem) * -1);
+  padding: 0.35rem 1.5rem;
+  background: #000;
+  border-bottom: 3px solid #ef7d11;
+}
+.auth-brand img {
+  display: block;
+  width: min(232px, 76vw);
+  height: 136px;
+  object-fit: cover;
+  object-position: center;
+}
+.auth-card .modal-head {
+  padding-top: 0.15rem;
+}
+.auth-card .modal-head .section-title {
+  margin-bottom: 0;
 }
 .auth-form {
   display: grid;
@@ -1407,6 +1430,12 @@ samp {
   .activity-pagination { flex-wrap: wrap; justify-content: flex-start; }
   .activity-pagination span { flex: 1 1 100%; }
   .activity-details-drawer { width: 100%; }
+}
+@media (max-width: 480px) {
+  .auth-screen { align-items: start; overflow-y: auto; }
+  .auth-card { margin: 1rem 0; }
+  .auth-brand { min-height: 122px; }
+  .auth-brand img { width: min(208px, 78vw); height: 116px; }
 }
 
 /* Autonomous Goals workspace */
