@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>GhostBusters Project Summary</title>
+  <style>
+    @page { size: A4; margin: 15mm 16mm 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #15202b; font-size: 10pt; line-height: 1.32; margin: 0; }
+    .page { min-height: 267mm; page-break-after: always; position: relative; padding-bottom: 12mm; }
+    .page:last-child { page-break-after: auto; }
+    h1 { color: #132f4c; font-size: 31pt; line-height: 1.08; margin: 26mm 0 7mm; }
+    h2 { color: #123c61; font-size: 20pt; border-bottom: 2px solid #51a6c4; padding-bottom: 3mm; margin: 0 0 6mm; }
+    h3 { color: #1c5f7a; font-size: 12.5pt; margin: 4mm 0 1.5mm; }
+    p { margin: 0 0 2.5mm; }
+    ul { margin: 2mm 0 3mm; padding-left: 5mm; }
+    li { margin: 1mm 0; }
+    .subtitle { font-size: 15pt; color: #46677c; max-width: 145mm; }
+    .meta, .callout { background: #edf7fa; border-left: 4px solid #51a6c4; padding: 4mm 5mm; margin: 8mm 0; }
+    .warning { background: #fff8e5; border-left-color: #d99d27; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; }
+    .card { border: 1px solid #cbdde5; border-radius: 3mm; padding: 4mm; background: #fbfdfe; }
+    .card h3 { margin-top: 0; }
+    .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 2mm; margin: 5mm 0; }
+    .node { border: 1px solid #4b95b4; background: #eef8fb; color: #123c61; padding: 3mm 3.5mm; border-radius: 2mm; font-weight: bold; text-align: center; }
+    .arrow { color: #3f849f; font-size: 16pt; }
+    table { width: 100%; border-collapse: collapse; margin: 3mm 0 5mm; font-size: 9.5pt; }
+    th { background: #123c61; color: white; text-align: left; }
+    th, td { border: 1px solid #c9d9df; padding: 2.3mm; vertical-align: top; }
+    tr:nth-child(even) td { background: #f5fafc; }
+    .footer { position: absolute; bottom: 0; left: 0; right: 0; color: #6a7d88; border-top: 1px solid #d4e1e6; padding-top: 2mm; font-size: 8.5pt; }
+    .small { font-size: 9pt; color: #51636e; }
+    .cover-mark { color: #51a6c4; font-size: 15pt; font-weight: bold; letter-spacing: 2px; margin-top: 14mm; }
+    .toc li { margin: 3mm 0; }
+  </style>
+</head>
+<body>
+  <section class="page">
+    <div class="cover-mark">GHOSTBUSTERS / GHOSTOPS</div>
+    <h1>Project Architecture &amp; Implementation Summary</h1>
+    <p class="subtitle">A safety-first FinOps investigation and remediation-assistance platform for Terraform pull requests and cloud-resource discovery.</p>
+    <div class="meta">
+      <strong>Repository reviewed:</strong> GhostBusters<br>
+      <strong>Prepared:</strong> 30 July 2026<br>
+      <strong>Scope:</strong> current code, configuration, database schema, frontend, integrations, tests, and deployment assets.
+    </div>
+    <h3>Executive summary</h3>
+    <p>GhostBusters helps FinOps, platform, and engineering teams identify potentially wasteful infrastructure, assemble evidence, evaluate safe alternatives, and route a recommendation through human approval. The product does not apply infrastructure changes. Its safety model is deliberately conservative: destructive or production changes are blocked, missing or conflicting evidence reduces confidence, policy is evaluated deterministically, and a human remains the final decision maker.</p>
+    <p>The product UI is branded <strong>GhostOps</strong>, while the backend/package/repository remain named <strong>GhostBusters</strong>.</p>
+    <div class="footer">GhostBusters Project Summary · 1 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>1. Product Scope and Entry Points</h2>
+    <p>There are two complementary workflows that converge on the same safety and review principles.</p>
+    <div class="grid">
+      <article class="card"><h3>Terraform PR Review</h3><p>Analyzes a Terraform plan fixture or an allowlisted GitHub pull request. It understands resource changes, gathers technical and business context, and proposes a safe cost action such as right-sizing or scheduling.</p></article>
+      <article class="card"><h3>Cloud Hunt</h3><p>Scans normalized cloud inventory for “ghost” resources: idle, old, unowned, detached, or otherwise suspicious resources. Candidates become review cases, not automatic deletions.</p></article>
+    </div>
+    <h3>Primary personas</h3>
+    <ul>
+      <li><strong>Owner/Admin:</strong> manages the workspace, integrations, team membership, schedules, and workspace settings.</li>
+      <li><strong>Reviewer:</strong> inspects evidence and can approve, reject, modify, request evidence, add context, waive, revoke, or reopen within assigned permissions.</li>
+      <li><strong>Viewer:</strong> can inspect organization-scoped results without making decisions.</li>
+    </ul>
+    <h3>Implemented product surfaces</h3>
+    <p>The single-page GhostOps frontend contains Overview, Goals, Operations/PR Reviews, Cloud Hunt, Approvals, Settings, outcome verification, technical audit, activity log, demo readiness, authentication, invitations, and the read-only “Ask GhostOps” assistant.</p>
+    <div class="callout warning"><strong>Scope boundary:</strong> GhostBusters supports analysis, evidence, policy, review, and carefully guarded PR preparation. It does not run <code>terraform apply</code>, merge pull requests, mutate cloud resources, delete branches, or automatically approve a change.</div>
+    <div class="footer">GhostBusters Project Summary · 2 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>2. High-Level Architecture</h2>
+    <div class="flow">
+      <div class="node">Browser UI<br>GhostOps</div><div class="arrow">→</div><div class="node">FastAPI API<br>app/main.py</div><div class="arrow">→</div><div class="node">Workflow &amp;<br>Domain Services</div><div class="arrow">→</div><div class="node">Stores &amp;<br>Integrations</div>
+    </div>
+    <table>
+      <tr><th>Layer</th><th>Key implementation</th><th>Responsibility</th></tr>
+      <tr><td>Presentation</td><td>Static HTML, CSS, and JavaScript</td><td>Responsive application shell, authenticated navigation, dashboards, detailed review screens, settings, and action forms.</td></tr>
+      <tr><td>API</td><td>FastAPI + Pydantic models</td><td>HTTP contracts, request validation, endpoint permissions, readiness/liveness, static assets, and webhook intake.</td></tr>
+      <tr><td>Application services</td><td>WorkflowService, CloudHuntService, outcome and assistant services</td><td>Orchestrate lifecycle transitions, decisions, persistence, idempotency, and audit events.</td></tr>
+      <tr><td>Decision engine</td><td>Planner, investigator, alternatives, verifier, confidence, policy</td><td>Creates explainable deterministic recommendations from structured evidence.</td></tr>
+      <tr><td>Integration adapters</td><td>GitHub, Jira, AWS, cloud registry, Terraform parser</td><td>Use narrow, read-only contracts and allowlists; normalize outside data before it reaches the decision engine.</td></tr>
+      <tr><td>Persistence</td><td>PostgreSQL / Redis / in-memory local adapters</td><td>Durable workflow truth, audit projections, auth state, review data, deduplication, scheduling locks, and sessions.</td></tr>
+    </table>
+    <p>Dependency direction is inward: UI and integrations call the API; the API calls application/domain services; services depend on adapters and storage interfaces. This keeps decision rules testable without live cloud, GitHub, Jira, Redis, or database dependencies.</p>
+    <div class="footer">GhostBusters Project Summary · 3 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>3. Terraform PR Review Workflow</h2>
+    <div class="flow">
+      <div class="node">Goal or<br>GitHub webhook</div><div class="arrow">→</div><div class="node">Parse Terraform<br>change</div><div class="arrow">→</div><div class="node">Plan evidence</div><div class="arrow">→</div><div class="node">Collect &amp; assess</div><div class="arrow">→</div><div class="node">Human review</div>
+    </div>
+    <ol>
+      <li><strong>Intake:</strong> a user starts a scenario/goal or GitHub sends a signed pull-request webhook. Delivery IDs and workflow idempotency keys prevent duplicate work.</li>
+      <li><strong>Terraform interpretation:</strong> plan JSON parsing extracts address, action, before/after configuration, tags, environment, and destructive/replacement signals. GitHub intake restricts parsing to changed <code>.tf</code> and <code>.tf.json</code> files at the PR head SHA.</li>
+      <li><strong>Investigation planning:</strong> the deterministic planner selects only relevant evidence tools. Production or destructive cases bypass normal optimization work and move directly into safe policy handling.</li>
+      <li><strong>Evidence:</strong> pricing, utilization, Jira, Git activity, ownership, dependencies, AWS and GitHub context are represented as structured, timestamped items. Failed collection becomes explicit unavailable evidence.</li>
+      <li><strong>Decision:</strong> conflicts and missing evidence are identified; alternatives are generated; verifier checks and policy decide whether a recommendation can proceed.</li>
+      <li><strong>Review:</strong> authorized people approve, reject, modify, request more evidence, or add context. Each action is versioned, idempotent, and audited.</li>
+    </ol>
+    <h3>Remediation output</h3>
+    <p>Default behavior creates a simulated/mock remediation PR record. Optional real GitHub PR creation is separately feature-flagged and only supports a narrowly validated size attribute change in a controlled allowlisted repository after human approval.</p>
+    <div class="footer">GhostBusters Project Summary · 4 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>4. Cloud Hunt Workflow</h2>
+    <div class="flow">
+      <div class="node">Provider inventory</div><div class="arrow">→</div><div class="node">Normalize resource</div><div class="arrow">→</div><div class="node">Score signals</div><div class="arrow">→</div><div class="node">Review case</div><div class="arrow">→</div><div class="node">Human decision</div>
+    </div>
+    <p>Cloud Hunt is a second entry path for discovering potentially abandoned resources. The registry uses a provider-neutral <code>CloudResource</code> shape, so candidate scoring and review are consistent across AWS, Azure, and GCP fixture sources. An optional real-AWS adapter reads EC2, EBS, Elastic IP, STS, CloudWatch, and AWS Pricing data; Azure and GCP are currently fixture-backed adapters.</p>
+    <h3>Candidate model</h3>
+    <div class="grid">
+      <article class="card"><h3>Positive signals</h3><p>Low utilization, age, missing owner, completed work, no recent activity, no dependencies, ongoing cost, unattached volume, or idle public IP.</p></article>
+      <article class="card"><h3>Protective signals</h3><p>Production environment, recent activity, active dependencies, or other risk indicators reduce confidence or block automated remediation.</p></article>
+    </div>
+    <p>Detected candidates are not changed directly. A case recommends an action such as owner confirmation, observation, or unused-IP release. Resources without a verified Terraform mapping do not receive fabricated Terraform addresses or patches; they receive a proposal to import, route to Jira, or involve the platform owner.</p>
+    <p>Waivers are implemented: they require an owner/reason/expiry, are visible in the audit trail, and suppress that resource from subsequent hunts until expiry. Scheduling data structures, persistence, and safe coordination primitives exist; automatic scheduled execution remains disabled in production deployment configuration pending a dedicated worker.</p>
+    <div class="footer">GhostBusters Project Summary · 5 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>5. Decision, Safety, and AI Architecture</h2>
+    <div class="flow">
+      <div class="node">Evidence</div><div class="arrow">→</div><div class="node">Conflicts &amp;<br>missing data</div><div class="arrow">→</div><div class="node">Alternatives</div><div class="arrow">→</div><div class="node">Verifier</div><div class="arrow">→</div><div class="node">Policy + confidence</div>
+    </div>
+    <h3>Deterministic core</h3>
+    <ul>
+      <li>Generates alternatives including keep, downsize, schedule, request evidence, abstain, and blocked states.</li>
+      <li>Calculates confidence from evidence completeness, reliability, freshness, conflicts, and policy certainty.</li>
+      <li>Runs independent verifier checks before policy evaluation.</li>
+      <li>Uses Rego through Conftest when available, with a fail-safe Python policy fallback if Conftest is missing, disabled, malformed, or times out.</li>
+    </ul>
+    <h3>Hard safety controls</h3>
+    <table>
+      <tr><th>Condition</th><th>Result</th></tr>
+      <tr><td>Production resource or destructive/replacement action</td><td>Normal optimization is skipped and remediation is blocked.</td></tr>
+      <tr><td>Unknown ownership, active dependency, critical missing evidence, critical verifier failure, or low confidence</td><td>Remediation alternative is denied or escalated for human context.</td></tr>
+      <tr><td>Unsafe policy-engine execution</td><td>Fallback deterministic policy is used; safety is not weakened.</td></tr>
+      <tr><td>Any remediation action</td><td>Human approval remains mandatory.</td></tr>
+    </table>
+    <h3>Optional AI assistance</h3>
+    <p>Gemini or a mock provider may interpret a goal, suggest registered read-only evidence tools, ask a clarifying question, and improve explanations. Every proposal is validated. AI never has authority to parse Terraform, calculate authoritative costs, decide policy, execute tools outside the registry, approve, generate an unchecked patch, merge a PR, or mutate infrastructure. A deterministic fallback preserves the workflow when AI is disabled or unavailable.</p>
+    <div class="footer">GhostBusters Project Summary · 6 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>6. Security, Identity, and Governance</h2>
+    <h3>Workspace and access model</h3>
+    <p>GhostBusters has an organization boundary: users belong to an organization through a membership with Owner, Admin, Reviewer, or Viewer role. Protected routes use centralized permission checks, and workflow runs, Cloud Hunt cases, approvals, waivers, evidence projections, audit rows, and configuration are scoped by <code>organization_id</code>.</p>
+    <div class="grid">
+      <article class="card"><h3>Authentication</h3><p>Registration and login use salted scrypt password hashes. Browser sessions are opaque server-side IDs stored in Redis when configured, otherwise in-memory for local development.</p></article>
+      <article class="card"><h3>Browser protections</h3><p>HttpOnly, SameSite cookies; CSRF token validation for state-changing actions; generic login errors; request/body limits; and login/expensive-operation throttling.</p></article>
+      <article class="card"><h3>Invitations</h3><p>Role-limited invitations are single use and expiring. Only a SHA-256 token hash is persisted. A development link can be returned locally when email delivery is disabled.</p></article>
+      <article class="card"><h3>Auditability</h3><p>Workflow events, decisions, integration actions, activity events, and review state changes are append-only/ordered records with actor, correlation, and organization context.</p></article>
+    </div>
+    <h3>Data protection</h3>
+    <p>Secrets are configured through environment variables; credentials, webhook secrets, database URLs, and sensitive values are redacted before AI-bound payloads and audit metadata. GitHub and Jira use allowlists. AWS onboarding uses a CloudFormation-created customer-side read-only role with external ID, rather than storing customer access keys.</p>
+    <div class="callout">The production settings validator fails closed when essential configuration is absent: authenticated mode, HTTPS cookies, strong session secret, PostgreSQL, Redis, CORS allowlist, proxy configuration, non-demo pricing, and safe GitHub settings are required.</div>
+    <div class="footer">GhostBusters Project Summary · 7 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>7. Integrations and Controlled Side Effects</h2>
+    <table>
+      <tr><th>Integration</th><th>Implemented capability</th><th>Guardrails</th></tr>
+      <tr><td>GitHub</td><td>Webhook HMAC verification; allowlisted PR metadata/files/context; CODEOWNERS, commits, reviews; GitHub App support; optional real remediation PR.</td><td>Only selected repositories; supported webhook actions; immutable head SHA; safe paths; real PR flag disabled by default; one supported size attribute; never main/merge/apply.</td></tr>
+      <tr><td>Jira</td><td>Read-only identity/project/issue context, ownership, freshness, lifecycle signals, and Jira-vs-Git conflict detection.</td><td>Project allowlist; credentials stay server-side; no Jira mutation.</td></tr>
+      <tr><td>AWS</td><td>Read-only STS validation, EC2/EBS/EIP collection, CloudWatch utilization, and live AWS Pricing lookup with provenance.</td><td>Explicit real-AWS selection; regional allowlist; onboarding external ID; no fallback to fixtures; no mutation API.</td></tr>
+      <tr><td>Azure/GCP</td><td>Provider-neutral fixture inventory adapters.</td><td>Real credentialed collection is not implemented in this repository.</td></tr>
+      <tr><td>Terraform CLI</td><td>Optional constrained wrapper.</td><td>Allows only version, fmt-check, validate, and show-json against supplied data; init/plan/apply/destroy are blocked.</td></tr>
+    </table>
+    <h3>Real PR creation path</h3>
+    <p>When explicitly enabled after approval, the remediation service re-fetches the analyzed file at the recorded head SHA, confirms the expected old value appears exactly once, changes one supported attribute, creates a dedicated <code>ghostbusters/remediation/...</code> branch, verifies the diff, and opens a new PR. Validation failure produces no write. Existing GhostBusters PRs are reused to maintain idempotency.</p>
+    <div class="footer">GhostBusters Project Summary · 8 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>8. Data, Operations, and Deployment</h2>
+    <h3>Persistence model</h3>
+    <p>PostgreSQL is the system of record. A workflow run stores a complete JSON snapshot while normalized projections support reporting and audit: evidence records, approvals, audit logs, cloud hunts, review cases, schedules, integration configuration, outcome verifications, activity events, invitations, memberships, organizations, and human decision events. Updates are transactional and use row locking/version increments to avoid stale writes.</p>
+    <p>Redis supports session storage, webhook delivery deduplication, distributed rate limits, and scheduler coordination. In local development the application can use in-memory run/session adapters; production requires PostgreSQL and Redis.</p>
+    <h3>Closed-loop outcome verification</h3>
+    <p>After an approved recommendation, the platform can open an outcome-verification record, wait for deployment confirmation, record observed cost/utilization/health data, and classify the outcome as verified success, partial, insufficient evidence, regression, or reopened. It intentionally refuses to make an exact savings claim when post-change evidence is incomplete.</p>
+    <h3>Deployment assets</h3>
+    <ul>
+      <li><strong>Docker Compose:</strong> local PostgreSQL 17 and Redis 7 services.</li>
+      <li><strong>Render blueprint:</strong> FastAPI web service, managed PostgreSQL, Redis, health check, and pre-deploy migration command.</li>
+      <li><strong>Migrations:</strong> baseline plus additive activity/scheduler hardening and canonical organization backfill.</li>
+      <li><strong>Operational endpoints:</strong> <code>/live</code> for process liveness and <code>/ready</code> for dependency/configuration readiness.</li>
+    </ul>
+    <div class="footer">GhostBusters Project Summary · 9 of 10</div>
+  </section>
+
+  <section class="page">
+    <h2>9. Verification, Current Position, and Next Steps</h2>
+    <h3>What has been implemented</h3>
+    <p>The repository contains <strong>72 test files and 298 test functions</strong> spanning authentication/RBAC, goal orchestration, deterministic and AI-assisted planning, Terraform parsing, policy, retries, cloud candidate scoring, schedules, AWS/GitHub/Jira integrations, webhooks, real-PR safety paths, persistence, redaction, UI routes, outcomes, and production hardening. The project also contains prepared fixtures for safe, production, destructive, dependency, conflicting, and missing-evidence scenarios.</p>
+    <p>A local full-suite run initiated for this review exceeded a 60-second execution window before returning a result, so this report does not claim a fresh full-suite pass. The repository documentation should be updated after the next complete CI/local test run to publish a current count and status.</p>
+    <h3>Current maturity assessment</h3>
+    <table>
+      <tr><th>Area</th><th>Position</th></tr>
+      <tr><td>Core workflow and safety logic</td><td>Substantially implemented, deterministic, explainable, and test-covered.</td></tr>
+      <tr><td>User-facing product</td><td>Implemented SPA with auth-aware, API-driven operations and settings surfaces.</td></tr>
+      <tr><td>Real integrations</td><td>Opt-in, constrained GitHub/Jira/AWS paths; fixture mode remains available only for explicit demo/test use.</td></tr>
+      <tr><td>Production readiness</td><td>Deployment/configuration hardening is present; production operation still requires environment setup, migration/backup practice, monitoring, and controlled integration rollout.</td></tr>
+    </table>
+    <h3>Recommended next work</h3>
+    <ol>
+      <li>Run and record a complete CI test result; resolve any slow/hanging integration-test behavior.</li>
+      <li>Operate real GitHub/AWS/Jira integrations only in controlled, allowlisted environments and validate their monitoring/runbooks.</li>
+      <li>Add a dedicated scheduler worker before enabling scheduled Cloud Hunts in production.</li>
+      <li>Expand real Azure/GCP inventory support only with the same read-only, provenance, allowlist, and fail-closed design.</li>
+      <li>Keep the safety boundary explicit in demos: GhostBusters recommends and prepares; normal engineering and CI/CD processes decide and deploy.</li>
+    </ol>
+    <div class="callout"><strong>Bottom line:</strong> GhostBusters is an evidence-driven FinOps copilot with a strong human-in-the-loop safety posture. Its most valuable implementation is not just cost detection—it is the controlled path from a cloud or Terraform signal to an auditable, policy-checked, reviewable recommendation.</div>
+    <div class="footer">GhostBusters Project Summary · 10 of 10</div>
+  </section>
+</body>
+</html>

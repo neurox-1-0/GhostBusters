@@ -283,6 +283,15 @@ class RealAWSCloudAdapter(CloudProviderAdapter):
             return {"available": True, "source": "AWS Pricing API", "source_mode": "live", "service": "AmazonEC2", "resource_type": "EBS", "volume_type": volume_type, "size_gib": size_gib, "rate_per_gb_month_usd": rate, "estimated_monthly_cost_usd": round(rate * float(size_gib), 4), "currency": "USD", "assumption": "Storage capacity only; provisioned IOPS and throughput charges are excluded.", **details}
         return self._unavailable_pricing(f"AWS Pricing lookup is not supported for {normalized_type}.")
 
+    def estimate_ec2_instance_type(self, region: str, instance_type: str) -> dict[str, Any]:
+        """Return a live on-demand estimate for one explicitly proposed EC2 size.
+
+        This is intentionally read-only and reuses the same AWS Pricing lookup
+        used for discovered instances. Callers must not infer a price when this
+        lookup is unavailable.
+        """
+        return self._pricing_for_resource("virtual_machine", region, {"instance_type": instance_type})
+
     def _resource(self, resource_id, name, normalized_type, region, tags, state, created_at, utilization, metadata) -> CloudResource:
         created = created_at if isinstance(created_at, datetime) else None
         age_days = max(0, (datetime.now(timezone.utc) - created).days) if created else None

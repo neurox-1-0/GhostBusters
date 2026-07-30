@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from app.models import (
     Alternative,
+    EvidenceItem,
     DecisionRecord,
     EvidenceItem,
     HumanReviewRecord,
@@ -23,6 +24,7 @@ from app.models import (
     StartRunRequest,
     TerraformResourceChange,
     ToolExecutionRecord,
+    VerifierFinding,
     WorkflowRun,
     GitHubTerraformChange,
 )
@@ -43,6 +45,8 @@ from core.human_review import (
 from core.investigator import CRITICAL_SOURCES, collect_evidence
 from core.mock_pr import create_mock_pull_request
 from core.policy_engine import evaluate_policy
+from core.ai_planner import deterministic_objective_interpretation
+from core.gemini_explanation import connected_evidence_assessment
 from core.reasoning_engine import _final_status, _select_preferred, analyze_resource
 from core.retry import RetryExecutor, default_retry_executor
 from core.run_store import DuplicateIdempotencyKeyError, RunNotFoundError, RunStore
@@ -384,14 +388,116 @@ class WorkflowService:
                 current.stop_reason = "Recommendation paused. Missing evidence: " + "; ".join(current.missing_evidence)
                 current.final_outcome = "needs_human_context"
             else:
-                current.status = RunStatus.abstained
-                current.current_step = "recommendation"
-                current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "policy_checked"]
-                current.stop_reason = "Evidence collection completed, but no resource-specific Terraform recommendation was generated from inventory evidence alone. No infrastructure change was proposed."
-                current.final_outcome = "abstained"
+                decision = self._connected_rightsizing_recommendation(current)
+                if decision is None:
+                    current.status = RunStatus.abstained
+                    current.current_step = "recommendation"
+                    current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "policy_checked"]
+                    current.stop_reason = "Evidence collection completed, but no resource-specific Terraform recommendation met the bounded safety criteria. No infrastructure change was proposed."
+                    current.final_outcome = "abstained"
+                    append_audit_event(current, event_type="recommendation_abstained", actor="agent", summary="No connected evidence candidate met the bounded recommendation criteria.", stage="recommendation", status="completed", decision_impact=current.stop_reason)
+                elif not decision.policy_result.allowed:
+                    current.decision_record = decision
+                    current.status = RunStatus.needs_more_evidence
+                    current.current_step = "recommendation"
+                    current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "policy_checked"]
+                    current.missing_evidence = list(dict.fromkeys([*current.missing_evidence, *decision.policy_result.blocking_reasons]))
+                    current.stop_reason = "Recommendation paused. " + "; ".join(decision.policy_result.blocking_reasons)
+                    current.final_outcome = "needs_human_context"
+                    append_audit_event(current, event_type="recommendation_blocked_by_policy", actor="policy", summary="Connected recommendation did not pass the mandatory safety policy.", stage="safety", status="blocked", decision_impact=current.stop_reason)
+                else:
+                    current.decision_record = decision
+                    current.status = RunStatus.pending_human_review
+                    current.current_step = "human_review"
+                    current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "alternatives_compared", "policy_checked", "recommendation_prepared"]
+                    current.stop_reason = decision.final_summary
+                    current.final_outcome = "recommendation_ready"
+                    current.decision_impacts = [decision.final_summary]
+                    current.plan_revisions.append({"kind": "recommendation", "planning_mode": decision.planning_mode, "action": decision.preferred_action, "resource_id": decision.resource_id, "reason": decision.final_summary, "created_at": utc_now()})
+                    append_audit_event(current, event_type="alternatives_generated", actor="agent", summary="Bounded rightsizing alternatives were compared against the recorded evidence.", stage="reasoning", status="completed")
+                    append_audit_event(current, event_type="policy_evaluated", actor="policy", summary=f"Policy evaluated: {decision.policy_result.status}.", stage="safety", status=decision.policy_result.status, decision_impact="Human approval remains mandatory.")
+                    append_audit_event(current, event_type="recommendation_prepared", actor="agent", summary=decision.final_summary, stage="recommendation", status="completed", decision_impact="No infrastructure change was performed.")
+                    append_audit_event(current, event_type="human_review_required", actor="agent", summary="Human approval is required before any remediation proposal can be prepared.", stage="human_review", status="waiting", decision_impact="Execution paused for authenticated human review.")
+            self._record_connected_assessment(current)
             current.updated_at = utc_now()
             return current
         return self.store.update(run_id, execute, organization_id)
+
+    def _record_connected_assessment(self, run: WorkflowRun) -> None:
+        assessment, event = connected_evidence_assessment(run, configuration=self.configuration, client=self.ai_client)
+        run.plan_revisions.append({"kind": "agent_assessment", "created_at": utc_now(), **assessment})
+        append_audit_event(run, event_type=event["event_type"], actor="agent", summary=event["summary"], stage="reasoning", status="completed", details=event["details"], decision_impact=str(assessment["summary"]))
+
+    def _connected_rightsizing_recommendation(self, run: WorkflowRun) -> DecisionRecord | None:
+        """Build a reviewable proposal only from complete, live connected evidence.
+
+        The recommendation choice is bounded by explicit safety facts. AI plans
+        the evidence sequence; it never invents a target, price, or Terraform
+        mapping after collection has finished.
+        """
+        for item in run.evidence_summaries:
+            if item.get("source") != "AWS" or item.get("status") != "verified":
+                continue
+            mapping = item.get("terraform_mapping") if isinstance(item.get("terraform_mapping"), dict) else {}
+            pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+            proposed_pricing = item.get("proposed_pricing") if isinstance(item.get("proposed_pricing"), dict) else {}
+            utilization = item.get("utilization") if isinstance(item.get("utilization"), dict) else {}
+            tags = item.get("resource_tags") if isinstance(item.get("resource_tags"), dict) else {}
+            current_type = item.get("instance_type")
+            proposed_type = item.get("proposed_instance_type")
+            environment = str(item.get("environment") or tags.get("Environment") or tags.get("environment") or "").lower()
+            owner = tags.get("Owner") or tags.get("owner") or tags.get("Team") or tags.get("team")
+            try:
+                average_cpu = float(utilization.get("average_cpu_pct"))
+                peak_cpu = float(utilization.get("peak_cpu_pct"))
+                current_cost = float(pricing.get("estimated_monthly_cost_usd"))
+                proposed_cost = float(proposed_pricing.get("estimated_monthly_cost_usd"))
+            except (TypeError, ValueError):
+                continue
+            savings = current_cost - proposed_cost
+            if not (
+                item.get("resource_type") == "virtual_machine"
+                and mapping.get("available")
+                and environment in {"non-production", "nonproduction", "development", "dev", "test", "staging"}
+                and owner
+                and current_type
+                and proposed_type
+                and pricing.get("available") and pricing.get("source_mode") == "live"
+                and proposed_pricing.get("available") and proposed_pricing.get("source_mode") == "live"
+                and average_cpu <= 30.0 and peak_cpu < 70.0
+                and savings > 0 and savings / current_cost >= 0.15
+            ):
+                continue
+
+            resource = TerraformResourceChange(
+                address=str(mapping.get("terraform_address")), resource_type="aws_instance", actions=["update"],
+                environment=environment, current_instance_type=str(current_type), proposed_instance_type=str(proposed_type),
+                destructive=False, tags={str(key): value for key, value in tags.items()},
+            )
+            collected_at = item.get("collected_at") or utc_now()
+            evidence = [
+                EvidenceItem(source="utilization", tool_name="AWS", claim="Fresh CloudWatch CPU utilization supports a bounded rightsizing review.", value=utilization, resource_id=str(item.get("resource_id")), collected_at=collected_at, freshness_status="fresh", reliability=0.92, metadata={"environment": environment}, source_mode="real_aws", correlation_id=run.correlation_id),
+                EvidenceItem(source="pricing", tool_name="AWS", claim="Live AWS Pricing compared the current and proposed EC2 sizes.", value={"current_monthly_cost": current_cost, "proposed_monthly_cost": proposed_cost, "source": pricing.get("source"), "region": (item.get("provenance") or {}).get("region"), "resource_type": "EC2", "pricing_model": "on_demand", "checked_at": collected_at, "assumptions": [str(pricing.get("assumption") or "On-demand estimate.")], "currency": pricing.get("currency") or "USD"}, resource_id=str(item.get("resource_id")), collected_at=collected_at, freshness_status="fresh", reliability=0.95, metadata={"proposed_instance_type": proposed_type, "proposed_pricing_source": proposed_pricing.get("source")}, source_mode="live", correlation_id=run.correlation_id),
+                EvidenceItem(source="terraform_mapping", tool_name="GitHub", claim="Explicit AWS tags map this resource to the selected Terraform repository and address.", value=mapping, resource_id=str(item.get("resource_id")), collected_at=collected_at, freshness_status="fresh", reliability=0.95, metadata={"owner": owner, "repository": mapping.get("repository")}, repository=str(mapping.get("repository") or "") or None, source_mode="explicit_resource_tag", correlation_id=run.correlation_id),
+            ]
+            alternative = Alternative(action="downsize", description=f"Propose changing {resource.address} from {current_type} to {proposed_type} after human approval.", proposed_instance_type=str(proposed_type), estimated_monthly_cost=proposed_cost, estimated_monthly_savings=round(savings, 4), estimated_annual_savings=round(savings * 12, 4), supporting_evidence=["utilization", "pricing", "terraform_mapping"], risks=["CPU is not a complete capacity signal; confirm application memory and latency expectations before merging."], assumptions=["The instance remains non-production.", "The explicit Owner tag identifies the accountable team.", "AWS on-demand pricing assumptions remain applicable."], eligible=True, score=0.86)
+            verifier = [
+                VerifierFinding(check_name="non_production_scope", status="passed", severity="info", explanation="Explicit environment tag is non-production.", evidence_sources=["terraform_mapping"]),
+                VerifierFinding(check_name="fresh_cpu_headroom", status="passed", severity="info", explanation=f"Average CPU is {average_cpu:.1f}% and peak CPU is {peak_cpu:.1f}%.", evidence_sources=["utilization"]),
+                VerifierFinding(check_name="live_pricing_comparison", status="passed", severity="info", explanation=f"Live AWS Pricing indicates ${savings:.4f}/month estimated savings.", evidence_sources=["pricing"]),
+                VerifierFinding(check_name="explicit_owner_and_mapping", status="passed", severity="info", explanation="Resource owner and Terraform mapping are explicit.", evidence_sources=["terraform_mapping"]),
+            ]
+            empty_missing: list[MissingEvidenceRecord] = []
+            provisional_policy = evaluate_policy(resource, evidence, empty_missing, alternative, verifier, [], ownership_known=True)
+            confidence = calculate_confidence(evidence, empty_missing, [], provisional_policy, ["utilization", "pricing", "terraform_mapping"])
+            policy = self.policy_evaluator.evaluate(resource, evidence, empty_missing, alternative, verifier, [], confidence, run_id=run.id, scenario_name=run.scenario_name)
+            planning_mode = next((str(record.get("planning_mode")) for record in reversed(run.plan_revisions) if record.get("kind") == "next_action"), "deterministic_fallback")
+            if planning_mode not in {"groq_primary", "gemini_primary", "gemini_fallback_model", "deterministic_fallback", "deterministic_only", "mock_gemini"}:
+                planning_mode = "deterministic_fallback"
+            plan = InvestigationPlan(goal=run.goal, resource_id=resource.address, selected_tools=list(dict.fromkeys(run.selected_tools or ["GitHub", "AWS"])), planning_notes=["Connected evidence was collected one tool at a time.", "A bounded recommendation requires live pricing, fresh utilization, explicit mapping, explicit ownership, non-production scope, and human approval."])
+            summary = f"Propose downsizing {resource.address} from {current_type} to {proposed_type}. Live AWS Pricing estimates ${savings:.4f}/month savings. Human approval is required before any remediation proposal."
+            return DecisionRecord(goal=run.goal, resource_id=resource.address, investigation_plan=plan, tool_executions=[], evidence=evidence, conflicts=[], missing_evidence=empty_missing, alternatives=[alternative], preferred_action="downsize", confidence=confidence, verifier_findings=verifier, policy_result=policy, final_status="recommendation_ready" if policy.allowed else "needs_human_context", final_summary=summary, planning_mode=planning_mode, objective_interpretation=deterministic_objective_interpretation(run.goal), termination_reason="bounded_connected_recommendation")
+        return None
 
     def cancel_goal(self, run_id: UUID, organization_id: UUID = DEFAULT_DEVELOPMENT_ORGANIZATION_ID) -> WorkflowRun:
         def cancel(current: WorkflowRun) -> WorkflowRun:
@@ -556,10 +662,21 @@ class WorkflowService:
 
     def _approve(self, run: WorkflowRun, record: HumanReviewRecord) -> None:
         decision = ensure_can_approve(run)
-        resource = self._resource_for_run(run)
         run.human_reviews.append(record)
         append_audit_event(run, event_type="human_review_received", actor="human", summary="Approval received.", details=record.model_dump(mode="json"))
         run.status = RunStatus.approved
+        if run.execution_mode == "connected_read_only" and run.github_source is None:
+            run.status = RunStatus.remediation_proposal_prepared
+            append_audit_event(
+                run,
+                event_type="remediation_proposal_prepared",
+                actor="agent",
+                summary="Approved connected recommendation was prepared as a proposal. No GitHub pull request, Terraform apply, or cloud mutation was performed.",
+                stage="remediation",
+                status="completed",
+            )
+            return
+        resource = self._resource_for_run(run)
         if run.github_source and self.configuration.github_create_real_pr and self.configuration.github_integration_enabled and self.github_client:
             append_audit_event(run, event_type="remediation_validation_started", actor="agent", summary="Validating real GitHub remediation proposal.")
             try:

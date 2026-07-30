@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.models import DecisionRecord, GeminiRecommendationExplanation
+from app.models import DecisionRecord, GeminiRecommendationExplanation, WorkflowRun
 from app.settings import Settings, settings
 from core.ai_client import AIClientError, StructuredAIClient, build_ai_client
 from core.redaction import redact_model_payload
@@ -50,6 +50,86 @@ def add_gemini_explanation(
             "summary": "Gemini explanation is disabled; deterministic explanation used.",
             "details": {"fallback_used": True, "provider": "disabled"},
         }
+
+
+def connected_evidence_assessment(
+    run: WorkflowRun,
+    *,
+    configuration: Settings = settings,
+    client: StructuredAIClient | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Create a short, evidence-grounded conclusion for a connected goal.
+
+    This is a presentation of recorded facts, not hidden chain-of-thought.
+    The fallback is deliberately useful so a provider outage never changes the
+    workflow outcome or leaves the user without an explanation.
+    """
+    evidence_points = [
+        str(item.get("summary") or item.get("value_summary") or "Recorded evidence.")[:240]
+        for item in run.evidence_summaries[:5]
+    ]
+    limitations = list(run.missing_evidence[:3])
+    fallback = {
+        "headline": "Agent assessment",
+        "summary": run.stop_reason or "GhostOps completed a bounded review of the recorded evidence.",
+        "evidence_points": evidence_points,
+        "uncertainty_points": limitations,
+        "next_step": (
+            "Use Human Review to approve, reject, or request more evidence."
+            if run.status.value == "pending_human_review"
+            else "Collect the stated missing evidence or add human context before any recommendation."
+        ),
+        "provider": "deterministic safety summary",
+        "fallback_used": True,
+    }
+    if not (configuration.ai_enabled or configuration.groq_api_key or configuration.gemini_enabled):
+        return fallback, {"event_type": "agent_assessment_fallback", "summary": "Recorded evidence assessment used deterministic fallback.", "details": {"provider": "disabled", "fallback_used": True}}
+    selected_client = client if client is not None else build_ai_client(configuration)
+    if selected_client is None:
+        return fallback, {"event_type": "agent_assessment_fallback", "summary": "AI assessment provider unavailable; deterministic summary used.", "details": {"provider": "unavailable", "fallback_used": True}}
+    pricing_available = any(
+        isinstance(item.get("pricing"), dict)
+        and item["pricing"].get("available")
+        and item["pricing"].get("source_mode") in {"live", "verified_cached"}
+        for item in run.evidence_summaries
+    )
+    payload = redact_model_payload({
+        "final_summary": fallback["summary"],
+        "preferred_action": run.decision_record.preferred_action if run.decision_record else "abstain",
+        "policy_status": run.decision_record.policy_result.status if run.decision_record else run.status.value,
+        "policy_allowed": run.decision_record.policy_result.allowed if run.decision_record else False,
+        "evidence_points": evidence_points,
+        "uncertainty_points": limitations,
+        "pricing_available": pricing_available,
+        "pricing_policy": "Do not introduce monetary values unless they are present in the supplied evidence.",
+        "safety_boundaries": [
+            "Do not claim an infrastructure change, Terraform apply, merge, or real pull request occurred.",
+            "State only recorded evidence, limitations, and the next human step.",
+        ],
+    })
+    try:
+        call = selected_client.explain_recommendation(payload)
+        explanation = call.value
+        if not isinstance(explanation, GeminiRecommendationExplanation):
+            raise AIClientError("schema_validation_failed", "Assessment response schema was invalid.")
+        text = " ".join([explanation.headline, explanation.summary, explanation.next_step, *explanation.evidence_points, *explanation.uncertainty_points]).lower()
+        if any(term in text for term in PROHIBITED_EXPLANATION_TERMS):
+            raise AIClientError("unsafe_action_rejected", "Assessment suggested a prohibited action.")
+        if not pricing_available and re.search(r"(?:\$|\bUSD\b|\bEUR\b|\bGBP\b)\s*\d", text, re.IGNORECASE):
+            raise AIClientError("unsupported_claim", "Assessment introduced a monetary claim without verified pricing.")
+        return {
+            "headline": explanation.headline,
+            "summary": explanation.summary,
+            "evidence_points": explanation.evidence_points,
+            "uncertainty_points": explanation.uncertainty_points,
+            "next_step": explanation.next_step,
+            "provider": "Groq" if call.planning_mode == "groq_primary" else "Gemini",
+            "model": call.model,
+            "fallback_used": False,
+        }, {"event_type": "agent_assessment_completed", "summary": "Groq generated a validated evidence assessment.", "details": {"provider": "groq" if call.planning_mode == "groq_primary" else "gemini", "model": call.model, "latency_ms": call.latency_ms, "fallback_used": False}}
+    except Exception as exc:
+        category = exc.category if isinstance(exc, AIClientError) else type(exc).__name__
+        return fallback, {"event_type": "agent_assessment_fallback", "summary": "Deterministic evidence assessment used after AI assessment failure.", "details": {"fallback_used": True, "error_category": category}}
     selected_client = client if client is not None else build_ai_client(configuration)
     if selected_client is None:
         return decision.model_copy(update={"gemini_explanation": fallback}), {

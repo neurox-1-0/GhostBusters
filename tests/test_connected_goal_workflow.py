@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from app.models import StartRunRequest
+from core.conftest_policy import ConftestPolicyEvaluator
 from core.run_store import InMemoryRunStore
 from core.workflow_service import WorkflowService
 
@@ -95,6 +96,9 @@ def test_connected_goal_with_sufficient_evidence_abstains_without_fabricating_a_
     assert updated.status.value == "abstained"
     assert updated.missing_evidence == []
     assert "No infrastructure change was proposed" in str(updated.stop_reason)
+    assessment = next(item for item in updated.plan_revisions if item.get("kind") == "agent_assessment")
+    assert assessment["provider"] == "deterministic safety summary"
+    assert "No infrastructure change was proposed" in assessment["summary"]
 
 
 def test_incremental_connected_collection_preserves_history_until_finalized() -> None:
@@ -122,3 +126,74 @@ def test_incremental_connected_collection_preserves_history_until_finalized() ->
     final = service.execute_connected_evidence(first.id, organization_id, {}, tools=[], finalize=True)
     assert final.status.value == "needs_more_evidence"
     assert final.missing_evidence == ["AWS utilization"]
+
+
+def test_connected_goal_with_complete_live_evidence_reaches_human_approval() -> None:
+    service = WorkflowService(
+        store=InMemoryRunStore(),
+        policy_evaluator=ConftestPolicyEvaluator(enabled=False, minimum_confidence=0.7),
+    )
+    organization_id = uuid4()
+    run, _ = service.start_connected_goal(
+        StartRunRequest(goal="Reduce non-production AWS spending by 15% with approval.", scenario_name="safe", idempotency_key="connected-goal-rightsize"),
+        organization_id,
+        connected_sources=["AWS"],
+    )
+    now = run.updated_at
+    updated = service.execute_connected_evidence(run.id, organization_id, {"AWS": lambda current: {
+        "missing_evidence": [],
+        "evidence": [{
+            "source": "AWS", "source_id": "123", "resource_id": "i-demo", "status": "verified",
+            "summary": "Mapped non-production EC2 evidence collected.", "collected_at": now,
+            "resource_type": "virtual_machine", "environment": "non-production",
+            "instance_type": "t3.micro", "proposed_instance_type": "t3.nano",
+            "utilization": {"available": True, "average_cpu_pct": 4.0, "peak_cpu_pct": 18.0, "lookback_days": 14},
+            "pricing": {"available": True, "source_mode": "live", "source": "AWS Pricing API", "currency": "USD", "estimated_monthly_cost_usd": 8.0, "assumption": "On-demand Linux shared tenancy."},
+            "proposed_pricing": {"available": True, "source_mode": "live", "source": "AWS Pricing API", "currency": "USD", "estimated_monthly_cost_usd": 4.0},
+            "resource_tags": {"Environment": "non-production", "Owner": "demo-team", "GhostBustersRepository": "acme/demo", "GhostBustersTerraformAddress": "aws_instance.demo"},
+            "terraform_mapping": {"available": True, "repository": "acme/demo", "terraform_address": "aws_instance.demo"},
+            "provenance": {"region": "ap-south-1"},
+        }],
+    }})
+
+    assert updated.status.value == "pending_human_review", updated.stop_reason
+    assert updated.decision_record is not None
+    assert updated.decision_record.preferred_action == "downsize"
+    assert updated.decision_record.policy_result.requires_human_approval is True
+    assert any(event.event_type == "human_review_required" for event in updated.audit_events)
+    assert any(item.get("kind") == "agent_assessment" for item in updated.plan_revisions)
+
+
+def test_connected_goal_approval_prepares_proposal_without_creating_pr() -> None:
+    service = WorkflowService(store=InMemoryRunStore(), policy_evaluator=ConftestPolicyEvaluator(enabled=False, minimum_confidence=0.7))
+    organization_id = uuid4()
+    run, _ = service.start_connected_goal(
+        StartRunRequest(goal="Reduce non-production AWS spending.", scenario_name="safe", idempotency_key="connected-goal-approval"),
+        organization_id,
+        connected_sources=["AWS"],
+    )
+    now = run.updated_at
+    approved_candidate = service.execute_connected_evidence(run.id, organization_id, {"AWS": lambda current: {
+        "missing_evidence": [],
+        "evidence": [{
+            "source": "AWS", "source_id": "123", "resource_id": "i-demo", "status": "verified", "summary": "Evidence collected.", "collected_at": now,
+            "resource_type": "virtual_machine", "environment": "non-production", "instance_type": "t3.micro", "proposed_instance_type": "t3.nano",
+            "utilization": {"average_cpu_pct": 4.0, "peak_cpu_pct": 18.0},
+            "pricing": {"available": True, "source_mode": "live", "source": "AWS Pricing API", "currency": "USD", "estimated_monthly_cost_usd": 8.0},
+            "proposed_pricing": {"available": True, "source_mode": "live", "source": "AWS Pricing API", "currency": "USD", "estimated_monthly_cost_usd": 4.0},
+            "resource_tags": {"Environment": "non-production", "Owner": "demo-team"},
+            "terraform_mapping": {"available": True, "repository": "acme/demo", "terraform_address": "aws_instance.demo"}, "provenance": {"region": "ap-south-1"},
+        }],
+    }})
+    from app.models import HumanReviewRequest
+    result, _ = service.review_run(
+        approved_candidate.id,
+        HumanReviewRequest(action="approve", reviewer="owner", comment="Approved for proposal", expected_version=approved_candidate.version, idempotency_key="approval-proposal"),
+        organization_id,
+        expected_version=approved_candidate.version,
+    )
+
+    assert result.status.value == "remediation_proposal_prepared"
+    assert result.mock_pr is None
+    assert result.real_pr is None
+    assert any(event.event_type == "remediation_proposal_prepared" for event in result.audit_events)

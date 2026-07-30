@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>GhostBusters Technical Audit</title>
+<style>
+@page { size: A4; margin: 16mm 13mm 16mm; }
+body{font:10pt/1.42 Arial,sans-serif;color:#18212b} h1{font-size:25pt;margin:0 0 4px;color:#182b4d}h2{font-size:16pt;margin:26px 0 8px;color:#0d5b70;page-break-after:avoid}h3{font-size:11.5pt;margin:15px 0 5px;color:#182b4d}p{margin:5px 0}ul{margin:4px 0 8px 20px;padding:0}li{margin:2px 0}.meta{color:#52606d;margin-bottom:18px}.callout{background:#edf7f8;border-left:4px solid #0d8996;padding:9px 11px;margin:10px 0}.warn{background:#fff4e5;border-left-color:#e58b1c}table{width:100%;border-collapse:collapse;margin:8px 0 14px;font-size:8pt;page-break-inside:auto}th{background:#173f5f;color:white}th,td{border:1px solid #b8c3cc;padding:4px;vertical-align:top}tr{page-break-inside:avoid}code{font:8.2pt Consolas,monospace;background:#f1f4f6;padding:1px 2px}.small{font-size:8.5pt}.status{font-weight:bold}.footer{margin-top:25px;border-top:1px solid #b8c3cc;padding-top:8px;color:#52606d;font-size:8.5pt}.pagebreak{page-break-before:always}pre{white-space:pre-wrap;background:#f4f7f8;padding:9px;font:8.5pt/1.3 Consolas,monospace}
+</style></head><body>
+<h1>GhostBusters: Read-Only Technical Audit</h1>
+<p class="meta">Prepared for AI competition pitching • Audit scope: source, configuration, tests, API routes, frontend, integrations, fixtures and infrastructure files • 30 July 2026</p>
+<div class="callout"><b>Bottom line.</b> GhostBusters is a safety-first cloud-cost investigation and Terraform PR-review application. Its strongest complete demonstration is a fixture-backed review workflow that collects evidence, computes alternatives/confidence/policy, requires human review, and produces a simulated PR. Real GitHub/AWS/Jira paths are implemented but optional and credential-dependent. It never applies Terraform, merges PRs, deploys cloud resources, or auto-approves changes.</div>
+<h2>1. Current project truth</h2>
+<p>The application is a FastAPI web app with a static browser UI. A user may start a fixture scenario through <code>POST /api/runs</code>, submit a high-level goal through <code>/api/goals</code>, run a Cloud Hunt, or receive an allowed GitHub pull-request webhook at <code>POST /webhooks/github</code>.</p>
+<ol><li>Terraform fixture plan JSON or GitHub PR diff is parsed (<code>integrations/terraform_parser.py</code>, <code>integrations/terraform_runner.py</code>).</li><li><code>core/planner.py</code> selects registered evidence tools; optional AI may propose bounded next tools.</li><li><code>core/investigator.py</code> collects evidence; <code>core/reasoning_engine.py</code> builds alternatives, conflicts, confidence, verifier results and policy result.</li><li>Recommendation-ready cases stop for permissioned human review at <code>/api/runs/{run_id}/review</code>.</li><li>Approval creates <i>simulated</i> PR data by default (<code>core/mock_pr.py</code>). With explicit GitHub configuration, <code>integrations/remediation_pr_service.py</code> can create one restricted remediation branch/file commit/PR.</li></ol>
+<p>Nothing is approved by AI, merged, deployed, or applied automatically. The non-demo connected-goal path (<code>WorkflowService.start_connected_goal</code>) is read-only and often ends as <code>needs_more_evidence</code> or <code>abstained</code>, rather than producing a full remediation.</p>
+
+<h2>2. Feature implementation matrix</h2>
+<p class="small"><b>Status key:</b> Implemented = executable code path; Partial = bounded/incomplete; Mock = fixture/simulated; Absent = not found.</p>
+<table><tr><th>Feature</th><th>Status</th><th>How it works / evidence</th><th>Real or mocked</th><th>Demo-ready</th></tr>
+<tr><td>User authentication</td><td>Implemented</td><td><code>app/auth.py</code>; <code>/api/auth/*</code>; session, CSRF and RBAC.</td><td>Real local/Postgres-capable</td><td>Yes</td></tr>
+<tr><td>Repository connection / indexing</td><td>Partial</td><td>GitHub App callback/config; lists repos, PR files and CODEOWNERS in <code>integrations/github_*.py</code>. No general codebase index.</td><td>Real when configured</td><td>Conditional</td></tr>
+<tr><td>Terraform parsing / plan generation</td><td>Implemented / Partial</td><td>JSON parser and PR diff parser; <code>TerraformRunner</code> permits validate/fmt-check/show-json, never <code>plan</code> or apply.</td><td>Fixture or real PR input</td><td>Yes / no plan generation</td></tr>
+<tr><td>Infrastructure graph</td><td>Absent</td><td>No graph model, store or visualizer found.</td><td>—</td><td>No</td></tr>
+<tr><td>AWS discovery / Pricing / CloudWatch</td><td>Implemented</td><td><code>RealAWSCloudAdapter</code>: STS, EC2/EBS/EIP discovery, CloudWatch CPU, Pricing API.</td><td>Real optional; fixture alternative</td><td>Conditional</td></tr>
+<tr><td>Cost Explorer</td><td>Absent</td><td>No AWS Cost Explorer client/call found.</td><td>—</td><td>No</td></tr>
+<tr><td>Jira / GitHub</td><td>Implemented</td><td><code>jira_client.py</code>, <code>github_client.py</code>, signed webhook and GitHub App.</td><td>Real optional</td><td>Conditional</td></tr>
+<tr><td>Linear / GitLab</td><td>Absent</td><td>No integration/configuration found.</td><td>—</td><td>No</td></tr>
+<tr><td>Goal creation, validation, rewriting</td><td>Implemented / Partial</td><td><code>/api/goals</code>, <code>/api/goals/validate</code>; deterministic clarification and <code>suggested_goal</code>, but no automatic rewrite persistence.</td><td>Real app state; AI optional</td><td>Yes</td></tr>
+<tr><td>Goal decomposition / multi-agent orchestration</td><td>Partial</td><td>Allowlisted <code>GeminiGoalPlan</code> and one <code>AIPlanner</code> loop; no independent specialist-agent bus.</td><td>Optional Gemini/Groq/mock</td><td>Conditional</td></tr>
+<tr><td>Dynamic tool selection</td><td>Partial</td><td><code>AgentNextAction</code> can select registered read-only tool; <code>ai_plan_validator.py</code> restricts it.</td><td>AI optional; deterministic authority</td><td>Conditional</td></tr>
+<tr><td>Recommendations / ranking / savings / confidence</td><td>Implemented</td><td><code>alternative_generator.py</code>, <code>reasoning_engine.py</code>, <code>confidence.py</code>.</td><td>Fixture pricing in demo; live optional</td><td>Yes, labelled</td></tr>
+<tr><td>Risk / dependencies / policy / deterministic validation</td><td>Implemented</td><td><code>conflict_detector.py</code>, <code>verifier.py</code>, <code>policy_engine.py</code>, <code>policies/ghostbusters.rego</code>.</td><td>Real local logic</td><td>Yes</td></tr>
+<tr><td>AI validation</td><td>Partial</td><td>Structured Gemini/Groq outputs in <code>ai_client.py</code>; only enabled/configured in relevant paths.</td><td>Optional</td><td>Conditional</td></tr>
+<tr><td>Failure recovery / abstention</td><td>Implemented</td><td><code>retry.py</code>; outcomes include <code>abstained</code>, <code>keep</code>, <code>needs_more_evidence</code>, <code>blocked</code>.</td><td>Real local logic</td><td>Yes</td></tr>
+<tr><td>Terraform code generation</td><td>Partial</td><td>Exact safe size-attribute replacement only in <code>RemediationPRService.create()</code>.</td><td>Real optional</td><td>Conditional</td></tr>
+<tr><td>Branch, commit, PR</td><td>Implemented</td><td><code>GitHubClient.create_branch</code>, <code>update_or_create_file</code>, <code>create_pull_request</code>.</td><td>Real only when explicitly enabled; simulated default</td><td>Simulated yes</td></tr>
+<tr><td>PR review / human approval</td><td>Implemented</td><td>Webhook/PR workflow; permissioned actions, versions and idempotency in <code>app/main.py</code>.</td><td>Real app state</td><td>Yes</td></tr>
+<tr><td>Automatic approval, merging, deployment</td><td>Absent</td><td>No route/API call for agent approval, GitHub merge or Terraform/cloud apply.</td><td>—</td><td>No</td></tr>
+<tr><td>Decision timeline / explainability / audit</td><td>Implemented</td><td><code>AuditEvent</code>, <code>/api/goals/{id}/events</code>, activity, evidence, policy, confidence and UI technical trace.</td><td>Real persisted/in-memory</td><td>Yes</td></tr>
+<tr><td>Learning from outcomes</td><td>Partial</td><td><code>outcome_verification.py</code> stores observations; no feedback loop retrains or changes ranking.</td><td>Manual observation</td><td>Partial</td></tr></table>
+
+<h2>3. Autonomous-agent analysis</h2>
+<p><b>Assessment:</b> bounded, safety-constrained AI-assisted investigation—not a general autonomous cloud-operations agent.</p>
+<table><tr><th>Question</th><th>Answer and source evidence</th></tr>
+<tr><td>Accept a high-level goal?</td><td>Yes. <code>/api/goals/validate</code> and <code>/api/goals</code> accept text, scope, repositories, constraints and criteria.</td></tr>
+<tr><td>Create a plan / select tools?</td><td>Partially. <code>AIPlanner.plan()</code> and <code>GeminiGoalPlan</code> can propose; <code>core/planner.py</code> and allowlists are authoritative.</td></tr>
+<tr><td>Change plan from evidence?</td><td>Partially. The loop chooses next registered tools and can request human context; it cannot invent tools, permissions or mutations.</td></tr>
+<tr><td>Handle ambiguity/request information?</td><td>Yes. Deterministic percentage-target questions and optional AI clarifications in <code>/api/goals/validate</code>; <code>request_human_context</code> action exists.</td></tr>
+<tr><td>Generate/select alternatives?</td><td>Yes. <code>alternative_generator.py</code> creates downsize, schedule, keep, request-evidence, abstain/blocked options; <code>_select_preferred</code> ranks them.</td></tr>
+<tr><td>Recover/fail safely?</td><td>Yes. <code>RetryExecutor</code> retries transient failure and records classified, safe outcomes.</td></tr>
+<tr><td>Stop on low confidence?</td><td>Yes. Default threshold is <code>0.70</code>; Rego/Python policy blocks remediation.</td></tr>
+<tr><td>Dynamic or hard-coded order?</td><td>Both: bounded dynamic tool selection within a largely hard-coded deterministic safety pipeline.</td></tr>
+<tr><td>AI vs deterministic decisions?</td><td>AI: interpretation, optional validation/plan/next-tool/explanation. Deterministic: parsing, allowlists, evidence execution, alternatives, conflicts, confidence, verifier, policy, eligibility. If/else: production/destructive/data-mode gates and action preference.</td></tr></table>
+
+<h2>4. Actual agents</h2>
+<table><tr><th>Component</th><th>Path</th><th>Responsibility / I-O</th><th>Model/tools</th><th>Live status</th></tr>
+<tr><td>AIPlanner</td><td><code>core/ai_planner.py</code></td><td>Goal/scenario/resource/registry → selected tools, evidence, next actions.</td><td>Gemini, Groq or MockGemini; registered tools.</td><td>Used when configured</td></tr>
+<tr><td>Agent loop</td><td><code>core/agent_loop.py</code></td><td>Thin entrypoint → <code>AIPlannerResult</code>.</td><td>Same</td><td>Used</td></tr>
+<tr><td>Goal AI planner</td><td><code>app/main.py</code></td><td>Connected goal → allowlisted capability plan.</td><td>Gemini/Groq optional</td><td>Production-configured path</td></tr>
+<tr><td>Deterministic planner</td><td><code>core/planner.py</code></td><td>Terraform resource/scenario → selected tools/questions.</td><td>No model</td><td>Used</td></tr>
+<tr><td>Investigator</td><td><code>core/investigator.py</code></td><td>Plan → evidence/execution records.</td><td>Registry + retry executor</td><td>Used</td></tr>
+<tr><td>Verifier</td><td><code>core/verifier.py</code></td><td>Resource/evidence/alternative → findings.</td><td>No model</td><td>Used</td></tr>
+<tr><td>Reasoning engine</td><td><code>core/reasoning_engine.py</code></td><td>Evidence → decision record.</td><td>Optional explanation model</td><td>Used</td></tr>
+<tr><td>Cloud Hunt service</td><td><code>core/cloud_hunt_service.py</code></td><td>Inventory → candidates/cases.</td><td>No LLM</td><td>Used</td></tr></table>
+<p>No named Goal Planner, Repository Understanding Agent, Cloud Hunt Agent, Optimizer, PR Approval Agent, or LangGraph Investigator/Optimizer/Verifier classes were found. These components communicate through in-process function calls and persisted run/audit state, not agent messages.</p>
+
+<h2>5. Tools and external integrations</h2>
+<table><tr><th>Tool/service</th><th>Purpose and evidence</th><th>Auth / errors / live status</th></tr>
+<tr><td>GitHub REST/App</td><td><code>github_client.py</code>, <code>github_app.py</code>, <code>github_webhook.py</code>: PR/files/reviews/repos and optional branch/file/PR writes.</td><td>Bearer token or App installation token; signed webhook; sanitized/retried reads. Live only with credentials/config.</td></tr>
+<tr><td>AWS</td><td><code>cloud_adapters.py</code>: STS, EC2, EBS, EIP, CloudWatch, Pricing.</td><td>Default/assumed role with external ID; read-only, returns unavailable evidence safely. Live optional.</td></tr>
+<tr><td>Jira</td><td><code>jira_client.py</code>, <code>jira_context.py</code>: issue/project context.</td><td>Base URL/email/API token; failures safe. Live optional.</td></tr>
+<tr><td>Terraform CLI</td><td><code>terraform_runner.py</code>: version/fmt-check/validate/show JSON.</td><td>System executable; disabled by default; no apply or plan.</td></tr>
+<tr><td>OPA/Conftest</td><td><code>conftest_policy.py</code>, <code>policies/ghostbusters.rego</code>.</td><td>Optional CLI with deterministic Python fallback.</td></tr>
+<tr><td>PostgreSQL / Redis</td><td><code>docker-compose.yml</code>, schema and stores.</td><td>Optional locally; production validation requires configuration.</td></tr>
+<tr><td>Gemini / Groq</td><td><code>ai_client.py</code>, <code>google-genai</code> dependency.</td><td>API keys, schemas and fallbacks. Groq client code exists but its package is not listed in <code>requirements.txt</code>.</td></tr>
+<tr><td>Azure/GCP</td><td><code>AzureCloudAdapter</code>, <code>GCPCloudAdapter</code>.</td><td>Fixture-only; no real cloud SDK integration.</td></tr>
+<tr><td>Linear/GitLab/Slack/Teams/OpenAI</td><td>No implementation found.</td><td>Absent.</td></tr></table>
+<p>Conclusion: code genuinely supports at least three external integration paths—GitHub, AWS and Jira—although this audit did not validate live credentials or accounts.</p>
+
+<h2>6. Human-in-the-loop and safety</h2>
+<ul><li>Approval is mandatory for a remediation action: <code>/api/runs/{run_id}/review</code>, <code>core/human_review.py</code>.</li><li>Supported human actions: approve, reject, modify, request evidence, add context, revoke approval and reopen; Cloud Hunt additionally supports waiver.</li><li>Approval records idempotency, state version, actor snapshot and audit/activity event (<code>human_decision_events</code>, <code>audit_log</code>, <code>activity_events</code>).</li><li>Production, destructive changes, active dependencies, missing critical evidence and confidence below <code>0.70</code> are blocked by <code>ghostbusters.rego</code> and fallback policy.</li><li><code>RemediationPRService.create()</code> separately rejects destructive/replacement/production/dependency/missing-evidence/ambiguous code changes.</li><li>No AI approval, automatic merge, deployment, Terraform apply, rollback or cloud mutation exists.</li></ul>
+
+<h2>7. Explainability and decision trail</h2>
+<p>The UI in <code>static/index.html</code> and <code>static/app.js</code> displays Goals, Operations/PR Reviews, Approvals, Cloud Hunt, Activity Log, Technical Audit and Demo Readiness. Goal workspace views include Outcome, Live Plan, Findings, Evidence and Technical Trace.</p>
+<table><tr><th>Layer</th><th>What is available</th><th>Evidence</th></tr><tr><td>Frontend</td><td>Timeline, tool attempts, evidence summaries, confidence, policy/verifier state, approval controls and failure messaging.</td><td><code>static/index.html</code>, <code>static/app.js</code></td></tr><tr><td>API</td><td>Runs, reviews, activity, goal events, outcomes, assistant answers.</td><td><code>/api/runs</code>, <code>/api/reviews</code>, <code>/api/activity</code>, <code>/api/goals/{id}/events</code>, <code>/api/outcomes</code></td></tr><tr><td>Persisted</td><td>Audit events, decision events, evidence, approvals and outcomes.</td><td><code>db/schema.sql</code>, <code>core/audit.py</code></td></tr><tr><td>Raw logs</td><td>Python logging for API, AI and retry detail; distinct from UI/audit records.</td><td><code>app/main.py</code>, <code>core/ai_client.py</code>, <code>core/retry.py</code></td></tr></table>
+
+<h2>8. Architecture</h2>
+<pre>Browser static UI
+        │
+        ▼
+FastAPI (routes, auth, RBAC, activity)
+        │
+        ├─ WorkflowService ─ Planner / optional AIPlanner ─ Investigator
+        │                         │                         │
+        │                         └─ allowlisted tools ─ GitHub / AWS / Jira / fixtures
+        │
+        ├─ Reasoning engine ─ alternatives / conflicts / confidence / verifier / policy
+        │
+        ├─ Human-review boundary ─ simulated PR OR explicitly-enabled real GitHub PR
+        │
+        └─ In-memory or PostgreSQL stores; optional Redis; audit/event/outcome stores</pre>
+<pre>sequenceDiagram
+User → Browser: Start fixture PR review
+Browser → FastAPI: POST /api/runs
+FastAPI → WorkflowService: start_run
+WorkflowService → Evidence/Policy: Parse Terraform; collect evidence; evaluate
+Evidence/Policy → WorkflowService: Recommendation or safe stop
+WorkflowService → Browser: Pending human review
+Reviewer → FastAPI: Approve
+FastAPI → WorkflowService: review_run
+WorkflowService → Browser: Simulated PR by default
+WorkflowService → GitHub: Optional real branch/file/PR only when explicitly configured</pre>
+
+<h2>9. Live demo readiness</h2>
+<ol><li>Create and activate the expected <code>.venv</code>; install <code>requirements.txt</code>.</li><li>Set <code>DEMO_MODE_ENABLED=true</code>; start <code>uvicorn app.main:app --reload</code>.</li><li>Open <code>http://127.0.0.1:8000</code>; register; open Demo Readiness.</li><li>Run the <code>safe</code> scenario; show Terraform parsing, labelled fixture evidence, policy, confidence and recommendation.</li><li>Approve it; describe the resulting simulated PR truthfully.</li><li>Run <code>conflicting</code> and <code>missing_evidence</code>; show conflict penalty and safe escalation.</li><li>Close with Activity Log/Technical Audit.</li></ol>
+<div class="callout warn"><b>Reliability.</b> The fixture path is the strongest 5–7 minute demo, as documented in <code>DEMO_GUIDE.md</code>. Real GitHub/AWS/Jira/Gemini depend on credentials, permissions, network and preflight. <code>run_demo.ps1</code> assumes an existing virtual environment. During this audit, tests could not be run because neither <code>pytest</code> command nor the Python pytest module was installed in the current environment.</div>
+
+<h2>10. Measurable results</h2>
+<table><tr><th>Value</th><th>Meaning / source</th><th>Provenance / presentation safety</th></tr><tr><td>$70/month; $840/year</td><td>Safe-scenario estimate; <code>fixtures/scenarios/safe.json</code>, <code>tests/test_alternatives.py</code>.</td><td>Fixture estimate. Safe only when labelled demo/estimate.</td></tr><tr><td>18% average; 31% peak CPU; 14 days</td><td>Safe scenario utilization.</td><td>Fixture data. Label it.</td></tr><tr><td>10 inventory resources</td><td><code>fixtures/cloud_inventory.json</code>: AWS 4, Azure 3, GCP 3.</td><td>Fixture data. Safe if labelled.</td></tr><tr><td>3 AWS families</td><td>EC2, EBS, Elastic IP in <code>RealAWSCloudAdapter</code>.</td><td>Implemented capability, not a verified live result.</td></tr><tr><td>0.70</td><td>Minimum policy confidence; <code>app/settings.py</code>, Rego.</td><td>Actual default, safe.</td></tr><tr><td>0.45 / 0.75</td><td>Cloud Hunt candidate/high-confidence thresholds.</td><td>Actual defaults, safe.</td></tr></table>
+<p>No real savings, cost-reduction percentage, accuracy, coverage percentage, latency benchmark, or live PR-time result was found. Do not invent them.</p>
+
+<h2>11. Current technology stack</h2>
+<ul><li>Python, FastAPI, Pydantic, Uvicorn: <code>requirements.txt</code>, <code>app/main.py</code>.</li><li>Vanilla HTML/CSS/JavaScript UI: <code>static/</code>.</li><li>PostgreSQL 17 / Redis 7: <code>docker-compose.yml</code>; optional locally, required by production settings validation.</li><li>boto3/AWS, google-genai/Gemini, optional Terraform/Conftest executables.</li><li>Docker Compose and Render: <code>docker-compose.yml</code>, <code>render.yaml</code>.</li><li>Groq code is present but its package is missing from <code>requirements.txt</code>. No OpenAI SDK/API is used.</li></ul>
+
+<h2>12. Contradictions resolved</h2>
+<ol><li><b>Goal-driven vs PR-triggered:</b> both; PR-review/fixture is most complete, goals are partial read-only workflows.</li><li><b>Human vs AI approval:</b> human approval mandatory; automatic AI approval absent.</li><li><b>PR creation vs automatic merge:</b> optional real PR creation; no merge.</li><li><b>Recommendation vs deployment:</b> recommendation/PR only; no deployment.</li><li><b>LangGraph specialist agents:</b> no LangGraph or named specialist-agent architecture found.</li><li><b>Gemini-only:</b> Gemini, optional Groq and mock client; no OpenAI provider.</li><li><b>Real vs mock AWS:</b> both; real AWS optional, fixture demo default.</li><li><b>Project management:</b> real Jira read-only path plus fixture Jira context.</li><li><b>Fixed vs dynamic:</b> bounded dynamic selection inside a deterministic safety pipeline.</li><li><b>Dashboard vs goal-driven:</b> dashboard-centered UI with both goals and PR-review entry points.</li></ol>
+
+<h2>13. Claims for the presentation</h2>
+<h3>Safe claims</h3><ul><li>Evidence-backed, policy-checked cloud optimization recommendations with an auditable trail.</li><li>Mandatory human approval before remediation PR generation.</li><li>Safe blocking for production, destructive changes, dependencies, critical missing evidence and low confidence.</li><li>Optional read-only GitHub, AWS, Jira and AI-provider integrations.</li></ul>
+<h3>Claims requiring careful wording</h3><ul><li>“Autonomous investigation” → say “bounded, allowlisted AI-assisted investigation.”</li><li>“Creates PRs” → say “simulated PR in demo; optional real GitHub PR after explicit configuration and human approval.”</li><li>“Multi-cloud” → fixtures span AWS/Azure/GCP; real discovery is AWS-only.</li><li>“Savings” → live AWS path exists, but demo values are fixtures.</li></ul>
+<h3>Do not claim</h3><ul><li>Autonomous deployment, Terraform apply, automatic merging, automatic approval, rollback, Cost Explorer, Linear/GitLab/Slack/Teams, infrastructure graph, real Azure/GCP operations, verified production savings, accuracy, test coverage or multiple independent agents.</li></ul>
+
+<h2>14. Judging-criteria mapping</h2>
+<table><tr><th>Criterion</th><th>Strong evidence</th><th>Weakness / honest answer</th></tr><tr><td>B2B impact</td><td>FinOps case, RBAC, organization scope, audit and approval.</td><td>No customer validation or real savings evidence.</td></tr><tr><td>Autonomous reasoning</td><td>Bounded AI next-tool selection, alternatives and abstention.</td><td>Decision authority and order are mostly deterministic.</td></tr><tr><td>Technical architecture</td><td>FastAPI, stores, RBAC, audit, policy and integrations.</td><td>AWS-only real cloud support; external paths unverified in this audit.</td></tr><tr><td>Human-in-the-loop</td><td>Permissioned review, version/idempotency, policy gates.</td><td>Default remediation output is simulated.</td></tr><tr><td>Live demo</td><td>Safe/conflict/missing-evidence fixture flow.</td><td>Clearly label all fixture data and simulated PRs.</td></tr></table>
+<p><b>Likely judge question:</b> “Does it make changes automatically?” <b>Honest answer:</b> “No. It stops at a mandatory human decision boundary. An explicitly configured route can create a narrow real GitHub remediation PR after human approval, but it never merges or applies infrastructure.”</p>
+
+<h2>15. Final executive summary</h2>
+<p>GhostBusters truly is a polished, safety-first cloud-cost investigation and Terraform PR-review platform. Its strongest competition differentiator is the combination of evidence-aware recommendations, abstention, policy gates, mandatory human approval and a visible audit trail.</p>
+<p><b>Strongest live demonstration:</b> the fixture-backed safe recommendation followed by conflicting and missing-evidence cases, with source-mode labels visible.</p>
+<p><b>Three strongest implemented capabilities:</b> deterministic safety evaluation; transparent decision/audit experience; optional guarded GitHub/AWS/Jira integration paths.</p>
+<p><b>Three largest limitations:</b> fixture/simulated core demo; incomplete goal-to-remediation automation; no apply/merge/deploy, Cost Explorer, infrastructure graph or real Azure/GCP support.</p>
+<div class="callout warn"><b>Presentation correction required:</b> remove any implication of autonomous deployment, automatic approval/merge, Cost Explorer, real multi-cloud monitoring, or multiple independent agent roles.</div>
+<p class="footer">Read-only audit. No project source, configuration or runtime data was modified while preparing the findings. This report document was generated at the user's request.</p>
+</body></html>

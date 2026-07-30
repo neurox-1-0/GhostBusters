@@ -157,6 +157,13 @@ def aws_adapter_for_config(config) -> RealAWSCloudAdapter:
 
 
 _TERRAFORM_RESOURCE_ADDRESS = re.compile(r'resource\s+"(?P<resource_type>aws_[^"]+)"\s+"(?P<name>[^"]+)"')
+_EC2_RIGHTSIZE_CANDIDATES = {
+    "t3.small": "t3.micro",
+    "t3.medium": "t3.small",
+    "t3.large": "t3.medium",
+    "t3.xlarge": "t3.large",
+    "t3.micro": "t3.nano",
+}
 
 
 def repository_terraform_addresses(client, owner: str, repository: str, branch: str | None) -> list[str]:
@@ -206,6 +213,14 @@ def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | Non
             for resource in resources[:100]:
                 utilization = dict(resource.metadata.get("utilization") or {})
                 pricing = dict(resource.metadata.get("pricing") or {})
+                instance_type = str(resource.metadata.get("instance_type") or "")
+                proposed_instance_type = _EC2_RIGHTSIZE_CANDIDATES.get(instance_type)
+                estimate_candidate = getattr(adapter, "estimate_ec2_instance_type", None)
+                proposed_pricing = (
+                    estimate_candidate(resource.region_or_location, proposed_instance_type)
+                    if resource.normalized_resource_type == "virtual_machine" and proposed_instance_type and callable(estimate_candidate)
+                    else {"available": False, "reason": "No bounded rightsizing candidate is available for this resource."}
+                )
                 utilization_available = bool(utilization.get("available"))
                 pricing_available = bool(pricing.get("available")) and pricing.get("source_mode") == "live"
                 mapping_available = has_verified_repository_mapping(resource, goal_run.github_context, selected_repositories)
@@ -240,6 +255,16 @@ def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | Non
                         "collected_at": collected_at,
                     },
                     "pricing": pricing,
+                    "proposed_pricing": proposed_pricing,
+                    "resource_type": resource.normalized_resource_type,
+                    "environment": resource.environment,
+                    "instance_type": instance_type or None,
+                    "proposed_instance_type": proposed_instance_type,
+                    "utilization": utilization,
+                    "resource_tags": {
+                        key: value for key, value in resource.tags.items()
+                        if key in {"Environment", "environment", "Owner", "owner", "Team", "team", "GhostBustersRepository", "GhostBustersTerraformAddress"}
+                    },
                     "terraform_mapping": {
                         "available": mapping_available,
                         "repository": resource.tags.get("GhostBustersRepository"),
