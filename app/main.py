@@ -977,18 +977,18 @@ def collect_github_context(run_id: UUID, principal: Principal = Depends(principa
 def validate_goal(request: GoalValidationRequest, principal: Principal = Depends(principal_dependency)) -> GoalValidationResponse:
     """Validate free-form goals before they can create a durable goal run.
 
-    This deterministic gate is the authority even when Gemini-assisted
+    This deterministic gate is the authority even when AI-assisted
     interpretation is enabled elsewhere in the product.
     """
     require_permission(principal, GOALS_RUN)
     goal = request.goal.strip()
     lowered = goal.lower()
     gemini = None
-    if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and settings.gemini_api_key:
+    if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key):
         try:
             client = build_ai_client(settings)
             if client is None:
-                raise AIClientError("provider_unavailable", "Gemini validation is unavailable.")
+                raise AIClientError("provider_unavailable", "AI validation is unavailable.")
             aws = aws_integration_store.get(principal.organization_id)
             github = github_integration_store.get(principal.organization_id)
             jira = jira_integration_store.get(principal.organization_id)
@@ -996,7 +996,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
             gemini = client.validate_goal({"goal": goal, "scope": request.scope, "constraints": request.constraints, "clarification_answers": request.clarification_answers, "clarification_round": request.clarification_round, "previous_normalized_goal": request.previous_normalized_goal, "previous_clarification_questions": request.previous_clarification_questions, "integration_context": integration_context, "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST)})
             semantic = gemini.value
             if any(item not in GOAL_CAPABILITY_ALLOWLIST for item in semantic.suggested_capabilities):
-                raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability.")
+                raise AIClientError("schema_validation_failed", "The AI planner proposed an unsupported capability.")
             if semantic.status != "accepted":
                 if semantic.status == "needs_revision" and request.clarification_round >= 2:
                     return GoalValidationResponse(status="rejected", reason="Essential planning details remain unresolved after two clarification rounds. Refine the goal and try again.", category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode="groq_assisted" if gemini.planning_mode == "groq_primary" else "gemini_assisted", clarification_round=request.clarification_round)
@@ -1010,8 +1010,8 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
                 if validation_mode == "groq_assisted" and question_mode == "gemini_generated": question_mode = "groq_generated"
                 return GoalValidationResponse(status=semantic.status, reason=semantic.reason, category=semantic.category, normalized_goal=semantic.normalized_goal, missing_fields=semantic.missing_fields, suggested_goal=semantic.suggested_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": [item.model_dump() if hasattr(item, "model_dump") else item for item in questions]}, constraints=semantic.constraints, suggested_capabilities=semantic.suggested_capabilities, risk_level=semantic.risk_level, validation_mode=validation_mode, clarification_questions=questions, question_generation_mode=question_mode, clarification_round=request.clarification_round)
         except AIClientError as exc:
-            logger.warning("goal_gemini_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
-            detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "gemini_schema_validation_failed" if exc.category == "schema_validation_failed" else "gemini_validation_unavailable"}
+            logger.warning("goal_ai_validation_failed organization_id=%s category=%s exception_class=%s", principal.organization_id, exc.category, type(exc).__name__)
+            detail = {"message": "Goal analysis is temporarily unavailable.", "error_code": "ai_schema_validation_failed" if exc.category == "schema_validation_failed" else "ai_validation_unavailable"}
             raise HTTPException(status_code=503, detail=detail) from exc
     forbidden = ("delete all", "destroy", "terraform apply", "shell command", "run command", "bypass approval")
     if any(term in lowered for term in forbidden):
@@ -1053,7 +1053,7 @@ def validate_goal(request: GoalValidationRequest, principal: Principal = Depends
     if any(term in lowered for term in ("terraform", "repository", "pull request", "pr")): capabilities.extend(["inspect_terraform_repository", "analyse_pull_request", "estimate_cost_change"])
     status = "needs_revision" if missing else "accepted"
     reason = "Add the missing scope before GhostBusters can execute safely." if missing else "Goal is within GhostBusters' supported, recommendation-first scope."
-    return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=gemini.value.normalized_goal if gemini else interpretation.normalized_goal, missing_fields=missing, suggested_goal=gemini.value.suggested_goal if gemini else interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": gemini.value.clarifying_questions if gemini else []}, constraints=list(dict.fromkeys([*(gemini.value.constraints if gemini else interpretation.constraints), *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys((gemini.value.suggested_capabilities if gemini else capabilities))), risk_level="high" if "production" in lowered else (gemini.value.risk_level if gemini else "medium"), validation_mode="gemini_assisted" if gemini else "deterministic")
+    return GoalValidationResponse(status=status, reason=reason, category=request.category or interpretation.objective_type, normalized_goal=gemini.value.normalized_goal if gemini else interpretation.normalized_goal, missing_fields=missing, suggested_goal=gemini.value.suggested_goal if gemini else interpretation.normalized_goal, requested_scope={"environment": request.scope, "cloud_accounts": request.cloud_accounts, "repositories": request.repositories, "clarifying_questions": gemini.value.clarifying_questions if gemini else []}, constraints=list(dict.fromkeys([*(gemini.value.constraints if gemini else interpretation.constraints), *request.constraints, "Protected environments cannot be changed automatically", "Human approval required"])), suggested_capabilities=list(dict.fromkeys((gemini.value.suggested_capabilities if gemini else capabilities))), risk_level="high" if "production" in lowered else (gemini.value.risk_level if gemini else "medium"), validation_mode=("groq_assisted" if gemini and gemini.planning_mode == "groq_primary" else "gemini_assisted") if gemini else "deterministic")
 
 
 @app.post("/api/goals", response_model=WorkflowRun, status_code=201)
@@ -1101,22 +1101,22 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
             if created:
                 append_audit_event(run, event_type="gemini_planning_started", actor="agent", summary="Preparing an allowlisted, read-only capability plan.", stage="planning", status="running")
                 try:
-                    planner = build_ai_client(settings) if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and settings.gemini_api_key else None
+                    planner = build_ai_client(settings) if settings.app_env == "production" and settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key) else None
                     if planner is None:
-                        raise AIClientError("provider_unavailable", "Gemini planning is unavailable.")
+                        raise AIClientError("provider_unavailable", "AI planning is unavailable.")
                     plan_call = planner.plan_goal({"goal": run.goal, "scope": run.scope, "constraints": run.goal_validation.get("constraints", []), "allowed_capabilities": sorted(GOAL_CAPABILITY_ALLOWLIST), "connected_sources": connected_sources})
                     proposed = plan_call.value
                     names = [step.capability for step in proposed.selected_capabilities]
                     if not names or any(name not in GOAL_CAPABILITY_ALLOWLIST for name in names):
-                        raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability plan.")
+                        raise AIClientError("schema_validation_failed", "The AI planner proposed an unsupported capability plan.")
                     run.original_plan = {"planning_mode": plan_call.planning_mode, "normalized_goal": run.goal, "selected_capabilities": [step.model_dump() for step in proposed.selected_capabilities], "decision_summary": proposed.decision_summary, "created_at": utc_now()}
                     run.goal_planning_mode = plan_call.planning_mode
                     append_audit_event(run, event_type="gemini_planning_completed", actor="agent", summary="The configured AI planner selected allowlisted capabilities for this goal.", stage="planning", status="completed", details={"capabilities": names, "planning_mode": plan_call.planning_mode})
                     append_audit_event(run, event_type="plan_validated", actor="system", summary="Capability plan passed allowlist and organization-scope validation.", stage="planning", status="completed")
                 except AIClientError as exc:
-                    run.original_plan = {"planning_mode": "deterministic", "normalized_goal": run.goal, "selected_capabilities": [], "decision_summary": "Gemini planning was unavailable; deterministic evidence collection remains in effect.", "created_at": utc_now()}
+                    run.original_plan = {"planning_mode": "deterministic", "normalized_goal": run.goal, "selected_capabilities": [], "decision_summary": "AI planning was unavailable; deterministic evidence collection remains in effect.", "created_at": utc_now()}
                     run.goal_planning_mode = "deterministic"
-                    append_audit_event(run, event_type="gemini_planning_unavailable", actor="agent", summary="Gemini planning was unavailable; no model-authored plan is shown.", stage="planning", status="warning", details={"category": exc.category})
+                    append_audit_event(run, event_type="gemini_planning_unavailable", actor="agent", summary="AI planning was unavailable; no model-authored plan is shown.", stage="planning", status="warning", details={"category": exc.category})
                 run = workflow_service.store.update(run.id, run, principal.organization_id)
             if created and run.status == "investigating":
                 def github_collector(goal_run: WorkflowRun) -> dict[str, object]:

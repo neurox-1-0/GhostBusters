@@ -353,12 +353,22 @@ function policyEngineLabel(engine) {
 
 function planningModeLabel(mode) {
   return {
-    gemini_primary: "AI-assisted planning",
-    gemini_fallback_model: "AI fallback planning",
+    groq_primary: "Groq-assisted planning",
+    // Earlier persisted runs used gemini_primary as the generic primary-mode
+    // identifier. Groq is this deployment's primary planner.
+    gemini_primary: "Groq-assisted planning",
+    gemini_fallback_model: "Gemini fallback planning",
     mock_gemini: "Mock AI planning",
     deterministic_fallback: "Deterministic fallback",
     deterministic_only: "Deterministic safety policy",
   }[mode] || "Not recorded";
+}
+
+function validationModeLabel(mode) {
+  return {
+    groq_assisted: "Groq-assisted validation",
+    gemini_assisted: "Groq-assisted validation",
+  }[mode] || "Deterministic validation";
 }
 
 function runStatusLabel(status) {
@@ -1733,7 +1743,7 @@ async function startGoal() {
   if (/delete all|destroy everything|make everything cheaper/i.test(goal)) { state.goalValidationInFlight = false; return setMessage("goal-message", "This goal is too broad to execute safely. Try: Identify avoidable production cloud spending without making infrastructure changes."); }
   let validation;
   try {
-    validation = await withButtonState("goal-start-button", "Gemini is reviewing the goal...", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out."));
+    validation = await withButtonState("goal-start-button", "Groq is reviewing the goal...", () => withTimeout(api("/api/goals/validate", { method: "POST", body: JSON.stringify({ goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), require_approval: true, constraints: ["No direct infrastructure mutation", "Human approval required"] }) }), 10000, "Goal validation timed out."));
   } catch (error) {
     setMessage("goal-message", error?.status === 503 ? "Goal analysis is temporarily unavailable. Retry once." : goalErrorMessage(error));
     return;
@@ -1745,7 +1755,7 @@ async function startGoal() {
   state.goalDraft = { goal: validation.normalized_goal || goal, scope: $("goal-scope-input").value || "Workspace scope", repositories: selectedGoalRepositories(), validation, idempotencyKey: `goal:${Date.now()}:${Math.random().toString(16).slice(2)}` };
   state.goalCreationStage = "confirm";
   $("goal-confirmed-objective").textContent = state.goalDraft.goal;
-  $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · ${validation.validation_mode === "gemini_assisted" ? "Gemini-assisted validation" : "Deterministic validation"}`;
+  $("goal-confirmed-scope").textContent = `${state.goalDraft.scope} · ${validationModeLabel(validation.validation_mode)}`;
   $("goal-interpretation-panel").hidden = false;
   $("goal-create-panel").hidden = true;
   setMessage("goal-message", "Goal understood. Review the investigation boundary before starting.", true);
@@ -1929,7 +1939,7 @@ function renderGoalExecution() {
   setStatusBadge("goal-summary-status", { label: runStatusLabel(run.status), className: ["failed_safely", "canceled", "blocked"].includes(run.status) ? "status-blocked" : run.status === "pending_human_review" ? "status-awaiting-review" : "status-approved" });
   $("goal-summary-scope").textContent = run.scope || "Workspace scope";
   $("goal-summary-elapsed").textContent = goalDuration(run);
-  $("goal-summary-planning").textContent = run.planning_mode === "gemini_primary" ? "Gemini-assisted planning" : planningModeLabel(run.planning_mode || "deterministic_only");
+  $("goal-summary-planning").textContent = planningModeLabel(run.goal_planning_mode || run.original_plan?.planning_mode || run.planning_mode || "deterministic_only");
   $("goal-summary-source").textContent = goalSourceLabel(run);
   $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created", "needs_more_evidence"].includes(run.status);
   $("goal-retry-evidence-button").hidden = run.status !== "needs_more_evidence";
@@ -1990,7 +2000,7 @@ function renderGoalTab() {
     const attempts = run.tool_attempts || [];
     const decisions = (run.plan_revisions || []).filter((item) => item.kind === "next_action");
     const planMode = run.goal_planning_mode || run.original_plan?.planning_mode || run.planning_mode;
-    append(node, el("h3", "card-title", planMode === "groq_primary" ? "Groq-guided live plan" : String(planMode || "").startsWith("gemini") ? "Gemini-guided live plan" : "Evidence-guided live plan"), el("p", "muted", "Each next step is chosen from recorded evidence and limitations. Only allowlisted read-only tools can run."));
+    append(node, el("h3", "card-title", ["groq_primary", "gemini_primary"].includes(planMode) ? "Groq-guided live plan" : planMode === "gemini_fallback_model" ? "AI fallback live plan" : "Evidence-guided live plan"), el("p", "muted", "Each next step is chosen from recorded evidence and limitations. Only allowlisted read-only tools can run."));
     if (!attempts.length && !decisions.length) node.appendChild(el("p", "goal-next-action", "Next decision pending evidence. GhostBusters has not run an evidence tool yet."));
     const entries = [];
     decisions.forEach((decision, index) => entries.push({ type: "decision", index, item: decision }));

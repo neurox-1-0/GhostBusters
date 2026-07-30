@@ -24,7 +24,7 @@ def test_goal_start_maps_errors_and_prevents_duplicate_requests() -> None:
         assert f"error?.status === {status}" in APP_JS
     assert "state.goalStartInFlight" in APP_JS
     assert "state.goalValidationInFlight" in APP_JS
-    assert 'withButtonState("goal-start-button", "Gemini is reviewing the goal..."' in APP_JS
+    assert 'withButtonState("goal-start-button", "Groq is reviewing the goal..."' in APP_JS
     assert "idempotency_key: state.goalDraft.idempotencyKey" in APP_JS
     assert 'id="goal-retry-button"' in INDEX_HTML
     assert 'on("goal-retry-button", "click", retryGoalAction)' in APP_JS
