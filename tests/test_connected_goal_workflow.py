@@ -76,3 +76,22 @@ def test_connected_goal_executes_selected_collector_and_records_evidence() -> No
     assert updated.status == "needs_more_evidence"
     assert updated.missing_evidence == ["AWS utilization", "Verified pricing"]
     assert any(event.event_type == "github_evidence_recorded" for event in updated.audit_events)
+
+
+def test_connected_goal_with_sufficient_evidence_abstains_without_fabricating_a_recommendation() -> None:
+    service = WorkflowService(store=InMemoryRunStore())
+    organization_id = uuid4()
+    run, _ = service.start_connected_goal(
+        StartRunRequest(goal="Inspect verified evidence.", scenario_name="safe", idempotency_key="connected-goal-4"),
+        organization_id,
+        connected_sources=["AWS"],
+    )
+
+    updated = service.execute_connected_evidence(run.id, organization_id, {"AWS": lambda current: {
+        "evidence": [{"source": "AWS", "source_id": "123", "resource_id": "i-1", "status": "verified", "summary": "Verified inventory, utilization, pricing, and mapping.", "provenance": {}, "collected_at": current.updated_at}],
+        "missing_evidence": [],
+    }})
+
+    assert updated.status.value == "abstained"
+    assert updated.missing_evidence == []
+    assert "No infrastructure change was proposed" in str(updated.stop_reason)

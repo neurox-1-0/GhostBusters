@@ -288,9 +288,11 @@ class RealAWSCloudAdapter(CloudProviderAdapter):
         age_days = max(0, (datetime.now(timezone.utc) - created).days) if created else None
         environment = tags.get("Environment") or tags.get("environment")
         owner = tags.get("Owner") or tags.get("owner")
+        terraform_address = tags.get("GhostBustersTerraformAddress") or None
+        terraform_repository = tags.get("GhostBustersRepository") or None
         pricing = self._pricing_for_resource(normalized_type, region, metadata)
         estimate = pricing.get("estimated_monthly_cost_usd") if pricing.get("available") else None
-        return CloudResource(provider="aws", account_or_subscription_id=self.account_id or "unknown", region_or_location=region, resource_id=resource_id, resource_name=name, provider_resource_type=normalized_type, normalized_resource_type=normalized_type, status=state, environment=environment, owner=owner, created_at=created, age_days=age_days, tags=tags, estimated_monthly_cost=float(estimate) if estimate is not None else None, metadata={**metadata, "utilization": utilization, "source_mode": "real_aws", "collected_at": datetime.now(timezone.utc).isoformat(), "pricing": pricing})
+        return CloudResource(provider="aws", account_or_subscription_id=self.account_id or "unknown", region_or_location=region, resource_id=resource_id, resource_name=name, provider_resource_type=normalized_type, normalized_resource_type=normalized_type, status=state, environment=environment, owner=owner, created_at=created, age_days=age_days, tags=tags, infrastructure_as_code_managed=bool(terraform_repository and terraform_address), terraform_address=terraform_address, estimated_monthly_cost=float(estimate) if estimate is not None else None, metadata={**metadata, "utilization": utilization, "source_mode": "real_aws", "collected_at": datetime.now(timezone.utc).isoformat(), "pricing": pricing})
 
     def get_utilization_evidence(self, resource_id: str) -> dict[str, Any]: return self._evidence(resource_id, "utilization")
 

@@ -363,14 +363,21 @@ class WorkflowService:
                     append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_collection_failed", actor="tool", summary="Collector failed safely; no evidence was fabricated.", stage="evidence", status="failed", tool=tool, attempt_number=1, decision_impact="No recommendation was produced from this source.")
                 current.tool_attempts.append(record)
 
-            current.missing_evidence = list(dict.fromkeys(missing or ["Verified resource-to-workload mapping", "AWS utilization", "Verified pricing"]))
+            current.missing_evidence = list(dict.fromkeys(missing))
             verified = [item for item in current.evidence_summaries if item.get("status") in {"verified", "partial"}]
             append_audit_event(current, event_type="evidence_threshold_evaluated", actor="agent", summary=f"{len(verified)} verified or partial evidence item(s) available.", stage="policy", status="completed")
-            current.status = RunStatus.needs_more_evidence
-            current.current_step = "collect_evidence"
-            current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected"]
-            current.stop_reason = "Recommendation paused. Missing evidence: " + "; ".join(current.missing_evidence)
-            current.final_outcome = "needs_human_context"
+            if current.missing_evidence:
+                current.status = RunStatus.needs_more_evidence
+                current.current_step = "collect_evidence"
+                current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected"]
+                current.stop_reason = "Recommendation paused. Missing evidence: " + "; ".join(current.missing_evidence)
+                current.final_outcome = "needs_human_context"
+            else:
+                current.status = RunStatus.abstained
+                current.current_step = "recommendation"
+                current.completed_steps = ["scope_resolved", "plan_created", "evidence_collected", "policy_checked"]
+                current.stop_reason = "Evidence collection completed, but no resource-specific Terraform recommendation was generated from inventory evidence alone. No infrastructure change was proposed."
+                current.final_outcome = "abstained"
             current.updated_at = utc_now()
             return current
         return self.store.update(run_id, execute, organization_id)

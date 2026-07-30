@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
@@ -153,6 +154,34 @@ def aws_adapter_for_config(config) -> RealAWSCloudAdapter:
     )
 
 
+_TERRAFORM_RESOURCE_ADDRESS = re.compile(r'resource\s+"(?P<resource_type>aws_[^"]+)"\s+"(?P<name>[^"]+)"')
+
+
+def repository_terraform_addresses(client, owner: str, repository: str, branch: str | None) -> list[str]:
+    """Read one bounded Terraform entrypoint and retain only resource addresses."""
+    if not branch:
+        return []
+    try:
+        source = client.get_file_content(owner, repository, "main.tf", branch).get("content") or ""
+    except GitHubAPIError:
+        return []
+    return sorted({f"{match.group('resource_type')}.{match.group('name')}" for match in _TERRAFORM_RESOURCE_ADDRESS.finditer(str(source))})
+
+
+def has_verified_repository_mapping(resource, github_context: dict[str, object] | None, selected_repositories: set[str]) -> bool:
+    repository = str(resource.tags.get("GhostBustersRepository") or "").strip()
+    terraform_address = str(resource.tags.get("GhostBustersTerraformAddress") or "").strip()
+    context_repository = str((github_context or {}).get("repository") or "").strip()
+    addresses = {str(item) for item in (github_context or {}).get("terraform_addresses", [])}
+    return bool(
+        repository
+        and terraform_address
+        and repository.lower() in selected_repositories
+        and repository.lower() == context_repository.lower()
+        and terraform_address in addresses
+    )
+
+
 def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | None):
     """Collect bounded, read-only AWS inventory and CloudWatch evidence for a goal."""
     def collect(goal_run: WorkflowRun) -> dict[str, object]:
@@ -167,26 +196,34 @@ def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | Non
             collected_at = utc_now()
             resources = adapter.list_resources()
             evidence: list[dict[str, object]] = []
-            missing = ["Resource-to-repository mapping"]
+            missing: list[str] = []
             utilization_collected = False
             pricing_collected = False
+            mapping_collected = False
+            selected_repositories = {str(item).lower() for item in goal_run.constraints.get("repositories", [])}
             for resource in resources[:100]:
                 utilization = dict(resource.metadata.get("utilization") or {})
                 pricing = dict(resource.metadata.get("pricing") or {})
                 utilization_available = bool(utilization.get("available"))
                 pricing_available = bool(pricing.get("available")) and pricing.get("source_mode") == "live"
+                mapping_available = has_verified_repository_mapping(resource, goal_run.github_context, selected_repositories)
                 utilization_collected = utilization_collected or utilization_available
                 pricing_collected = pricing_collected or pricing_available
+                mapping_collected = mapping_collected or mapping_available
                 summary = f"{resource.resource_name} ({resource.resource_id}) was collected from AWS {resource.region_or_location}."
                 if utilization_available:
                     summary = f"{summary} CloudWatch CPU average: {float(utilization.get('average_cpu_pct', 0)):.1f}% over {utilization.get('lookback_days', config.cloudwatch_lookback_days)} days."
                 if pricing_available:
                     summary = f"{summary} Verified AWS on-demand estimate: ${float(pricing.get('estimated_monthly_cost_usd', 0)):.4f}/month."
+                if mapping_available:
+                    summary = f"{summary} Terraform mapping verified: {resource.tags['GhostBustersRepository']} at {resource.tags['GhostBustersTerraformAddress']}."
                 limitations = []
                 if not utilization_available:
                     limitations.append("CloudWatch utilization was unavailable for this resource.")
                 if not pricing_available:
                     limitations.append(str(pricing.get("reason") or "AWS Pricing evidence was unavailable for this resource."))
+                if not mapping_available:
+                    limitations.append("No verified selected-repository Terraform mapping tag was found for this resource.")
                 evidence.append({
                     "source": "AWS",
                     "source_id": str(validation.get("account_id") or config.account_id or "unknown"),
@@ -201,6 +238,12 @@ def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | Non
                         "collected_at": collected_at,
                     },
                     "pricing": pricing,
+                    "terraform_mapping": {
+                        "available": mapping_available,
+                        "repository": resource.tags.get("GhostBustersRepository"),
+                        "terraform_address": resource.tags.get("GhostBustersTerraformAddress"),
+                        "source_mode": "explicit_resource_tag" if resource.tags.get("GhostBustersTerraformAddress") else "unavailable",
+                    },
                     "limitations": limitations,
                     "collected_at": collected_at,
                 })
@@ -220,6 +263,8 @@ def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | Non
                 missing.append("AWS utilization")
             if not pricing_collected:
                 missing.append("Verified pricing")
+            if not mapping_collected:
+                missing.append("Resource-to-repository mapping")
             aws_integration_store.mark_collection(organization_id, True)
             try:
                 auth_store.record_activity(organization_id, "aws_goal_evidence_collected", actor_user_id, {"goal_id": str(goal_run.id), "resource_count": len(resources), "correlation_id": goal_run.correlation_id}, actor_type="Integration", category="Integrations", target_type="goal", target_id=goal_run.id, target_display_name=goal_run.goal[:120], related_run_id=goal_run.id)
@@ -1087,7 +1132,8 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                     metadata = client.get_repository(owner, name)
                     commits = client.list_commits(owner, name)
                     collected_at = utc_now()
-                    context = {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "commit_activity": {"recent_commit_count": len(commits), "last_commit": ((commits[0].get("commit") or {}).get("author") or {}).get("date") if commits else None}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}
+                    terraform_addresses = repository_terraform_addresses(client, owner, name, metadata.get("default_branch"))
+                    context = {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "terraform_addresses": terraform_addresses, "commit_activity": {"recent_commit_count": len(commits), "last_commit": ((commits[0].get("commit") or {}).get("author") or {}).get("date") if commits else None}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}
                     evidence = {"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}
                     return {"github_context": context, "evidence": [evidence], "missing_evidence": [], "output_summary": f"GitHub repository context collected for {repository}."}
 
@@ -1174,8 +1220,8 @@ def retry_goal_evidence(goal_id: UUID, request: GoalEvidenceRetryRequest, fastap
             repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed) and (not selected or str(item.get("full_name")).lower() in selected)), None)
             if not repository:
                 raise RuntimeError("No selected GitHub repository is available.")
-            owner, name = repository.split("/", 1); metadata = client.get_repository(owner, name); commits = client.list_commits(owner, name); collected_at = utc_now()
-            return {"github_context": {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "commit_activity": {"recent_commit_count": len(commits)}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}, "evidence": [{"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}], "missing_evidence": [], "output_summary": f"GitHub repository context collected for {repository}."}
+            owner, name = repository.split("/", 1); metadata = client.get_repository(owner, name); commits = client.list_commits(owner, name); collected_at = utc_now(); terraform_addresses = repository_terraform_addresses(client, owner, name, metadata.get("default_branch"))
+            return {"github_context": {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "terraform_addresses": terraform_addresses, "commit_activity": {"recent_commit_count": len(commits)}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}, "evidence": [{"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}], "missing_evidence": [], "output_summary": f"GitHub repository context collected for {repository}."}
 
         def cloud_hunt_collector(goal_run: WorkflowRun) -> dict[str, object]:
             if not goal_run.linked_cloud_hunt_id:
