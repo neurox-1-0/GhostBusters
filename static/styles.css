@@ -447,8 +447,9 @@ samp {
   min-height: 142px;
   margin: 0 calc(clamp(1.25rem, 3vw, 2rem) * -1);
   padding: 0.35rem 1.5rem;
-  background: #000;
-  border-bottom: 3px solid #ef7d11;
+  background: #fff;
+  border-bottom: 2px solid #ef7d11;
+  box-shadow: inset 0 -1px 0 rgba(6, 30, 53, 0.08);
 }
 .auth-brand img {
   display: block;
