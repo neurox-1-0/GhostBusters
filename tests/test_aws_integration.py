@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 
 from integrations.cloud_adapters import RealAWSCloudAdapter
 from fastapi.testclient import TestClient
@@ -28,7 +29,7 @@ class FakeClient:
 
     def describe_volumes(self, **kwargs):
         self.calls.append((self.kind, "describe_volumes"))
-        return {"Volumes": [{"VolumeId": "vol-1", "CreateTime": datetime.now(timezone.utc), "Size": 20, "Attachments": [], "Tags": []}]}
+        return {"Volumes": [{"VolumeId": "vol-1", "CreateTime": datetime.now(timezone.utc), "Size": 20, "VolumeType": "gp3", "Attachments": [], "Tags": []}]}
 
     def describe_addresses(self, **kwargs):
         self.calls.append((self.kind, "describe_addresses"))
@@ -94,3 +95,45 @@ def test_real_aws_mode_never_silently_falls_back_to_fixtures() -> None:
     response = client.post("/api/cloud/hunts", json={"provider_scope": "aws", "inventory_source": "real_aws"})
     assert response.status_code == 409
     assert "did not fall back" in response.json()["detail"]
+
+
+def test_real_aws_collection_records_live_ec2_and_ebs_pricing_without_mutation() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class PricingClient(FakeClient):
+        def get_products(self, **kwargs):
+            self.calls.append((self.kind, "get_products"))
+            fields = {item["Field"]: item["Value"] for item in kwargs["Filters"]}
+            if fields["productFamily"] == "Compute Instance":
+                price = {"product": {"sku": "ec2-sku"}, "terms": {"OnDemand": {"term": {"priceDimensions": {"hour": {"unit": "Hrs", "pricePerUnit": {"USD": "0.0123"}}}}}}}
+            else:
+                price = {"product": {"sku": "ebs-sku"}, "terms": {"OnDemand": {"term": {"priceDimensions": {"storage": {"unit": "GB-Mo", "pricePerUnit": {"USD": "0.10"}}}}}}}
+            return {"PriceList": [json.dumps(price)]}
+
+    class PricingSession(FakeSession):
+        def client(self, name, region_name=None):
+            if name == "pricing":
+                return PricingClient(name, calls)
+            return FakeClient(name, calls)
+
+    resources = RealAWSCloudAdapter(["us-east-1"], session_factory=lambda: PricingSession(calls)).list_resources()
+    by_id = {item.resource_id: item for item in resources}
+
+    assert by_id["i-1"].metadata["pricing"] == {
+        "available": True,
+        "source": "AWS Pricing API",
+        "source_mode": "live",
+        "service": "AmazonEC2",
+        "resource_type": "EC2",
+        "instance_type": "t3.micro",
+        "rate_per_hour_usd": 0.0123,
+        "estimated_monthly_cost_usd": 8.979,
+        "currency": "USD",
+        "assumption": "On-demand Linux shared tenancy, 730 hours per month.",
+        "sku": "ec2-sku",
+        "pricing_region": "us-east-1",
+        "retrieved_at": by_id["i-1"].metadata["pricing"]["retrieved_at"],
+    }
+    assert by_id["vol-1"].metadata["pricing"]["estimated_monthly_cost_usd"] == 2.0
+    assert ("pricing", "get_products") in calls
+    assert not any(method in {"terminate_instances", "delete_volume", "release_address", "create_tags"} for _, method in calls)

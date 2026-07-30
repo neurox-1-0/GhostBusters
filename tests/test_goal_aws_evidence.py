@@ -27,7 +27,10 @@ def test_connected_goal_aws_collector_records_read_only_cpu_evidence(monkeypatch
         provider_resource_type="virtual_machine",
         normalized_resource_type="virtual_machine",
         status="running",
-        metadata={"utilization": {"available": True, "average_cpu_pct": 4.2, "lookback_days": 14}},
+        metadata={
+            "utilization": {"available": True, "average_cpu_pct": 4.2, "lookback_days": 14},
+            "pricing": {"available": True, "source_mode": "live", "estimated_monthly_cost_usd": 7.592},
+        },
     )
 
     class Adapter:
@@ -49,4 +52,5 @@ def test_connected_goal_aws_collector_records_read_only_cpu_evidence(monkeypatch
     assert result["evidence"][0]["source"] == "AWS"
     assert result["evidence"][0]["status"] == "verified"
     assert "4.2%" in result["evidence"][0]["summary"]
-    assert "Verified pricing" in result["missing_evidence"]
+    assert "Verified AWS on-demand estimate" in result["evidence"][0]["summary"]
+    assert "Verified pricing" not in result["missing_evidence"]

@@ -32,6 +32,15 @@ Resources:
                 sts:ExternalId: !Ref ExternalId
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies:
+        - PolicyName: GhostBustersPricingReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - pricing:GetProducts
+                Resource: '*'
   CallbackExecutionRole:
     Type: AWS::IAM::Role
     Properties:
