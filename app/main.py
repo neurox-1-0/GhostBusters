@@ -153,6 +153,69 @@ def aws_adapter_for_config(config) -> RealAWSCloudAdapter:
     )
 
 
+def aws_goal_evidence_collector(organization_id: UUID, actor_user_id: UUID | None):
+    """Collect bounded, read-only AWS inventory and CloudWatch evidence for a goal."""
+    def collect(goal_run: WorkflowRun) -> dict[str, object]:
+        config = aws_integration_store.get(organization_id)
+        if not config.enabled or config.connection_status != "connected" or not config.role_arn:
+            raise RuntimeError("A verified AWS account connection is required for AWS evidence collection.")
+        try:
+            adapter = aws_adapter_for_config(config)
+            validation = adapter.validate()
+            if not validation.get("connected"):
+                raise RuntimeError("AWS role validation failed safely.")
+            collected_at = utc_now()
+            resources = adapter.list_resources()
+            evidence: list[dict[str, object]] = []
+            missing = ["Verified pricing", "Resource-to-repository mapping"]
+            for resource in resources[:100]:
+                utilization = dict(resource.metadata.get("utilization") or {})
+                utilization_available = bool(utilization.get("available"))
+                if not utilization_available:
+                    missing.append("AWS utilization")
+                summary = f"{resource.resource_name} ({resource.resource_id}) was collected from AWS {resource.region_or_location}."
+                if utilization_available:
+                    summary = f"{summary} CloudWatch CPU average: {float(utilization.get('average_cpu_pct', 0)):.1f}% over {utilization.get('lookback_days', config.cloudwatch_lookback_days)} days."
+                evidence.append({
+                    "source": "AWS",
+                    "source_id": str(validation.get("account_id") or config.account_id or "unknown"),
+                    "resource_id": resource.resource_id,
+                    "status": "verified" if utilization_available else "partial",
+                    "summary": summary,
+                    "provenance": {
+                        "organization_id": str(organization_id),
+                        "account_id": validation.get("account_id"),
+                        "region": resource.region_or_location,
+                        "source_mode": "real_aws",
+                        "collected_at": collected_at,
+                    },
+                    "limitations": ([] if utilization_available else ["CloudWatch utilization was unavailable for this resource."]) + ["AWS pricing is not inferred when verified pricing evidence is unavailable."],
+                    "collected_at": collected_at,
+                })
+            if not evidence:
+                evidence.append({
+                    "source": "AWS",
+                    "source_id": str(validation.get("account_id") or config.account_id or "unknown"),
+                    "resource_id": "account-inventory",
+                    "status": "verified",
+                    "summary": "Read-only AWS connection was verified; no supported resources were found in the selected regions.",
+                    "provenance": {"organization_id": str(organization_id), "account_id": validation.get("account_id"), "source_mode": "real_aws", "collected_at": collected_at},
+                    "limitations": ["No supported AWS resources were returned for the selected regions.", "AWS pricing is not inferred when verified pricing evidence is unavailable."],
+                    "collected_at": collected_at,
+                })
+                missing.append("AWS utilization")
+            aws_integration_store.mark_collection(organization_id, True)
+            try:
+                auth_store.record_activity(organization_id, "aws_goal_evidence_collected", actor_user_id, {"goal_id": str(goal_run.id), "resource_count": len(resources), "correlation_id": goal_run.correlation_id}, actor_type="Integration", category="Integrations", target_type="goal", target_id=goal_run.id, target_display_name=goal_run.goal[:120], related_run_id=goal_run.id)
+            except Exception as exc:
+                logger.warning("AWS goal activity recording failed", extra={"organization_id": str(organization_id), "goal_id": str(goal_run.id), "exception_class": type(exc).__name__})
+            return {"evidence": evidence, "missing_evidence": list(dict.fromkeys(missing)), "output_summary": f"Read-only AWS inventory collected for {len(resources)} supported resource(s)."}
+        except Exception:
+            aws_integration_store.mark_collection(organization_id, False, "AWS goal evidence collection failed safely.")
+            raise
+    return collect
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(status="ok", service=settings.service_name)
@@ -954,7 +1017,7 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
             aws = aws_integration_store.get(principal.organization_id)
             jira = jira_integration_store.get(principal.organization_id)
             connected_sources = [
-                name for name, enabled in (("GitHub", github.enabled and bool(github.installation_id)), ("AWS", aws.enabled), ("Jira", jira.enabled and bool(jira.base_url))) if enabled
+                name for name, enabled in (("GitHub", github.enabled and bool(github.installation_id)), ("AWS", aws.enabled and aws.connection_status == "connected" and bool(aws.role_arn)), ("Jira", jira.enabled and bool(jira.base_url))) if enabled
             ]
             existing_prs = [run for run in workflow_service.list_runs(principal.organization_id) if run.source_type == "terraform_pr"]
             existing_hunts = cloud_hunt_service.list_hunts(principal.organization_id)
@@ -1025,7 +1088,7 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                         evidence.append({"source": "Cloud Hunt", "source_id": str(hunt.id), "resource_id": resource.resource_id, "status": "partial", "summary": f"{resource.resource_name}: {candidate.suspicion_level} suspicion classification from Cloud Hunt.", "provenance": {"organization_id": str(principal.organization_id), "cloud_hunt_id": str(hunt.id), "source_mode": hunt.data_source_mode, "collected_at": collected_at}, "limitations": ["Cloud Hunt classification alone does not verify utilization, savings, or remediation safety."], "collected_at": collected_at})
                     return {"evidence": evidence, "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"{len(evidence)} eligible Cloud Hunt record(s) imported."}
 
-                collectors = {"GitHub": github_collector}
+                collectors = {"GitHub": github_collector, "AWS": aws_goal_evidence_collector(principal.organization_id, principal.user.id if principal.user else None)}
                 if latest_hunt:
                     collectors["Cloud Hunt"] = cloud_hunt_collector
                     if "Cloud Hunt" not in run.selected_tools:
@@ -1091,9 +1154,10 @@ def retry_goal_evidence(goal_id: UUID, request: GoalEvidenceRetryRequest, fastap
             client = GitHubAppClient(config.installation_id).api_client()
             repositories = client.list_installation_repositories()
             allowed = {item.lower() for item in config.allowed_repositories}
-            repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed)), None)
+            selected = {str(item).lower() for item in goal_run.constraints.get("repositories", [])}
+            repository = next((str(item.get("full_name")) for item in repositories if item.get("full_name") and (not allowed or str(item.get("full_name")).lower() in allowed) and (not selected or str(item.get("full_name")).lower() in selected)), None)
             if not repository:
-                raise RuntimeError("No allowed GitHub repository is available.")
+                raise RuntimeError("No selected GitHub repository is available.")
             owner, name = repository.split("/", 1); metadata = client.get_repository(owner, name); commits = client.list_commits(owner, name); collected_at = utc_now()
             return {"github_context": {"repository": repository, "source_type": "github_repository", "source_mode": config.source_mode, "repository_default_branch": metadata.get("default_branch"), "commit_activity": {"recent_commit_count": len(commits)}, "collected_at": collected_at, "correlation_id": goal_run.correlation_id}, "evidence": [{"source": "GitHub", "source_id": repository, "resource_id": repository, "status": "verified", "summary": f"Repository metadata and {len(commits)} recent commit record(s) were collected.", "provenance": {"organization_id": str(principal.organization_id), "repository": repository, "source_mode": config.source_mode, "collected_at": collected_at}, "limitations": ["GitHub evidence does not establish runtime utilization, sizing safety, or verified savings."], "collected_at": collected_at}], "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"GitHub repository context collected for {repository}."}
 
@@ -1107,7 +1171,7 @@ def retry_goal_evidence(goal_id: UUID, request: GoalEvidenceRetryRequest, fastap
             evidence = [{"source": "Cloud Hunt", "source_id": str(hunt.id), "resource_id": candidate.resource.resource_id, "status": "partial", "summary": f"{candidate.resource.resource_name}: {candidate.suspicion_level} suspicion classification from Cloud Hunt.", "provenance": {"organization_id": str(principal.organization_id), "cloud_hunt_id": str(hunt.id), "source_mode": hunt.data_source_mode, "collected_at": collected_at}, "limitations": ["Cloud Hunt classification alone does not verify utilization, savings, or remediation safety."], "collected_at": collected_at} for candidate in hunt.candidates]
             return {"evidence": evidence, "missing_evidence": ["AWS utilization", "Verified pricing", "Resource-to-repository mapping"], "output_summary": f"{len(evidence)} eligible Cloud Hunt record(s) imported."}
 
-        collectors = {"GitHub": github_collector, "Cloud Hunt": cloud_hunt_collector}
+        collectors = {"GitHub": github_collector, "AWS": aws_goal_evidence_collector(principal.organization_id, principal.user.id if principal.user else None), "Cloud Hunt": cloud_hunt_collector}
         updated = workflow_service.execute_connected_evidence(goal_id, principal.organization_id, collectors, retry_unavailable_only=True)
         updated = workflow_service.store.update(goal_id, lambda current: current.model_copy(update={"last_evidence_retry_key": request.idempotency_key}), principal.organization_id)
         auth_store.record_activity(principal.organization_id, "goal_evidence_retry", principal.user.id if principal.user else None, {"goal_id": str(goal_id), "correlation_id": updated.correlation_id}, actor_type="User", category="System", target_type="goal", target_id=goal_id, target_display_name=updated.goal[:120], related_run_id=goal_id)
