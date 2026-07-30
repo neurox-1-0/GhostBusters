@@ -95,3 +95,30 @@ def test_connected_goal_with_sufficient_evidence_abstains_without_fabricating_a_
     assert updated.status.value == "abstained"
     assert updated.missing_evidence == []
     assert "No infrastructure change was proposed" in str(updated.stop_reason)
+
+
+def test_incremental_connected_collection_preserves_history_until_finalized() -> None:
+    service = WorkflowService(store=InMemoryRunStore())
+    organization_id = uuid4()
+    run, _ = service.start_connected_goal(
+        StartRunRequest(goal="Collect evidence one source at a time.", scenario_name="safe", idempotency_key="connected-goal-5"),
+        organization_id,
+        connected_sources=["GitHub", "AWS"],
+    )
+
+    first = service.execute_connected_evidence(
+        run.id,
+        organization_id,
+        {"GitHub": lambda current: {"evidence": [], "missing_evidence": ["AWS utilization"]}},
+        tools=["GitHub"],
+        finalize=False,
+        selection_reasons={"GitHub": "The agent selected repository context first."},
+    )
+
+    assert first.status.value == "investigating"
+    assert first.tool_attempts[-1]["selected_because"] == "The agent selected repository context first."
+    assert first.missing_evidence == ["AWS utilization"]
+
+    final = service.execute_connected_evidence(first.id, organization_id, {}, tools=[], finalize=True)
+    assert final.status.value == "needs_more_evidence"
+    assert final.missing_evidence == ["AWS utilization"]

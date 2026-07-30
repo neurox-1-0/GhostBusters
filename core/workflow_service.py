@@ -322,24 +322,32 @@ class WorkflowService:
         collectors: dict[str, Callable[[WorkflowRun], dict[str, Any]]],
         *,
         retry_unavailable_only: bool = False,
+        tools: list[str] | None = None,
+        finalize: bool = True,
+        selection_reasons: dict[str, str] | None = None,
     ) -> WorkflowRun:
-        """Run selected read-only collectors and persist every attempt safely."""
+        """Run selected read-only collectors and persist every attempt safely.
+
+        Connected autonomous goals may execute one collector at a time so the
+        next planner decision is based on recorded evidence. Existing callers
+        retain the original batch/finalization behaviour.
+        """
         def execute(current: WorkflowRun) -> WorkflowRun:
             current.status = RunStatus.investigating
             current.current_step = "collect_evidence"
-            missing: list[str] = []
+            missing: list[str] = list(current.missing_evidence)
             existing_sources = {
                 (str(item.get("source")), str(item.get("source_id")), str(item.get("resource_id")))
                 for item in current.evidence_summaries
             }
-            for tool in current.selected_tools:
+            for tool in (current.selected_tools if tools is None else tools):
                 prior = next((item for item in reversed(current.tool_attempts) if item.get("tool_name") == tool), None)
                 if retry_unavailable_only and prior and prior.get("status") == "completed":
                     continue
                 collector = collectors.get(tool)
                 started = utc_now()
                 append_audit_event(current, event_type=f"{tool.lower().replace(' ', '_')}_collection_started", actor="tool", summary=f"{tool} evidence collection started.", stage="evidence", status="running", tool=tool, attempt_number=1)
-                record: dict[str, Any] = {"tool_name": tool, "selected_because": "Selected for this autonomous goal.", "status": "running", "started_at": started, "attempt_number": 1, "input_summary": "Organization-scoped read-only collection."}
+                record: dict[str, Any] = {"tool_name": tool, "selected_because": (selection_reasons or {}).get(tool, "Selected for this autonomous goal."), "status": "running", "started_at": started, "attempt_number": 1, "input_summary": "Organization-scoped read-only collection."}
                 try:
                     if collector is None:
                         raise WorkflowValidationError(f"{tool} collection is not available.")
@@ -364,6 +372,9 @@ class WorkflowService:
                 current.tool_attempts.append(record)
 
             current.missing_evidence = list(dict.fromkeys(missing))
+            if not finalize:
+                current.updated_at = utc_now()
+                return current
             verified = [item for item in current.evidence_summaries if item.get("status") in {"verified", "partial"}]
             append_audit_event(current, event_type="evidence_threshold_evaluated", actor="agent", summary=f"{len(verified)} verified or partial evidence item(s) available.", stage="policy", status="completed")
             if current.missing_evidence:

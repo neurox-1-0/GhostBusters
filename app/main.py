@@ -31,7 +31,8 @@ from app.models import (
     DemoResetRequest,
     HumanReviewRequest, InvitationAcceptRequest, InvitationValidateResponse,
     InviteMemberRequest, LoginRequest, RegisterRequest, ReviewCaseActionRequest,
-    ReviewCase, StartRunRequest, WorkflowRun,
+    ReviewCase, StartRunRequest, WorkflowRun, AgentLoopState, AgentNextAction,
+    TerraformResourceChange,
 )
 from app.settings import settings, validate_startup_settings
 from app.auth import (
@@ -112,6 +113,7 @@ from core.rate_limit import rate_limiter
 from core.evidence_utils import verified_pricing_item
 from core.ai_planner import deterministic_objective_interpretation, has_ambiguous_percentage_target, is_supported_goal_domain
 from core.ai_client import AIClientError, build_ai_client
+from core.ai_plan_validator import validate_agent_action
 
 
 logger = logging.getLogger(__name__)
@@ -1107,9 +1109,9 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                     names = [step.capability for step in proposed.selected_capabilities]
                     if not names or any(name not in GOAL_CAPABILITY_ALLOWLIST for name in names):
                         raise AIClientError("schema_validation_failed", "Gemini proposed an unsupported capability plan.")
-                    run.original_plan = {"planning_mode": "gemini_primary", "normalized_goal": run.goal, "selected_capabilities": [step.model_dump() for step in proposed.selected_capabilities], "decision_summary": proposed.decision_summary, "created_at": utc_now()}
-                    run.goal_planning_mode = "gemini_primary"
-                    append_audit_event(run, event_type="gemini_planning_completed", actor="agent", summary="Gemini selected allowlisted capabilities for this goal.", stage="planning", status="completed", details={"capabilities": names})
+                    run.original_plan = {"planning_mode": plan_call.planning_mode, "normalized_goal": run.goal, "selected_capabilities": [step.model_dump() for step in proposed.selected_capabilities], "decision_summary": proposed.decision_summary, "created_at": utc_now()}
+                    run.goal_planning_mode = plan_call.planning_mode
+                    append_audit_event(run, event_type="gemini_planning_completed", actor="agent", summary="The configured AI planner selected allowlisted capabilities for this goal.", stage="planning", status="completed", details={"capabilities": names, "planning_mode": plan_call.planning_mode})
                     append_audit_event(run, event_type="plan_validated", actor="system", summary="Capability plan passed allowlist and organization-scope validation.", stage="planning", status="completed")
                 except AIClientError as exc:
                     run.original_plan = {"planning_mode": "deterministic", "normalized_goal": run.goal, "selected_capabilities": [], "decision_summary": "Gemini planning was unavailable; deterministic evidence collection remains in effect.", "created_at": utc_now()}
@@ -1155,7 +1157,112 @@ def create_goal(request: GoalCreateRequest, fastapi_request: Request, response: 
                     collectors["Cloud Hunt"] = cloud_hunt_collector
                     if "Cloud Hunt" not in run.selected_tools:
                         run = workflow_service.store.update(run.id, lambda current: current.model_copy(update={"selected_tools": [*current.selected_tools, "Cloud Hunt"]}), principal.organization_id)
-                run = workflow_service.execute_connected_evidence(run.id, principal.organization_id, collectors)
+                # The planner receives only recorded summaries, chooses one
+                # allowlisted collector, and then sees that collector's result
+                # before it can choose again. This is deliberately bounded and
+                # read-only; it is not a background mutation loop.
+                planner = None
+                if settings.ai_enabled and settings.gemini_assisted_planning_enabled and (settings.groq_api_key or settings.gemini_api_key):
+                    try:
+                        planner = build_ai_client(settings)
+                    except Exception as exc:
+                        logger.warning("connected_goal_planner_unavailable organization_id=%s exception_class=%s", principal.organization_id, type(exc).__name__)
+
+                def normalized_tool_name(value: str | None) -> str | None:
+                    key = (value or "").strip().casefold().replace("_", " ")
+                    aliases = {
+                        "github": "GitHub", "github context": "GitHub", "github activity": "GitHub",
+                        "aws": "AWS", "aws evidence": "AWS", "aws inventory": "AWS", "utilization": "AWS", "pricing": "AWS",
+                        "cloud hunt": "Cloud Hunt", "cloud hunt context": "Cloud Hunt",
+                    }
+                    return aliases.get(key)
+
+                executed_tools: list[str] = []
+                maximum_steps = min(max(1, settings.gemini_max_planning_steps), len(collectors) + 1)
+                for sequence in range(1, maximum_steps + 1):
+                    available_tools = [tool for tool in collectors if tool not in executed_tools]
+                    if not available_tools:
+                        break
+                    evidence = list(run.evidence_summaries)[-12:]
+                    action: AgentNextAction | None = None
+                    decision_mode = "deterministic_fallback"
+                    decision_error: str | None = None
+                    if planner is not None:
+                        try:
+                            call = planner.propose_next_action({
+                                "objective": run.goal,
+                                "objective_type": deterministic_objective_interpretation(run.goal).objective_type,
+                                "available_tools": available_tools,
+                                "tool_descriptions": {
+                                    "GitHub": "Read-only selected repository metadata, Terraform definitions, and recent commits.",
+                                    "AWS": "Read-only inventory, CloudWatch utilization, live AWS price lookup, and resource-to-Terraform tag verification.",
+                                    "Cloud Hunt": "Read-only findings from a linked non-fixture Cloud Hunt run.",
+                                },
+                                "executed_tools": executed_tools,
+                                "evidence": [{"source": item.get("source"), "summary": item.get("summary") or item.get("value_summary"), "status": item.get("status")} for item in evidence],
+                                "mandatory_tools": available_tools,
+                                "unresolved_questions": list(run.missing_evidence),
+                                "deterministic_constraints": ["Read-only evidence only", "No infrastructure mutation", "Human approval remains mandatory"],
+                            })
+                            proposed = call.value
+                            if not isinstance(proposed, AgentNextAction):
+                                raise AIClientError("schema_validation_failed", "Next-action response was invalid.")
+                            tool_name = normalized_tool_name(proposed.tool_name)
+                            action = proposed.model_copy(update={"tool_name": tool_name})
+                            decision_mode = call.planning_mode
+                        except AIClientError as exc:
+                            decision_error = exc.category
+                        except Exception as exc:
+                            decision_error = type(exc).__name__
+
+                    if action is None:
+                        tool = available_tools[0]
+                        action = AgentNextAction(
+                            action="call_tool", tool_name=tool,
+                            reason="The next registered read-only evidence source has not yet been collected.",
+                            question_being_answered=f"What does {tool} evidence add to this investigation?",
+                            expected_information=f"Recorded {tool} evidence or an explicit limitation.", confidence=0.8,
+                        )
+
+                    loop_state = AgentLoopState(
+                        objective_interpretation=deterministic_objective_interpretation(run.goal),
+                        resource=TerraformResourceChange(address="connected_goal", resource_type="aws_unknown", actions=["read"], destructive=False),
+                        available_tools=available_tools, executed_tools=executed_tools,
+                        unresolved_questions=list(run.missing_evidence), maximum_steps=maximum_steps,
+                    )
+                    validation = validate_agent_action(action, loop_state, mandatory_tools=available_tools)
+                    fallback_from: dict[str, object] | None = None
+                    if not validation.accepted or action.action != "call_tool" or not action.tool_name:
+                        fallback_from = {"action": action.action, "tool_name": action.tool_name, "validation_result": validation.result}
+                        tool = available_tools[0]
+                        action = AgentNextAction(
+                            action="call_tool", tool_name=tool,
+                            reason="The model proposal could not safely advance this bounded investigation, so GhostBusters selected the next registered read-only collector.",
+                            question_being_answered=f"What does {tool} evidence add to this investigation?",
+                            expected_information=f"Recorded {tool} evidence or an explicit limitation.", confidence=0.8,
+                        )
+                        validation = validate_agent_action(action, loop_state, mandatory_tools=available_tools)
+                        decision_mode = "deterministic_fallback"
+                    decision = {
+                        "sequence": sequence, "kind": "next_action", "planning_mode": decision_mode,
+                        "action": action.action, "tool_name": action.tool_name, "reason": action.reason,
+                        "question_being_answered": action.question_being_answered,
+                        "expected_information": action.expected_information, "confidence": action.confidence,
+                        "accepted": validation.accepted, "validation_result": validation.result,
+                        "created_at": utc_now(), "error_category": decision_error, "fallback_from": fallback_from,
+                    }
+                    run.plan_revisions.append(decision)
+                    append_audit_event(run, event_type="agent_next_action_decided", actor="agent", summary=(f"Agent selected {action.tool_name} as the next read-only evidence step." if validation.accepted else "Agent proposal was rejected by the deterministic safety validator."), stage="planning", status="completed" if validation.accepted else "warning", tool=action.tool_name, details={"sequence": sequence, "action": action.action, "planning_mode": decision_mode, "validation_result": validation.result})
+                    run = workflow_service.store.update(run.id, run, principal.organization_id)
+                    if not validation.accepted or action.action != "call_tool" or not action.tool_name:
+                        break
+                    run = workflow_service.execute_connected_evidence(
+                        run.id, principal.organization_id, collectors, tools=[action.tool_name], finalize=False,
+                        selection_reasons={action.tool_name: action.reason},
+                    )
+                    executed_tools.append(action.tool_name)
+
+                run = workflow_service.execute_connected_evidence(run.id, principal.organization_id, collectors, tools=[], finalize=True)
         if not created: response.status_code = 200
         else:
             auth_store.record_activity(principal.organization_id, "goal_created", principal.user.id if principal.user else None, {"goal_id": str(run.id), "correlation_id": run.correlation_id, "execution_mode": run.execution_mode}, actor_type="User", category="System", target_type="goal", target_id=run.id, target_display_name=run.goal[:120], related_run_id=run.id)

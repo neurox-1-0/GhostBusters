@@ -1988,11 +1988,30 @@ function renderGoalTab() {
   if (state.goalTab === "evidence") { node.appendChild(responsiveTable([{ label: "Source", render: (item) => labelFor(item.source) }, { label: "Summary", render: (item) => item.value_summary || item.claim || "Not collected" }, { label: "Freshness", render: (item) => labelFor(item.freshness || item.freshness_status || "unknown") }, { label: "Reliability", render: (item) => item.reliability || "Not available" }, { label: "Impact", render: (item) => item.effect_on_decision || "Not assessed" }], run.evidence || [], "No verified evidence has been collected.")); return; }
   if (state.goalTab === "plan") {
     const attempts = run.tool_attempts || [];
-    append(node, el("h3", "card-title", run.planning_mode === "groq_primary" ? "Groq-guided live plan" : run.planning_mode?.startsWith("gemini") ? "Gemini-guided live plan" : "Safe execution plan"), el("p", "muted", "Only completed or currently running evidence steps are shown. The next step is selected from recorded evidence and limitations."));
-    if (!attempts.length) node.appendChild(el("p", "goal-next-action", "Next decision pending evidence. GhostBusters has not run an evidence tool yet."));
-    attempts.forEach((attempt, index) => { const status = attempt.status || "pending"; const tone = status === "completed" ? "status-approved" : status === "running" ? "status-in-progress" : status === "failed" ? "status-blocked" : "status-neutral"; const card = el("article", `goal-finding-card goal-live-step goal-live-step-${status}`); append(card, el("span", `status-badge ${tone}`, status === "failed" ? "Failed safely" : labelFor(status)), el("h3", null, `${index + 1}. ${labelFor(attempt.tool_name || "Evidence step")}`), el("p", null, attempt.selected_because || "Selected from the recorded investigation context."), dataList([["Expected evidence", attempt.expected_evidence || "Verified evidence or an explicit limitation."], ["Result", attempt.output_summary || attempt.error || "Awaiting result"], ["Attempt", attempt.attempt_number || 1]])); node.appendChild(card); });
+    const decisions = (run.plan_revisions || []).filter((item) => item.kind === "next_action");
+    const planMode = run.goal_planning_mode || run.original_plan?.planning_mode || run.planning_mode;
+    append(node, el("h3", "card-title", planMode === "groq_primary" ? "Groq-guided live plan" : String(planMode || "").startsWith("gemini") ? "Gemini-guided live plan" : "Evidence-guided live plan"), el("p", "muted", "Each next step is chosen from recorded evidence and limitations. Only allowlisted read-only tools can run."));
+    if (!attempts.length && !decisions.length) node.appendChild(el("p", "goal-next-action", "Next decision pending evidence. GhostBusters has not run an evidence tool yet."));
+    const entries = [];
+    decisions.forEach((decision, index) => entries.push({ type: "decision", index, item: decision }));
+    attempts.forEach((attempt, index) => entries.push({ type: "attempt", index, item: attempt }));
+    entries.sort((left, right) => left.index - right.index || (left.type === "decision" ? -1 : 1));
+    entries.forEach((entry) => {
+      if (entry.type === "decision") {
+        const decision = entry.item;
+        const accepted = decision.accepted !== false;
+        const mode = planningModeLabel(decision.planning_mode || "deterministic_fallback");
+        const card = el("article", `goal-finding-card goal-agent-decision ${accepted ? "goal-agent-decision-accepted" : "goal-agent-decision-rejected"}`);
+        append(card, el("span", `status-badge ${accepted ? "status-in-progress" : "status-warning"}`, accepted ? "Agent decision" : "Proposal rejected"), el("h3", null, `${entry.index + 1}. Decide next step`), el("p", null, decision.reason || "The agent evaluated the recorded investigation context."), dataList([["Selected tool", labelFor(decision.tool_name || "No tool")], ["Question", decision.question_being_answered || "Not recorded"], ["Expected evidence", decision.expected_information || "Not recorded"], ["Safety check", decision.validation_result || "Not recorded"], ["Planning mode", mode]]));
+        if (decision.fallback_from) card.appendChild(el("p", "goal-next-action", "The original proposal did not pass the bounded safety check, so GhostBusters used the next registered read-only collector."));
+        node.appendChild(card);
+        return;
+      }
+      const attempt = entry.item; const status = attempt.status || "pending"; const tone = status === "completed" ? "status-approved" : status === "running" ? "status-in-progress" : status === "failed" ? "status-blocked" : "status-neutral"; const card = el("article", `goal-finding-card goal-live-step goal-live-step-${status}`); append(card, el("span", `status-badge ${tone}`, status === "failed" ? "Failed safely" : labelFor(status)), el("h3", null, `${entry.index + 1}. ${labelFor(attempt.tool_name || "Evidence step")}`), el("p", null, attempt.selected_because || "Selected from the recorded investigation context."), dataList([["Expected evidence", attempt.expected_evidence || "Verified evidence or an explicit limitation."], ["Result", attempt.output_summary || attempt.error || "Awaiting result"], ["Attempt", attempt.attempt_number || 1]])); node.appendChild(card);
+    });
     if (["investigating", "needs_more_evidence"].includes(run.status)) node.appendChild(el("p", "goal-next-action", run.status === "needs_more_evidence" ? "Evidence is insufficient for a recommendation. The next decision is waiting for additional evidence or human context." : "Next decision pending the latest evidence response."));
-    if (run.plan_revisions?.length) { node.appendChild(el("h3", "card-title", "Plan revisions")); run.plan_revisions.forEach((revision) => node.appendChild(el("p", "goal-next-action", revision.reason || "Plan revised from new evidence."))); }
+    const revisions = (run.plan_revisions || []).filter((item) => item.kind !== "next_action");
+    if (revisions.length) { node.appendChild(el("h3", "card-title", "Plan revisions")); revisions.forEach((revision) => node.appendChild(el("p", "goal-next-action", revision.reason || "Plan revised from new evidence."))); }
     return;
   }
   if (state.goalTab === "alternatives") { node.appendChild(responsiveTable([{ label: "Action", render: (item) => recommendationLabel(item.action) }, { label: "Savings", render: (item) => money(item.estimated_monthly_savings) }, { label: "Eligible", render: (item) => item.eligible ? "Eligible" : "Not eligible" }, { label: "Reason", render: (item) => item.ineligible_reason || item.reason || "Recorded comparison" }], run.decision_record?.alternatives || [], "No alternatives recorded.")); return; }
