@@ -44,6 +44,7 @@ const state = {
   goals: [],
   selectedGoal: null,
   goalDraft: null,
+  goalSelectedRepositories: [],
   goalCreationStage: "idle",
   goalEvents: [],
   goalTab: "outcome",
@@ -2935,25 +2936,35 @@ function connectedRepositories() {
 }
 
 function selectedGoalRepositories() {
-  const select = $("goal-repositories-input");
-  return select ? [...select.selectedOptions].map((option) => option.value).filter(Boolean) : [];
+  return [...new Set(state.goalSelectedRepositories || [])].filter(Boolean);
 }
 
 function renderGoalRepositoryScope() {
-  const select = $("goal-repositories-input");
+  const container = $("goal-repositories-input");
   const help = $("goal-repositories-help");
-  if (!select || !help) return;
+  if (!container || !help) return;
   const selected = new Set(selectedGoalRepositories());
   const repositories = connectedRepositories().sort((left, right) => left.localeCompare(right));
-  select.replaceChildren();
+  container.replaceChildren();
   repositories.forEach((repository) => {
-    const option = document.createElement("option");
-    option.value = repository;
-    option.textContent = repository;
-    option.selected = selected.has(repository);
-    select.appendChild(option);
+    const option = el("label", "goal-repository-option");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = repository;
+    input.checked = selected.has(repository);
+    option.classList.toggle("is-selected", input.checked);
+    input.addEventListener("change", () => {
+      const next = new Set(selectedGoalRepositories());
+      if (input.checked) next.add(repository);
+      else next.delete(repository);
+      state.goalSelectedRepositories = [...next];
+      option.classList.toggle("is-selected", input.checked);
+    });
+    option.append(input, el("span", "goal-repository-option-label", repository));
+    container.appendChild(option);
   });
-  select.disabled = repositories.length === 0;
+  if (!repositories.length) container.appendChild(el("p", "muted", "No connected repositories available."));
+  container.classList.toggle("is-empty", repositories.length === 0);
   help.textContent = repositories.length
     ? "Choose the repositories GhostBusters may inspect. Leave none selected for an AWS-only investigation."
     : "No GitHub repositories are connected. You can still run an AWS-only investigation.";

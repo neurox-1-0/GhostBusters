@@ -49,3 +49,10 @@ def test_evidence_paused_goal_has_a_truthful_retry_state() -> None:
     assert 'run.status !== "needs_more_evidence"' in APP_JS
     assert '"Live updates temporarily unavailable. Showing last known state."' in APP_JS
     assert "missing_evidence" in APP_JS
+
+
+def test_goal_repository_scope_uses_persistent_checkbox_selection() -> None:
+    assert 'class="goal-repository-checkboxes"' in INDEX_HTML
+    assert 'input.type = "checkbox"' in APP_JS
+    assert "goalSelectedRepositories" in APP_JS
+    assert "Choose the repositories GhostBusters may inspect." in APP_JS
