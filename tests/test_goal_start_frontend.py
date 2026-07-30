@@ -56,3 +56,9 @@ def test_goal_repository_scope_uses_persistent_checkbox_selection() -> None:
     assert 'input.type = "checkbox"' in APP_JS
     assert "goalSelectedRepositories" in APP_JS
     assert "Choose the repositories GhostBusters may inspect." in APP_JS
+
+
+def test_abstained_goal_is_not_rendered_as_a_running_policy_step() -> None:
+    assert 'if (run.status === "abstained")' in APP_JS
+    assert 'run.status === "abstained" ? "No recommendation"' in APP_JS
+    assert "const roadmapStates = goalRoadmapStates(run, state.goalEvents);" in APP_JS

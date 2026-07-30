@@ -1887,6 +1887,9 @@ function goalRoadmapStates(run, events) {
   const toolRunning = attempts.some((attempt) => attempt.status === "running");
   const toolCompleted = attempts.some((attempt) => attempt.status === "completed");
   const terminal = ["completed", "approved", "pr_created", "remediation_pr_created", "rejected", "canceled", "abstained"].includes(run.status);
+  if (run.status === "abstained") {
+    return ["complete", "complete", "complete", "complete", "complete", "warning", "waiting"];
+  }
   return [
     has("goal_received", "scope_resolved") ? "complete" : run.status === "created" ? "active" : "waiting",
     has("gemini_planning_completed", "plan_validated", "plan_created") ? "complete" : has("gemini_planning_started") ? "active" : "waiting",
@@ -1930,13 +1933,13 @@ function renderGoalExecution() {
   $("goal-summary-source").textContent = goalSourceLabel(run);
   $("goal-cancel-button").hidden = ["canceled", "failed_safely", "approved", "pr_created", "remediation_pr_created", "needs_more_evidence"].includes(run.status);
   $("goal-retry-evidence-button").hidden = run.status !== "needs_more_evidence";
-  $("goal-agent-state").textContent = run.status === "created" ? "Starting" : run.status === "pending_human_review" ? "Waiting for human approval" : run.status === "needs_more_evidence" ? "Evidence needed" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
+  $("goal-agent-state").textContent = run.status === "created" ? "Starting" : run.status === "pending_human_review" ? "Waiting for human approval" : run.status === "needs_more_evidence" ? "Evidence needed" : run.status === "abstained" ? "No recommendation" : ["failed_safely", "blocked"].includes(run.status) ? "Stopped safely" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "Investigation complete" : "Collecting and comparing evidence";
   $("goal-agent-narration").textContent = run.status === "created" ? "Goal received. Interpreting goal and scope." : run.status === "pending_human_review" ? "GhostBusters has stopped before remediation. A human decision is required." : run.stop_reason || "Evidence is being connected to the goal and safety boundaries.";
-  $("goal-agent-mark").className = `goal-agent-mark ${run.status === "pending_human_review" ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
+  $("goal-agent-mark").className = `goal-agent-mark ${["pending_human_review", "abstained"].includes(run.status) ? "waiting" : ["failed_safely", "blocked"].includes(run.status) ? "failed" : ["completed", "approved", "pr_created", "remediation_pr_created"].includes(run.status) ? "complete" : "active"}`;
   const journey = $("goal-journey-list"); clear(journey);
   const stages = ["Understand goal", "Choose investigation path", "Collect evidence", "Compare alternatives", "Verify safety policy", "Prepare recommendation", "Human approval"];
-  const currentStage = goalStageIndex(run);
-  stages.forEach((stage, index) => { const currentState = index < currentStage ? "complete" : index === currentStage ? (["failed_safely", "blocked"].includes(run.status) ? "failed" : run.status === "needs_more_evidence" ? "warning" : "active") : "waiting"; const stateLabel = currentState === "complete" ? "Completed" : currentState === "warning" ? "Evidence needed" : currentState === "failed" ? "Stopped safely" : currentState === "active" ? "Running" : "Waiting"; const item = el("li", `goal-map-node ${currentState}`); append(item, el("span", "goal-map-number", currentState === "complete" ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
+  const roadmapStates = goalRoadmapStates(run, state.goalEvents);
+  stages.forEach((stage, index) => { const currentState = roadmapStates[index] || "waiting"; const stateLabel = currentState === "complete" ? "Completed" : currentState === "warning" ? (run.status === "abstained" ? "No recommendation" : "Evidence needed") : currentState === "failed" ? "Stopped safely" : currentState === "active" ? "Running" : "Waiting"; const item = el("li", `goal-map-node ${currentState}`); append(item, el("span", "goal-map-number", currentState === "complete" ? "✓" : String(index + 1)), el("strong", null, stage), el("small", null, stateLabel)); if (index < stages.length - 1) item.appendChild(el("span", "goal-map-connector")); journey.appendChild(item); });
   const latest = [...(state.goalEvents || [])].reverse().find((event) => event.tool || event.input_summary || event.output_summary) || state.goalEvents.at(-1);
   $("goal-current-action").textContent = latest?.label || (run.status === "created" ? "Interpreting goal and scope" : state.goalEvents.length ? runStatusLabel(run.status) : "Interpreting goal and scope");
   $("goal-current-tool").textContent = latest?.tool || "Planner and policy";
