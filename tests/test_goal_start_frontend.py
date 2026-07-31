@@ -74,3 +74,7 @@ def test_current_step_uses_a_human_readable_presentation() -> None:
     assert 'title: "Reviewed AWS resource evidence"' in APP_JS
     assert 'title: "Reviewed Terraform repository context"' in APP_JS
     assert "const presentation = goalStepPresentation(latest, run);" in APP_JS
+
+
+def test_approval_queue_excludes_manual_demo_rows() -> None:
+    assert 'api("/api/reviews")).filter((item) => item.source_type !== "manual_demo")' in APP_JS

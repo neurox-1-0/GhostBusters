@@ -2099,7 +2099,7 @@ async function loadReviewQueue() {
   renderOverview();
   renderReviewQueue();
   try {
-    state.reviews = await api("/api/reviews");
+    state.reviews = (await api("/api/reviews")).filter((item) => item.source_type !== "manual_demo");
     renderReviewQueue();
   } catch (error) {
     const message = friendlyError(error, "Failed to load approval queue.");

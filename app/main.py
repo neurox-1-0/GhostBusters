@@ -2125,6 +2125,7 @@ def list_review_cases(
     require_permission(principal, APPROVALS_READ)
     cases = cloud_hunt_service.list_cases(principal.organization_id)
     return [case for case in cases if
+            case.source_type != "manual_demo" and
             (source_type is None or case.source_type == source_type) and
             (provider is None or case.provider == provider) and
             (status is None or case.status == status) and
